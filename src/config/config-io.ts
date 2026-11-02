@@ -9,10 +9,11 @@
  * model and concurrency keys; the effective config merges project over global
  * over built-in defaults. Each file stores only its own keys; the merged
  * config is never written back. Unknown project keys are ignored with a
- * warning (and preserved for write-back); a malformed project file is never
- * overwritten. See docs/adr/0008-project-config-as-override-layer.md.
+ * warning; a malformed project file is never overwritten. See
+ * docs/adr/0008-project-config-as-override-layer.md.
  */
 import * as fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { SubagentsConfig } from "../models/model-precedence.ts";
@@ -112,6 +113,12 @@ export interface LoadedConfig {
 /** Persistence port consumed by ConfigStore. */
 export interface ConfigIO {
   load(): LoadedConfig;
+  updateLayer(
+    target: "global" | "project",
+    mutate: (latest: RawConfig) => void,
+    options?: { createIfMissing?: boolean },
+  ): LoadedConfig;
+  /** Legacy direct saves retained for narrow integrations; ConfigStore uses updateLayer. */
   saveGlobal(config: RawConfig): void;
   saveProject(config: RawConfig): void;
 }
@@ -130,8 +137,9 @@ type ProjectRead = { raw: RawConfig; unknownKeys: string[] } | "malformed" | nul
 /**
  * Create a ConfigIO. With a trusted project's `.pi` directory the project file
  * (when present and valid) is an override layer over the global file; each
- * save touches only its own layer. A malformed project file is never written;
- * without a project dir the project layer is untrusted and unavailable.
+ * save touches only its own layer. Mutations reread and validate the target
+ * file before an atomic replacement. A malformed project file is never
+ * written; without a project dir the project layer is untrusted and unavailable.
  */
 export function createConfigIO(projectDir?: string): ConfigIO {
   const projectPath = projectDir ? path.join(projectDir, CONFIG_FILE_NAME) : null;
@@ -139,7 +147,7 @@ export function createConfigIO(projectDir?: string): ConfigIO {
   let projectRaw: RawConfig | null = null;
   let unknownKeysWarned = false;
 
-  return {
+  const io: ConfigIO = {
     load: () => {
       const global = readGlobalRaw();
       if (projectPath) {
@@ -166,6 +174,20 @@ export function createConfigIO(projectDir?: string): ConfigIO {
       }
       return { global, project: projectRaw, projectStatus };
     },
+    updateLayer: (target, mutate, options = {}) => {
+      const filePath = target === "global" ? CONFIG_PATH : projectPath;
+      if (!filePath) {
+        throw new Error(`Cannot update ${target} config: no trusted project path`);
+      }
+      if (target === "project" && (projectStatus === "malformed" || projectStatus === "untrusted")) {
+        throw new Error(`Cannot update project config: project layer is ${projectStatus}`);
+      }
+      const latest = readLayerForUpdate(filePath, target === "global" || options.createIfMissing === true);
+      mutate(latest);
+      const validated = validateRawLayer(latest, filePath);
+      writeJsonAtomic(filePath, validated);
+      return io.load();
+    },
     saveGlobal: (config) => {
       writeJsonAtomic(CONFIG_PATH, config);
     },
@@ -177,6 +199,7 @@ export function createConfigIO(projectDir?: string): ConfigIO {
       writeJsonAtomic(projectPath, config);
     },
   };
+  return io;
 }
 
 /**
@@ -296,14 +319,47 @@ function malformedSection(projectPath: string, section: string): "malformed" {
 
 // ── Save ─────────────────────────────────────────────────────────────
 
-/** Write JSON atomically: tmp file in the same directory, then rename. */
+/** Read a target layer for a mutation without collapsing errors into an empty config. */
+function readLayerForUpdate(filePath: string, allowMissing: boolean): RawConfig {
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, "utf-8");
+  } catch (err) {
+    if (allowMissing && (err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new Error(`[subagents] Failed to read config ${filePath}: ${String(err)}`, { cause: err });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`[subagents] Failed to parse config ${filePath}: ${String(err)}`, { cause: err });
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error(`[subagents] Refusing to update malformed config ${filePath}: not a JSON object`);
+  }
+  if (parsed.agent !== undefined && !isPlainObject(parsed.agent)) {
+    throw new Error(`[subagents] Refusing to update malformed config ${filePath}: agent is not an object`);
+  }
+  if (parsed.concurrency !== undefined && !isPlainObject(parsed.concurrency)) {
+    throw new Error(`[subagents] Refusing to update malformed config ${filePath}: concurrency is not an object`);
+  }
+  return validateRawLayer(parsed, filePath);
+}
+
+/** Write JSON atomically with a unique same-directory temporary file. */
 function writeJsonAtomic(filePath: string, config: unknown): void {
-  const tmpPath = filePath + ".tmp";
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
-    console.error(`[subagents] Failed to save config: ${String(err)}`);
+    throw new Error(`[subagents] Failed to save config ${filePath}: ${String(err)}`, { cause: err });
+  } finally {
+    try {
+      fs.rmSync(tmpPath, { force: true });
+    } catch {
+      // Preserve the original read/write/rename failure.
+    }
   }
 }

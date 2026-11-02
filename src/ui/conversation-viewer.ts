@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * conversation-viewer.ts — Live conversation overlay for viewing agent sessions.
  *
@@ -91,6 +92,7 @@ export class ConversationViewer implements Component {
   private thinkingVisible: boolean;
 
   constructor(
+    private owner: ExtensionOwner,
     private tui: TUI,
     private session: AgentSession,
     private record: AgentRecord,
@@ -323,9 +325,9 @@ export class ConversationViewer implements Component {
 
     // Header
     lines.push(hrTop);
-    const name = getDisplayName(this.record.display.type);
+    const name = getDisplayName(this.owner, this.record.display.type);
 
-    const icon = statusIcon(this.record.lifecycle.status, th, this.record.display.type || undefined);
+    const icon = statusIcon(this.owner, this.record.lifecycle.status, th, this.record.display.type || undefined);
     // Build stats line like the widget
     const durationMs = (this.record.lifecycle.completedAt ?? Date.now()) - this.record.lifecycle.startedAt;
     const statsParts = buildStatsParts(

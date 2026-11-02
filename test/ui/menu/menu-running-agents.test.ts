@@ -143,7 +143,7 @@ describe("showRunningAgentsMenu", () => {
   it("uses ctx.ui.custom (not ctx.ui.select/runMenuLoop)", async () => {
     mockModules.mockManager.listAgents.mockReturnValue([makeRecord()]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
@@ -151,7 +151,7 @@ describe("showRunningAgentsMenu", () => {
   it("shows notification when no agents exist", async () => {
     mockModules.mockManager.listAgents.mockReturnValue([]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
       expect.stringContaining("No agents have been spawned this session"),
       "info",
@@ -165,7 +165,7 @@ describe("showRunningAgentsMenu", () => {
       makeRecord({ id: "agent-2", display: { type: "Explore", description: "Second" } }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     expect(selectListCalls.length).toBe(1);
     // Bulk rows (separator, Clear all / Clear done) follow the agent entries
     const agentItems = selectListCalls[0].items.filter((i) => i.value.startsWith("agent-"));
@@ -177,7 +177,7 @@ describe("showRunningAgentsMenu", () => {
       makeRecord({ id: "agent-1", display: { type: "general-purpose", description: "Test" } }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     expect(selectListCalls[0].items[0].label).toContain("general-purpose");
   });
 });
@@ -190,6 +190,7 @@ describe("buildAgentActionsList — actions submenu", () => {
 
   it("shows View result action for completed agent with result", () => {
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       makeRecord(),
       noopTheme,
@@ -208,6 +209,7 @@ describe("buildAgentActionsList — actions submenu", () => {
       error: "something went wrong",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -226,6 +228,7 @@ describe("buildAgentActionsList — actions submenu", () => {
       result: "",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -244,6 +247,7 @@ describe("buildAgentActionsList — actions submenu", () => {
       result: "",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -258,6 +262,7 @@ describe("buildAgentActionsList — actions submenu", () => {
 
   it("does not show Steer/Stop for completed agent", () => {
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       makeRecord(),
       noopTheme,
@@ -290,6 +295,7 @@ describe("showTextViewer (via buildAgentActionsList)", () => {
     });
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -319,6 +325,7 @@ describe("showTextViewer (via buildAgentActionsList)", () => {
     });
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -348,6 +355,7 @@ describe("showTextViewer (via buildAgentActionsList)", () => {
     });
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -378,6 +386,7 @@ describe("showTextViewer — component behavior", () => {
       },
     });
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -516,6 +525,7 @@ describe("buildAgentActionsList — stop/steer callback routing", () => {
     mockModules.mockManager.abort.mockReset();
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -542,6 +552,7 @@ describe("buildAgentActionsList — stop/steer callback routing", () => {
     });
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -571,6 +582,7 @@ describe("buildAgentActionsList — stop/steer callback routing", () => {
     mockModules.mockManager.steer.mockResolvedValue(true);
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -601,6 +613,7 @@ describe("buildAgentActionsList — stop/steer callback routing", () => {
     });
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -631,6 +644,7 @@ describe("buildAgentActionsList — completed agent with session", () => {
       result: "done",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -649,6 +663,7 @@ describe("buildAgentActionsList — completed agent with session", () => {
       result: "",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -667,6 +682,7 @@ describe("buildAgentActionsList — completed agent with session", () => {
       result: "done",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -685,6 +701,7 @@ describe("buildAgentActionsList — completed agent with session", () => {
       result: "",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -714,6 +731,7 @@ describe("buildAgentActionsList — completed agent with session", () => {
     });
 
     const list = buildAgentActionsList(
+      owner,
       ctx,
       record,
       noopTheme,
@@ -734,6 +752,7 @@ describe("buildAgentActionsList — completed agent with session", () => {
       result: "done",
     });
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       record,
       noopTheme,
@@ -766,7 +785,7 @@ describe("showRunningAgentsMenu — duration display", () => {
   async function openAgentLabels(records: AgentRecord[]): Promise<string[]> {
     mockModules.mockManager.listAgents.mockReturnValue(records);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     return selectListCalls[0].items.filter((i) => !i.value.startsWith("__")).map((i) => i.label);
   }
 
@@ -872,6 +891,7 @@ describe("clear actions for finished agents", () => {
 
   it("shows a Clear action for finished records", () => {
     const list = buildAgentActionsList(
+      owner,
       createMockCtx(),
       makeRecord(),
       noopTheme,
@@ -886,6 +906,7 @@ describe("clear actions for finished agents", () => {
   it("does not show a Clear action for running or queued records", () => {
     for (const status of ["running", "queued"] as const) {
       const list = buildAgentActionsList(
+        owner,
         createMockCtx(),
         makeRecord({
           lifecycle: { status, startedAt: Date.now() - 20000 },
@@ -907,6 +928,7 @@ describe("clear actions for finished agents", () => {
     const ctx = createMockCtx();
     const onClose = vi.fn();
     const list = buildAgentActionsList(
+      owner,
       ctx,
       makeRecord(),
       noopTheme,
@@ -925,7 +947,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-2", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     const labels = selectListCalls[0].items.map((i) => i.label);
     expect(labels).toContain("Clear all");
   });
@@ -936,7 +958,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-2", lifecycle: { status: "queued", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     const labels = selectListCalls[0].items.map((i) => i.label);
     expect(labels).not.toContain("Clear all");
     expect(labels).not.toContain("Clear done");
@@ -952,7 +974,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-6", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
 
     const row = selectListCalls[0].items.find((i) => i.label === "Clear all")!;
     expect(row).toBeDefined();
@@ -971,7 +993,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-2", lifecycle: { status: "stopped", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     const labels = selectListCalls[0].items.map((i) => i.label);
     expect(labels).toContain("Clear all");
     expect(labels).toContain("Clear done");
@@ -983,7 +1005,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-2", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
     const labels = selectListCalls[0].items.map((i) => i.label);
     expect(labels).toContain("Clear all");
     expect(labels).not.toContain("Clear done");
@@ -999,7 +1021,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-6", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
 
     const row = selectListCalls[0].items.find((i) => i.label === "Clear done")!;
     expect(row).toBeDefined();
@@ -1019,7 +1041,7 @@ describe("clear actions for finished agents", () => {
       makeRecord({ id: "agent-3", lifecycle: { status: "queued", startedAt: Date.now() - 20000 }, result: "" }),
     ]);
     const ctx = createMockCtx();
-    await showRunningAgentsMenu(ctx);
+    await showRunningAgentsMenu(owner, ctx);
 
     const row = selectListCalls[0].items.find((i) => i.label === "Stop 2 running agent(s)")!;
     expect(row).toBeDefined();
@@ -1047,7 +1069,7 @@ describe("clear actions for finished agents", () => {
         makeRecord({ id: "agent-3", lifecycle: { status: "stopped", startedAt: Date.now() - 20000 }, result: "" }),
       ]);
       const ctx = createMockCtx();
-      await showRunningAgentsMenu(ctx);
+      await showRunningAgentsMenu(owner, ctx);
       const values = selectListCalls[0].items.map((i) => i.value);
       expect(values).toEqual([
         "agent-1",
@@ -1067,9 +1089,12 @@ describe("clear actions for finished agents", () => {
         makeRecord({ id: "agent-2", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
       ]);
       const ctx = createMockCtx();
-      await showRunningAgentsMenu(ctx);
+      await showRunningAgentsMenu(owner, ctx);
       const values = selectListCalls[0].items.map((i) => i.value);
       expect(values).toEqual(["agent-1", "agent-2", "__sep__", "__stop-all", "__sep__", "__clear-all"]);
     });
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

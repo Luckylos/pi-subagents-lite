@@ -15,6 +15,7 @@
  *    the class.
  */
 
+import type { ExtensionOwner } from "../src/shell.js";
 import type {
   AgentSession,
   ExtensionAPI,
@@ -23,6 +24,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { SelectItem, SelectList } from "@earendil-works/pi-tui";
+
+/** A partial resource fixture crosses the private-class boundary once here. */
+export function asExtensionOwner<S extends object>(fake: S): ExtensionOwner & S {
+  return fake as ExtensionOwner & S;
+}
 
 /** Assert a fake session against the real AgentSession at a call boundary. */
 export function asAgentSession<S extends object>(fake: S): AgentSession & S {

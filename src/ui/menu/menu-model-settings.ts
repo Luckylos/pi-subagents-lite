@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-model-settings.ts — Model settings menu concern.
  *
@@ -16,7 +17,7 @@
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsList, type SettingItem } from "@earendil-works/pi-tui";
-import { getAgentConfig, getAllTypes } from "../../agents/agent-types.ts";
+
 import type { Theme } from "../types.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, createSearchableSelect, headerItem } from "./helpers.ts";
 import { agentBulletPrefix } from "../format.ts";
@@ -47,7 +48,11 @@ function defaultRowValue(
   return hasProjectDefault ? `${effectiveDefault} [project]` : effectiveDefault;
 }
 
-export async function showModelSettingsMenu(ctx: ExtensionCommandContext, modelOptions: string[]): Promise<void> {
+export async function showModelSettingsMenu(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  modelOptions: string[],
+): Promise<void> {
   const buildItems = (store: ReturnType<typeof getStore>, theme: Theme): SettingItem[] => {
     const items: SettingItem[] = [];
     const projectOffered = store.projectTargetOffered;
@@ -87,7 +92,7 @@ export async function showModelSettingsMenu(ctx: ExtensionCommandContext, modelO
       showClear: boolean,
       availableLevels?: AvailableLevels,
     ) =>
-      createModelSelectSubmenu({
+      createModelSelectSubmenu(owner, {
         modelOptions,
         showClear,
         projectOffered,
@@ -132,17 +137,17 @@ export async function showModelSettingsMenu(ctx: ExtensionCommandContext, modelO
     // default), alphabetical by model id. Rows show the type name, the
     // spawn-effective thinking level with its winning thinking source in
     // brackets, and the winning model layer's provenance tag.
-    const session = getSessionCtx();
+    const session = getSessionCtx(owner);
     const parentModel = session?.model ?? ctx.model;
     const parentModelId = parentModel ? `${parentModel.provider}/${parentModel.id}` : "(inherits parent)";
     const registry = session?.modelRegistry ?? ctx.modelRegistry;
-    const types = getAllTypes();
+    const types = owner.registry.getAllTypes();
 
     const agentConfigs: Record<string, AgentTypeModelConfig | undefined> = {};
     for (const type of types) {
       // Null entries read as absent downstream, so every type is recorded.
       sessionOverrides[type] = store.sessionModelOverride(type);
-      agentConfigs[type] = getAgentConfig(type);
+      agentConfigs[type] = owner.registry.getAgentConfig(type);
     }
 
     // One settings read per build feeds both thinking displays: the global
@@ -172,7 +177,7 @@ export async function showModelSettingsMenu(ctx: ExtensionCommandContext, modelO
         const thinkingLabel = formatDisplayedThinking({ level: row.thinking, source: row.source });
         items.push({
           id: `type:${row.type}`,
-          label: `${agentBulletPrefix(row.type)}${row.type}`,
+          label: `${agentBulletPrefix(owner, row.type)}${row.type}`,
           // SettingsList truncates the value with no ellipsis, so the row carries no
           // reserved padding: an empty tag contributes no space.
           currentValue: [thinkingLabel, row.tag].filter(Boolean).join(" "),
@@ -197,10 +202,13 @@ export async function showModelSettingsMenu(ctx: ExtensionCommandContext, modelO
         description: "Add a model override for an agent type that currently inherits.",
         submenu: (_currentValue, subDone) =>
           createSearchableSelect(
-            nonOverridden.map((typeName) => ({ value: typeName, label: `${agentBulletPrefix(typeName)}${typeName}` })),
+            nonOverridden.map((typeName) => ({
+              value: typeName,
+              label: `${agentBulletPrefix(owner, typeName)}${typeName}`,
+            })),
             {
               onSelect: (typeName) => {
-                const effectiveModel = store.modelFor(typeName, parentModelId, getAgentConfig(typeName));
+                const effectiveModel = store.modelFor(typeName, parentModelId, owner.registry.getAgentConfig(typeName));
                 return modelSubmenuFor(typeName, effectiveModel, false)(effectiveModel, subDone);
               },
               onCancel: () => subDone(),
@@ -245,14 +253,14 @@ export async function showModelSettingsMenu(ctx: ExtensionCommandContext, modelO
   let rebuild: ((items: any[]) => void) | undefined;
 
   await ctx.ui.custom((_tui, theme, _kb, done) => {
-    const store = getStore();
+    const store = getStore(owner);
     const items = buildItems(store, theme);
 
     const settingsList = new SettingsList(
       items,
       15,
       buildSettingsListTheme(theme),
-      (_id, _v) => rebuild?.(buildItems(getStore(), theme)),
+      (_id, _v) => rebuild?.(buildItems(getStore(owner), theme)),
       () => done(undefined),
     );
     return new SettingsListWrapper(settingsList, {

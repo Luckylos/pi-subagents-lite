@@ -13,14 +13,17 @@ const { mockAbort, mockMatchAgents, mockListAgents } = vi.hoisted(() => ({
   mockListAgents: vi.fn(),
 }));
 
-vi.mock("../../src/shell.js", () =>
-  shellMock({
-    manager: {
-      abort: mockAbort,
-      matchAgents: mockMatchAgents,
-      listAgents: mockListAgents,
-    },
-  }),
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() =>
+      shellMock({
+        manager: {
+          abort: mockAbort,
+          matchAgents: mockMatchAgents,
+          listAgents: mockListAgents,
+        },
+      }))(),
+  ),
 );
 
 import { executeStopAgentTool } from "../../src/agents/tool-execution.js";
@@ -34,7 +37,7 @@ function agent(status: AgentStatus, id = ID, type = "builder"): AgentRecord {
 }
 
 function stop(params: Record<string, unknown>) {
-  return executeStopAgentTool("call_1", params, undefined, undefined, asExtensionContext({}));
+  return executeStopAgentTool(owner, "call_1", params, undefined, undefined, asExtensionContext({}));
 }
 
 describe("executeStopAgentTool", () => {
@@ -156,3 +159,6 @@ describe("executeStopAgentTool", () => {
     expect(result.content[0].text).not.toContain("r4444444 (code)");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

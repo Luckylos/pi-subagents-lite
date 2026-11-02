@@ -57,7 +57,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 0);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -73,7 +73,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0.12, 5);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -89,7 +89,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0.01, 1);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -104,7 +104,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 2);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -122,7 +122,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0.5, 3);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -139,7 +139,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 0);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -156,7 +156,7 @@ describe("status bar format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 1);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -178,7 +178,7 @@ describe("status bar cost from accumulator", () => {
     activity = new Map();
     // No running agents, but totalAgentCost is $1.23 (from evicted agents)
     manager = makeMockManager([], 1.23, 2);
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -197,7 +197,7 @@ describe("status bar cost from accumulator", () => {
     activity = new Map();
     // Running agent with $0 cost, but session accumulator has $2.50
     manager = makeMockManager([], 2.5, 1);
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -213,7 +213,7 @@ describe("status bar cost from accumulator", () => {
     const uiCtx = makeUICtx();
     activity = new Map();
     manager = makeMockManager([], 1.5, 1);
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(false);
     widget.setUICtx(uiCtx);
 
@@ -231,7 +231,7 @@ describe("status bar compact format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0.12, 5);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setStatusBarFormat("compact");
     widget.setUICtx(uiCtx);
@@ -250,7 +250,7 @@ describe("status bar compact format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 2);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setStatusBarFormat("compact");
     widget.setUICtx(uiCtx);
@@ -266,7 +266,7 @@ describe("status bar compact format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0.5, 3);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setStatusBarFormat("compact");
     widget.setUICtx(uiCtx);
@@ -282,7 +282,7 @@ describe("status bar compact format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 0);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setShowCost(true);
     widget.setStatusBarFormat("compact");
     widget.setUICtx(uiCtx);
@@ -298,7 +298,7 @@ describe("status bar compact format", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([], 0, 0);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setStatusBarFormat("compact");
     widget.setUICtx(uiCtx);
 
@@ -315,7 +315,7 @@ describe("status line lifecycle (record-existence-driven)", () => {
   it("stays visible, dimmed, after rows age out of the retention window", () => {
     const uiCtx = makeUICtx();
     const manager = makeMockManager([], 0.01, 2);
-    const widget = new AgentWidget(manager, () => undefined);
+    const widget = new AgentWidget(owner, manager, () => undefined);
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -335,7 +335,7 @@ describe("status line lifecycle (record-existence-driven)", () => {
   it("hides the status line when zero records exist (Clear)", () => {
     const uiCtx = makeUICtx();
     const manager = makeMockManager([], 0.01, 2);
-    const widget = new AgentWidget(manager, () => undefined);
+    const widget = new AgentWidget(owner, manager, () => undefined);
     widget.setShowCost(true);
     widget.setUICtx(uiCtx);
 
@@ -353,7 +353,7 @@ describe("status line lifecycle (record-existence-driven)", () => {
   it("re-shows with the active count when a new record spawns after a full clear", () => {
     const uiCtx = makeUICtx();
     const manager = makeMockManager([], 0, 0);
-    const widget = new AgentWidget(manager, () => undefined);
+    const widget = new AgentWidget(owner, manager, () => undefined);
     widget.setUICtx(uiCtx);
 
     manager.listAgents = () => [];
@@ -375,7 +375,7 @@ describe("status line lifecycle (record-existence-driven)", () => {
   it("does not rewrite the status text on ticks when unchanged", () => {
     const uiCtx = makeUICtx();
     const manager = makeMockManager([], 0.01, 2);
-    const widget = new AgentWidget(manager, () => undefined);
+    const widget = new AgentWidget(owner, manager, () => undefined);
     widget.setShowCost(true);
     widget.setFinishedRetentionMinutes(5);
     widget.setUICtx(uiCtx);
@@ -391,3 +391,6 @@ describe("status line lifecycle (record-existence-driven)", () => {
     expect(getStatusText(uiCtx)).toContain("◇ Agents: 2 done");
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

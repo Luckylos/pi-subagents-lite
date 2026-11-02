@@ -17,7 +17,7 @@ describe("runAgent — grace turns", () => {
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
     // maxTurns=1, no graceTurns → default 6 → steer at turn 1, abort at turn 1+6=7
-    const promise = runAgent(fakeCtx(), "test-agent", "do something", {
+    const promise = runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       maxTurns: 1,
     });
@@ -47,7 +47,7 @@ describe("runAgent — grace turns", () => {
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
     // maxTurns=2, graceTurns=3 → steer at turn 2, abort at turn 2+3=5
-    const promise = runAgent(fakeCtx(), "test-agent", "do something", {
+    const promise = runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       maxTurns: 2,
       graceTurns: 3,
@@ -79,7 +79,7 @@ describe("runAgent — grace turns", () => {
 
     // maxTurns=2, graceTurns=0 → steer at turn 2, abort at turn 3
     // (steer and abort can't fire on same turn due to if/else-if structure)
-    const promise = runAgent(fakeCtx(), "test-agent", "do something", {
+    const promise = runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       maxTurns: 2,
       graceTurns: 0,
@@ -131,7 +131,7 @@ describe("runAgent — grace turns", () => {
     session.steer = vi.fn(() => steerPromise);
     session.abort = vi.fn(() => abortPromise);
 
-    const promise = runAgent(fakeCtx(), "test-agent", "do something", {
+    const promise = runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       maxTurns: 1,
       graceTurns: 1,
@@ -158,7 +158,7 @@ describe("runAgent — grace turns", () => {
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
     const controller = new AbortController();
-    const promise = runAgent(fakeCtx(), "test-agent", "do something", {
+    const promise = runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       signal: controller.signal,
     });
@@ -187,7 +187,7 @@ describe("runAgent — grace turns", () => {
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
     // maxTurns=1, graceTurns=5 → steer at turn 1, abort at turn 6
-    const promise = runAgent(fakeCtx(), "test-agent", "do something", {
+    const promise = runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       maxTurns: 1,
       graceTurns: 5,
@@ -209,3 +209,6 @@ describe("runAgent — grace turns", () => {
     expect(result.turnLimited).toBe(true);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

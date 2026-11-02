@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * restart-last-agents.ts — Find and replay Agent tool calls from session history.
  *
@@ -11,7 +12,7 @@ import type { UICtx } from "../ui/agent-widget.ts";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { getCoordinator, getManager, getPiInstance, getStore, getWidget } from "../shell.ts";
 import { parseThinkingChoice, findModelInRegistry } from "../utils.ts";
-import { resolveTypeOrDiscover, getAgentConfig } from "./agent-types.ts";
+
 import { computeSpawnTarget, surfaceSpawnTargetWarnings } from "../spawn/spawn-target.ts";
 import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 
@@ -83,6 +84,7 @@ function skippedCallLabel(call: AgentCallParams, reason: string): string {
  * Returns a status string for the caller to collect: "restarted: ..." or "skipped: ...".
  */
 async function resolveAndSpawn(
+  owner: ExtensionOwner,
   call: AgentCallParams,
   ctx: ExtensionCommandContext,
   running: Set<string>,
@@ -102,7 +104,7 @@ async function resolveAndSpawn(
   // target without a worktree_path is a trusted non-target (no validation,
   // no gate). Invalid targets skip with the self-correctable error; untrusted
   // ones still spawn with their project resources and agent types ignored.
-  const target = await computeSpawnTarget(ctx, call.worktree_path);
+  const target = await computeSpawnTarget(owner, ctx, call.worktree_path);
   surfaceSpawnTargetWarnings(ctx.ui, target);
   if (!target.ok) {
     return { skipped: skippedCallLabel(call, target.error) };
@@ -112,19 +114,19 @@ async function resolveAndSpawn(
   // user has not disabled implicit extension loading — same gate as before,
   // now keyed off the validated path instead of the raw argument.
   const targetAgentsDir =
-    target.projectTrusted && target.resolvedPath && getStore().agent.loadExtensionsImplicitly !== false
+    target.projectTrusted && target.resolvedPath && getStore(owner).agent.loadExtensionsImplicitly !== false
       ? `${target.resolvedPath}/.pi/agents`
       : undefined;
-  const resolution = await resolveTypeOrDiscover(type, targetAgentsDir);
+  const resolution = await owner.registry.resolveTypeOrDiscover(type, targetAgentsDir);
   if (resolution.kind === "not-found" || resolution.kind === "ambiguous") {
     return { skipped: skippedCallLabel(call, "unknown type") };
   }
 
   const resolvedType = resolution.key;
-  const agentConfig = getAgentConfig(resolvedType);
-  const maxTurns = call.max_turns ?? agentConfig?.maxTurns ?? getStore().agent.defaultMaxTurns;
+  const agentConfig = owner.registry.getAgentConfig(resolvedType);
+  const maxTurns = call.max_turns ?? agentConfig?.maxTurns ?? getStore(owner).agent.defaultMaxTurns;
   const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
-  const effectiveModelStr = getStore().modelFor(resolvedType, parentModelId, agentConfig);
+  const effectiveModelStr = getStore(owner).modelFor(resolvedType, parentModelId, agentConfig);
   const model = effectiveModelStr ? findModelInRegistry(effectiveModelStr, ctx.modelRegistry, ctx.model) : undefined;
   const modelKey = model ? `${model.provider}/${model.id}` : undefined;
   // Explicit > frontmatter only: per-model and defaultThinking are owned by
@@ -145,7 +147,7 @@ async function resolveAndSpawn(
     modelKey,
     maxTurns,
     thinkingLevel,
-    graceTurns: getStore().agent.graceTurns,
+    graceTurns: getStore(owner).agent.graceTurns,
     worktreePath: target.resolvedPath,
     worktreeLabel: target.worktreeLabel,
     projectTrusted: target.projectTrusted,
@@ -161,7 +163,10 @@ async function resolveAndSpawn(
  * Skips agents whose type + description match a currently running agent.
  * Returns what was restarted and what was skipped.
  */
-export async function handleRestartLastAgents(ctx: ExtensionCommandContext): Promise<RestartResult> {
+export async function handleRestartLastAgents(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+): Promise<RestartResult> {
   const entries = ctx.sessionManager.getEntries();
   const calls = findLastAgentCallsFromEntries(entries);
 
@@ -169,9 +174,9 @@ export async function handleRestartLastAgents(ctx: ExtensionCommandContext): Pro
     return { restarted: [], skipped: [] };
   }
 
-  const manager = getManager();
-  const coordinator = getCoordinator();
-  const pi = getPiInstance();
+  const manager = getManager(owner);
+  const coordinator = getCoordinator(owner);
+  const pi = getPiInstance(owner);
 
   if (!manager || !coordinator || !pi) {
     return { restarted: [], skipped: [] };
@@ -185,7 +190,7 @@ export async function handleRestartLastAgents(ctx: ExtensionCommandContext): Pro
   );
 
   // Ensure widget is set up so spawned agents appear in the UI.
-  const widget = getWidget();
+  const widget = getWidget(owner);
   if (widget) {
     widget.setUICtx(ctx.ui as unknown as UICtx);
     widget.ensureTimer();
@@ -196,7 +201,7 @@ export async function handleRestartLastAgents(ctx: ExtensionCommandContext): Pro
 
   for (const call of calls) {
     try {
-      const result = await resolveAndSpawn(call, ctx, running, coordinator, pi);
+      const result = await resolveAndSpawn(owner, call, ctx, running, coordinator, pi);
       if ("restarted" in result) restarted.push(result.restarted);
       else skipped.push(result.skipped);
     } catch (err) {

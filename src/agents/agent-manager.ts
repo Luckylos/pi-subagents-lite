@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * agent-manager.ts — Tracks agents, per-model concurrency, background execution.
  *
@@ -20,7 +21,7 @@ import {
   type SpawnConfig,
 } from "../types.ts";
 import type { SubagentType } from "./types.ts";
-import { getAgentConfig } from "./agent-types.ts";
+
 import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.ts";
 import { errorMessage, toSingleLine } from "../utils.ts";
 import { DEFAULT_GRACE_TURNS } from "../config/config-io.ts";
@@ -121,7 +122,12 @@ export class AgentManager {
 
   private queue: { id: string; modelKey: string; args: SpawnArgs }[] = [];
 
-  constructor(onComplete?: OnAgentComplete, concurrency?: ConcurrencyConfig, onStart?: OnAgentStart) {
+  constructor(
+    private owner: ExtensionOwner,
+    onComplete?: OnAgentComplete,
+    concurrency?: ConcurrencyConfig,
+    onStart?: OnAgentStart,
+  ) {
     this.onComplete = onComplete;
     this.onStart = onStart;
     this.defaultConcurrency = concurrency?.default ?? DEFAULT_CONCURRENCY_LIMIT;
@@ -307,16 +313,21 @@ export class AgentManager {
     this.watchdog.start(id);
 
     // Output transcript: agent frontmatter overrides the global setting (default false).
-    const agentConfig = getAgentConfig(type);
-    const outputTranscript = agentConfig?.outputTranscript ?? getStore().agent.outputTranscript;
+    const agentConfig = this.owner.registry.getAgentConfig(type);
+    const outputTranscript = agentConfig?.outputTranscript ?? getStore(this.owner).agent.outputTranscript;
     if (outputTranscript) {
-      record.execution.outputLog = new AgentOutputLog(id, prompt, undefined, getStore().agent.outputThinkingBufferSize);
+      record.execution.outputLog = new AgentOutputLog(
+        id,
+        prompt,
+        undefined,
+        getStore(this.owner).agent.outputThinkingBufferSize,
+      );
       record.display.outputFile = record.execution.outputLog.path;
     }
 
     this.onStart?.(record);
 
-    const promise = runAgent(ctx, type, prompt, {
+    const promise = runAgent(this.owner, ctx, type, prompt, {
       pi,
       agentId: id,
       model: options.model,
@@ -632,7 +643,7 @@ export class AgentManager {
         record.stats.turnCount = previousTurns + turnCount;
       }),
       maxTurns: record.stats.maxTurns,
-      graceTurns: getStore().agent.graceTurns ?? DEFAULT_GRACE_TURNS,
+      graceTurns: getStore(this.owner).agent.graceTurns ?? DEFAULT_GRACE_TURNS,
       signal: abortController.signal,
     });
     this.attachSettlementChain(record, promise, concurrencySlot);
@@ -738,7 +749,7 @@ export class AgentManager {
 
   /** Stop agents violating tool/idle timeouts. Thresholds are read live so menu changes apply to running agents. */
   private checkWatchdogs(): void {
-    const { toolTimeoutMinutes, idleTimeoutMinutes } = getStore().agent;
+    const { toolTimeoutMinutes, idleTimeoutMinutes } = getStore(this.owner).agent;
     const decisions = this.watchdog.check(
       toolTimeoutMinutes * MINUTE_MS,
       idleTimeoutMinutes * MINUTE_MS,
@@ -760,6 +771,7 @@ export class AgentManager {
     clearInterval(this.watchdogInterval);
     this.queue = [];
     for (const record of this.agents.values()) {
+      record.execution.abortController?.abort();
       // Queued subagents never start: fail them honestly so the waiting tool
       // call resumes with an explicit error instead of hanging (US-9).
       if (record.lifecycle.status === "queued") {

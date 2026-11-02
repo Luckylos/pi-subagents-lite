@@ -27,11 +27,14 @@ const { mockListAgents, mockStore } = vi.hoisted(() => ({
 /*  Global mocks                                                      */
 /* ------------------------------------------------------------------ */
 
-vi.mock("../../src/shell.js", () =>
-  shellMock({
-    manager: { listAgents: mockListAgents },
-    store: mockStore,
-  }),
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() =>
+      shellMock({
+        manager: { listAgents: mockListAgents },
+        store: mockStore,
+      }))(),
+  ),
 );
 
 /* ------------------------------------------------------------------ */
@@ -47,7 +50,7 @@ describe("AgentStatus tool execute behavior", () => {
   it("returns empty state message when no agents exist", async () => {
     mockListAgents.mockReturnValue([]);
 
-    const result = await executeAgentStatusTool("call_1", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_1", {}, undefined, undefined, asExtensionContext({}));
 
     expect(result.content[0].text).toContain("No agents");
     expect(result.content[0].text).toContain("Don't poll");
@@ -59,7 +62,7 @@ describe("AgentStatus tool execute behavior", () => {
       { id: "abc123def456ghijk", display: { type: "builder" }, lifecycle: { status: "running" } },
     ]);
 
-    const result = await executeAgentStatusTool("call_2", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_2", {}, undefined, undefined, asExtensionContext({}));
 
     const text = result.content[0].text;
     // Contract: agent entries use "{shortId} ({type}) {status}" — this regex
@@ -75,7 +78,7 @@ describe("AgentStatus tool execute behavior", () => {
       { id: "ddd333eee444fffdd", display: { type: "reviewer" }, lifecycle: { status: "completed" } },
     ]);
 
-    const result = await executeAgentStatusTool("call_3", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_3", {}, undefined, undefined, asExtensionContext({}));
 
     const text = result.content[0].text;
     // Contract: multiple agents comma-separated, each entry matching the
@@ -93,7 +96,7 @@ describe("AgentStatus tool execute behavior", () => {
       { id: "id5", display: { type: "e" }, lifecycle: { status: "error" } },
     ]);
 
-    const result = await executeAgentStatusTool("call_4", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_4", {}, undefined, undefined, asExtensionContext({}));
 
     const text = result.content[0].text;
     expect(text).toMatch(/id1 \(a\) running/);
@@ -107,7 +110,7 @@ describe("AgentStatus tool execute behavior", () => {
   it("always includes nudge message", async () => {
     mockListAgents.mockReturnValue([]);
 
-    const result = await executeAgentStatusTool("call_5", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_5", {}, undefined, undefined, asExtensionContext({}));
 
     expect(result.content[0].text).toContain("Don't poll — you'll receive notifications when agents complete.");
   });
@@ -121,7 +124,7 @@ describe("AgentStatus tool execute behavior", () => {
       },
     ]);
 
-    const result = await executeAgentStatusTool("call_6", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_6", {}, undefined, undefined, asExtensionContext({}));
 
     const text = result.content[0].text;
     // Contract: short ID is always 8 characters
@@ -132,7 +135,7 @@ describe("AgentStatus tool execute behavior", () => {
   it("returns no error flag on success", async () => {
     mockListAgents.mockReturnValue([]);
 
-    const result = await executeAgentStatusTool("call_7", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_7", {}, undefined, undefined, asExtensionContext({}));
 
     expect(result.isError).toBeUndefined();
   });
@@ -180,7 +183,7 @@ describe("AgentStatus limit-bounded output", () => {
       },
     ]);
 
-    const result = await executeAgentStatusTool("call_l1", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_l1", {}, undefined, undefined, asExtensionContext({}));
     const text = result.content[0].text;
 
     // All in-progress agents appear regardless of the limit.
@@ -215,7 +218,7 @@ describe("AgentStatus limit-bounded output", () => {
       },
     ]);
 
-    const result = await executeAgentStatusTool("call_l2", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_l2", {}, undefined, undefined, asExtensionContext({}));
     const text = result.content[0].text;
 
     // Manager returns newest-started first (a, b, c); settlement order is b(300), c(200), a(100).
@@ -233,7 +236,7 @@ describe("AgentStatus limit-bounded output", () => {
       },
     ]);
 
-    const result = await executeAgentStatusTool("call_l3", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_l3", {}, undefined, undefined, asExtensionContext({}));
 
     expect(result.content[0].text).toBe(
       "abc123de (builder) running, ddd333ee (reviewer) completed\n\n" +
@@ -251,7 +254,7 @@ describe("AgentStatus limit-bounded output", () => {
       })),
     );
 
-    const result = await executeAgentStatusTool("call_l4", {}, undefined, undefined, asExtensionContext({}));
+    const result = await executeAgentStatusTool(owner, "call_l4", {}, undefined, undefined, asExtensionContext({}));
     const text = result.content[0].text;
 
     expect(text).toContain("and 2 more settled agents");
@@ -260,3 +263,6 @@ describe("AgentStatus limit-bounded output", () => {
     expect(text).not.toContain("a1 (t)");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

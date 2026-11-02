@@ -42,6 +42,7 @@ describe("ConfigStore reads", () => {
     // only defaults the derived compact variant.
     const io: ConfigIO = {
       load: () => ({ global: { agent: { widgetMaxLines: 12 } }, project: null, projectStatus: "untrusted" }),
+      updateLayer: () => ({ global: { agent: { widgetMaxLines: 12 } }, project: null, projectStatus: "untrusted" }),
       saveGlobal: () => {},
       saveProject: () => {},
     };

@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * format.ts — Consolidated display formatting helpers.
  *
@@ -8,12 +9,10 @@
  * Display formatting helpers with minimal runtime dependencies (config store, agent registry).
  *
  * Color-gated functions use applyAgentColor to check the showAgentColors toggle
- * via getStore() and disable agent-specific coloring globally.
+ * via getStore(owner) and disable agent-specific coloring globally.
  */
 
-import { getAgentConfig } from "../agents/agent-types.ts";
 import { agentColorAnsi } from "../agent-color.ts";
-import { getStore } from "../shell.ts";
 import type { SubagentType, AgentInvocation } from "../agents/types.ts";
 import type { AgentRecord, AgentStatus } from "../types.ts";
 import type { Theme } from "./types.ts";
@@ -24,11 +23,16 @@ import type { ModelThinkingPlacement } from "../config/types.ts";
 
 /** Wrap text with an agent's ANSI color when showAgentColors is ON and a color is available.
  * @param text the text to wrap
- * @param ansiColor raw ANSI foreground code from agentColorAnsi()
+ * @param ansiColor raw ANSI foreground code from agentColorAnsi(owner)
  * @param fallback called when colors are off or no agent color is configured
  */
-export function applyAgentColor(text: string, ansiColor: string, fallback: () => string): string {
-  if (!getStore().agent.showAgentColors) return fallback();
+export function applyAgentColor(
+  owner: ExtensionOwner,
+  text: string,
+  ansiColor: string,
+  fallback: () => string,
+): string {
+  if (owner.store?.agent.showAgentColors === false) return fallback();
   return ansiColor ? `${ansiColor}${text}\u001b[39m` : fallback();
 }
 
@@ -49,10 +53,15 @@ const STATUS_ICON: Record<AgentStatus, { icon: string; color: "accent" | "succes
 /** Colored icon for an agent status, or a plain ▸ when no status is known yet.
  * When agentType has a configured color, the icon is tinted with that color
  * instead of the theme's status color. */
-export function statusIcon(status: string | undefined, theme: Theme, agentType?: string): string {
+export function statusIcon(
+  owner: ExtensionOwner,
+  status: string | undefined,
+  theme: Theme,
+  agentType?: string,
+): string {
   const entry = STATUS_ICON[status as AgentStatus];
   if (!entry) return "▸";
-  return applyAgentColor(entry.icon, agentColorAnsi(agentType), () => theme.fg(entry.color, entry.icon));
+  return applyAgentColor(owner, entry.icon, agentColorAnsi(owner, agentType), () => theme.fg(entry.color, entry.icon));
 }
 
 // ---- Internal helpers (used by buildStatsParts) ----
@@ -169,23 +178,23 @@ export function buildStatsParts(
 }
 
 /** Get display name for any agent type (built-in or custom). */
-export function getDisplayName(type: SubagentType): string {
-  const config = getAgentConfig(type);
+export function getDisplayName(owner: ExtensionOwner, type: SubagentType): string {
+  const config = owner.registry.getAgentConfig(type);
   return config?.displayName ?? config?.name ?? "Agent";
 }
 
 /** Colored bullet prefix for agent names in pickers/menus.
  * Returns "• " with agent color when showAgentColors is ON and agent has a configured color,
  * or empty string when colors are off or agent has no color. */
-export function agentBulletPrefix(agentType: string | undefined): string {
-  const bullet = applyAgentColor("•", agentColorAnsi(agentType), () => "");
+export function agentBulletPrefix(owner: ExtensionOwner, agentType: string | undefined): string {
+  const bullet = applyAgentColor(owner, "•", agentColorAnsi(owner, agentType), () => "");
   return bullet ? `${bullet} ` : "";
 }
 
 /** Wrap text with agent color when showAgentColors is ON and agent has a configured color.
  * Returns plain text when colors are off, agent has no color, or agentType is undefined. */
-export function agentColoredText(text: string, agentType: string | undefined): string {
-  return applyAgentColor(text, agentColorAnsi(agentType), () => text);
+export function agentColoredText(owner: ExtensionOwner, text: string, agentType: string | undefined): string {
+  return applyAgentColor(owner, text, agentColorAnsi(owner, agentType), () => text);
 }
 
 /** Tool name to human-readable action for activity descriptions. */

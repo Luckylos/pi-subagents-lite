@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../../shell.ts";
 /**
  * model-select-submenu.ts — Target + model override submenu (ADR-0008).
  *
@@ -39,6 +40,7 @@ export interface ModelSelectSubmenuOptions {
 }
 
 export function createModelSelectSubmenu(
+  owner: ExtensionOwner,
   options: ModelSelectSubmenuOptions,
 ): (currentValue: string, done: (selectedValue?: string) => void) => Component {
   const currentModel =
@@ -61,7 +63,7 @@ export function createModelSelectSubmenu(
         })("", subDone);
       }
       const target = id as "session" | "global" | "project";
-      const store = getStore();
+      const store = getStore(owner);
       const configuredModels = extractConfiguredModels(store.agentConfigSnapshot());
       return new SearchableSelectDialog(
         buildModelOptions(options.modelOptions, currentModel, configuredModels),

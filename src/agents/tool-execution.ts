@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 import { getStatusNote, formatStopReason } from "../status-note.ts";
 /**
  * tool-execution.ts — Agent tool execution handlers.
@@ -9,10 +10,11 @@ import { getStatusNote, formatStopReason } from "../status-note.ts";
 
 import type { ExtensionContext, ToolCallEvent } from "@earendil-works/pi-coding-agent";
 
+import type { ConfigStore } from "../config/config-store.ts";
 import type { AgentRecord, ThinkingLevel } from "../types.ts";
 import { SHORT_ID_LENGTH } from "../types.ts";
 import type { AgentConfig } from "./types.ts";
-import { getAgentConfig, resolveTypeOrDiscover } from "./agent-types.ts";
+
 import { getSessionContextPercent } from "./usage.ts";
 import { computeSpawnTarget, surfaceSpawnTargetWarnings } from "../spawn/spawn-target.ts";
 
@@ -41,14 +43,16 @@ function successResult(text: string, details?: Record<string, unknown>) {
  * with.
  */
 async function predictSpawnThinking(
+  owner: ExtensionOwner,
   ctx: ExtensionContext,
   rawWorktree: unknown,
   agentConfig: AgentConfig | undefined,
   effectiveModel: string | undefined,
+  store: ConfigStore,
 ): Promise<ThinkingLevel | undefined> {
   // Non-string values count as omitted — computeSpawnTarget owns that
   // convention (raw arguments are unchecked), so the raw value passes through.
-  const target = await computeSpawnTarget(ctx, rawWorktree);
+  const target = await computeSpawnTarget(owner, ctx, rawWorktree);
   const modelKey = effectiveModel || (ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "");
   const parsed = parseModelKey(modelKey);
   const perModel =
@@ -60,7 +64,7 @@ async function predictSpawnThinking(
   return resolveThinkingLevel({
     frontmatter: agentConfig?.thinkingLevel,
     perModel,
-    defaultThinking: getStore().agent.defaultThinking,
+    defaultThinking: store.agent.defaultThinking,
     parentLevel: ctx.thinkingLevel,
   });
 }
@@ -72,12 +76,13 @@ async function predictSpawnThinking(
  * counts-as-omitted convention for non-blank strings.
  */
 async function resolveWorktree(
+  owner: ExtensionOwner,
   ctx: ExtensionContext,
   rawWorktreePath: unknown,
 ): Promise<
   { ok: true; resolvedPath?: string; worktreeLabel?: string; projectTrusted: boolean } | { ok: false; error: string }
 > {
-  const target = await computeSpawnTarget(ctx, rawWorktreePath);
+  const target = await computeSpawnTarget(owner, ctx, rawWorktreePath);
   surfaceSpawnTargetWarnings(ctx.ui, target);
   if (!target.ok) {
     return { ok: false, error: target.error };
@@ -153,15 +158,29 @@ export function formatResultContent(record: AgentRecord): string {
 // --- Tool execute handlers ---
 
 export async function executeAgentTool(
+  owner: ExtensionOwner,
   _toolCallId: string,
   params: Record<string, unknown>,
   signal: AbortSignal | undefined,
   _onUpdate: ((update: any) => void) | undefined,
   ctx: ExtensionContext,
 ): Promise<any> {
+  // Capture the session resources before any await. On-demand discovery can
+  // outlive a /new or /reload; it must never continue against the replacement.
+  const generation = owner.generation;
+  const store = getStore(owner);
+  const coordinator = getCoordinator(owner);
+  if (!coordinator) throw new Error("Subagents session has not started");
+  const assertCurrentSession = (): void => {
+    if (owner.generation !== generation || owner.store !== store || owner.coordinator !== coordinator) {
+      throw new Error("Subagents session changed while resolving the agent type");
+    }
+  };
+
   // Validate worktree_path early — needed for on-demand agent discovery.
   // Raw and unchecked: computeSpawnTarget treats non-strings as omitted.
-  const resolved = await resolveWorktree(ctx, params.worktree_path);
+  const resolved = await resolveWorktree(owner, ctx, params.worktree_path);
+  assertCurrentSession();
   if (!resolved.ok) throw new Error(resolved.error);
   const validatedWorktreePath = resolved.resolvedPath;
   const worktreeLabel = resolved.worktreeLabel;
@@ -171,7 +190,8 @@ export async function executeAgentTool(
   // When worktree_path is set, also scan the target's .pi/agents/ directory, unless
   // the target is an untrusted cross-repo project (its agent types stay hidden).
   const targetAgentsDir = projectTrusted && validatedWorktreePath ? `${validatedWorktreePath}/.pi/agents` : undefined;
-  const resolution = await resolveTypeOrDiscover(type, targetAgentsDir);
+  const resolution = await owner.registry.resolveTypeOrDiscover(type, targetAgentsDir);
+  assertCurrentSession();
   if (resolution.kind === "ambiguous") {
     // Two or more registered types differ only by case — never a silent pick.
     throw new Error(
@@ -189,8 +209,8 @@ export async function executeAgentTool(
   const runInBackground = params.run_in_background as boolean | undefined;
   const maxTurns =
     (params.max_turns as number | undefined) ??
-    getAgentConfig(resolvedType)?.maxTurns ??
-    getStore().agent.defaultMaxTurns;
+    owner.registry.getAgentConfig(resolvedType)?.maxTurns ??
+    store.agent.defaultMaxTurns;
 
   const modelStr = params.model as string | undefined;
   const model = findModelInRegistry(modelStr, ctx.modelRegistry, ctx.model);
@@ -208,16 +228,15 @@ export async function executeAgentTool(
   // invocation must never carry it; the parent's level needs no trust gate.
   const thinkingLevel = resolveThinkingLevel({
     explicit: parseThinkingChoice(params.thinking as string | undefined),
-    frontmatter: getAgentConfig(resolvedType)?.thinkingLevel,
+    frontmatter: owner.registry.getAgentConfig(resolvedType)?.thinkingLevel,
     parentLevel: ctx.thinkingLevel,
   });
 
-  const coordinator = getCoordinator()!;
   // Background spawns (explicit or forceBackground) never bind to the parent
   // run's interrupt signal — only foreground spawns can be interrupted.
-  const isBackground = runInBackground || getStore().agent.forceBackground;
+  const isBackground = runInBackground || store.agent.forceBackground;
 
-  const result = await coordinator.spawn(getPiInstance(), ctx, {
+  const result = await coordinator.spawn(getPiInstance(owner), ctx, {
     type: resolvedType,
     prompt,
     description,
@@ -225,7 +244,7 @@ export async function executeAgentTool(
     modelKey,
     maxTurns,
     thinkingLevel,
-    graceTurns: getStore().agent.graceTurns,
+    graceTurns: store.agent.graceTurns,
     worktreePath: validatedWorktreePath,
     worktreeLabel,
     projectTrusted,
@@ -271,8 +290,8 @@ function shortId(record: AgentRecord): string {
  * Build a compact list of running (or queued) agents.
  * Format: "short_id (type), short_id (type)" — one line, easy for LLM to parse.
  */
-function formatRunningAgents(): string {
-  const agents = getManager()!
+function formatRunningAgents(owner: ExtensionOwner): string {
+  const agents = getManager(owner)!
     .listAgents()
     .filter((a) => a.lifecycle.status === "running" || a.lifecycle.status === "queued");
 
@@ -288,11 +307,11 @@ function formatRunningAgents(): string {
  * place full ids are printed. `notFoundDetail` names the agents the calling tool can
  * act on, because stop and message have opposite preconditions.
  */
-function resolveAgent(agentId: unknown, notFoundDetail: () => string): AgentRecord {
+function resolveAgent(owner: ExtensionOwner, agentId: unknown, notFoundDetail: () => string): AgentRecord {
   const id = (agentId as string | undefined)?.trim() ?? "";
   if (!id) throw new Error("agent_id is required");
 
-  const matches = getManager()!.matchAgents(id);
+  const matches = getManager(owner)!.matchAgents(id);
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
     throw new Error(
@@ -305,18 +324,19 @@ function resolveAgent(agentId: unknown, notFoundDetail: () => string): AgentReco
 // --- StopAgent execute handler ---
 
 export async function executeStopAgentTool(
+  owner: ExtensionOwner,
   _toolCallId: string,
   params: Record<string, unknown>,
   _signal: AbortSignal | undefined,
   _onUpdate: ((update: any) => void) | undefined,
   _ctx: ExtensionContext,
 ): Promise<any> {
-  const manager = getManager()!;
-  const record = resolveAgent(params.agent_id, () => `Running agents: ${formatRunningAgents()}`);
+  const manager = getManager(owner)!;
+  const record = resolveAgent(owner, params.agent_id, () => `Running agents: ${formatRunningAgents(owner)}`);
 
   if (record.lifecycle.status !== "running" && record.lifecycle.status !== "queued") {
     return successResult(
-      `Agent ${shortId(record)} is already ${record.lifecycle.status}. Running agents: ${formatRunningAgents()}`,
+      `Agent ${shortId(record)} is already ${record.lifecycle.status}. Running agents: ${formatRunningAgents(owner)}`,
     );
   }
 
@@ -332,10 +352,10 @@ export async function executeStopAgentTool(
 /** Bounded list of every retained agent, settled ones included: a message needs a
  * live session, not a run, so the addressable set is wider than StopAgent's.
  */
-function formatKnownAgents(): string {
-  const agents = getManager()!.listAgents();
+function formatKnownAgents(owner: ExtensionOwner): string {
+  const agents = getManager(owner)!.listAgents();
   if (agents.length === 0) return "none";
-  return formatAgentStatusList(agents, getStore().agent.agentStatusLimit);
+  return formatAgentStatusList(agents, getStore(owner).agent.agentStatusLimit);
 }
 
 /**
@@ -345,6 +365,7 @@ function formatKnownAgents(): string {
  * report names what was queued, never a promise that it was read before the run ended.
  */
 export async function executeMessageAgentTool(
+  owner: ExtensionOwner,
   _toolCallId: string,
   params: Record<string, unknown>,
   _signal: AbortSignal | undefined,
@@ -354,7 +375,7 @@ export async function executeMessageAgentTool(
   const text = (params.message as string | undefined)?.trim() ?? "";
   if (!text) throw new Error("message is required");
 
-  const record = resolveAgent(params.agent_id, () => `Known agents: ${formatKnownAgents()}`);
+  const record = resolveAgent(owner, params.agent_id, () => `Known agents: ${formatKnownAgents(owner)}`);
   const wasRunning = record.lifecycle.status === "running";
 
   if (!wasRunning && !record.execution.session) {
@@ -363,7 +384,9 @@ export async function executeMessageAgentTool(
     );
   }
 
-  if (!(await getManager()!.steer(record.id, text))) {
+  const manager = getManager(owner);
+  if (!manager) throw new Error("Subagents session has not started");
+  if (!(await manager.steer(record.id, text))) {
     throw new Error(
       `Failed to send message to agent ${shortId(record)}. ` +
         `It may still be settling or its concurrency slot is full. Try again.`,
@@ -375,16 +398,28 @@ export async function executeMessageAgentTool(
 
 // --- Tool_call listener — inject model into Agent tool calls ---
 
-export async function toolCallListener(event: ToolCallEvent, ctx: ExtensionContext): Promise<void> {
+export async function toolCallListener(
+  owner: ExtensionOwner,
+  event: ToolCallEvent,
+  ctx: ExtensionContext,
+): Promise<void> {
   if (event.toolName !== "Agent") return;
 
   const input = event.input;
+  const generation = owner.generation;
+  const store = getStore(owner);
   const subagentType = input.agent as string | undefined;
-  const agentConfig = subagentType ? getAgentConfig(subagentType) : undefined;
+  const agentConfig = subagentType ? owner.registry.getAgentConfig(subagentType) : undefined;
 
   const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+  const effectiveModel = store.modelFor(subagentType ?? "general-purpose", parentModelId, agentConfig);
+  const predictedThinking =
+    input.thinking === undefined
+      ? await predictSpawnThinking(owner, ctx, input.worktree_path, agentConfig, effectiveModel, store)
+      : undefined;
 
-  const effectiveModel = getStore().modelFor(subagentType ?? "general-purpose", parentModelId, agentConfig);
+  // Do not mutate an event from an old session after a reload/new.
+  if (generation !== owner.generation || owner.store !== store) return;
 
   if (effectiveModel) {
     input.model = effectiveModel;
@@ -400,6 +435,6 @@ export async function toolCallListener(event: ToolCallEvent, ctx: ExtensionConte
   // the runtime chain — an injection that diverged would change behavior, not
   // just display.
   if (input.thinking === undefined) {
-    input.thinking = await predictSpawnThinking(ctx, input.worktree_path, agentConfig, effectiveModel);
+    input.thinking = predictedThinking;
   }
 }

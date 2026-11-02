@@ -47,7 +47,7 @@ describe("navigation state machine", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   describe("initial state", () => {
@@ -209,7 +209,7 @@ describe("navigation roster", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   it("includes finished at index 0, then running, queued", () => {
@@ -264,7 +264,7 @@ describe("navigation rendering", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   describe("heading hint text", () => {
@@ -338,7 +338,7 @@ describe("auto-deactivation", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   it("deactivates navigation when all agents clear", () => {
@@ -370,7 +370,7 @@ describe("overflow with navigation", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   it("pinned block appears when navigating to a hidden agent", () => {
@@ -409,7 +409,7 @@ describe("navigation highlight adoption on roster shrink", () => {
 
   beforeEach(() => {
     manager = makeMockManager([]);
-    widget = new AgentWidget(manager, () => undefined);
+    widget = new AgentWidget(owner, manager, () => undefined);
   });
 
   it("returns the adopted live record when roster shrinks during navSelect", () => {
@@ -432,3 +432,6 @@ describe("navigation highlight adoption on roster shrink", () => {
     expect(widget.highlightedIndex()).toBe(1);
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

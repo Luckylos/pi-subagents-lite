@@ -9,12 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 
 // Import the module under test
-import {
-  resolveVisibleTools,
-  resolveSessionToolOptions,
-  getConfig,
-  registerAgents,
-} from "../../src/agents/agent-types.js";
+import { resolveVisibleTools, resolveSessionToolOptions } from "../../src/agents/agent-types.js";
 import type { AgentConfig } from "../../src/agents/types.js";
 
 /* ------------------------------------------------------------------ */
@@ -420,73 +415,73 @@ describe("getConfig — global implicit defaults", () => {
       skills: false,
       systemPrompt: "test",
     });
-    registerAgents(agents);
+    owner.registry.registerAgents(agents);
   });
 
   it("agent with explicit skills: true ignores global loadSkillsImplicitly=false", () => {
-    const result = getConfig("test-agent", false, true);
+    const result = owner.registry.getConfig("test-agent", false, true);
     expect(result.skills).toBe(true);
   });
 
   it("agent with explicit extensions: true ignores global loadExtensionsImplicitly=false", () => {
-    const result = getConfig("test-agent", true, false);
+    const result = owner.registry.getConfig("test-agent", true, false);
     expect(result.extensions).toBe(true);
   });
 
   it("agent with no skills/extensions uses global default (false)", () => {
-    const result = getConfig("implicit-agent", false, false);
+    const result = owner.registry.getConfig("implicit-agent", false, false);
     expect(result.skills).toBe(false);
     expect(result.extensions).toBe(false);
   });
 
   it("agent with no skills/extensions uses global default (true)", () => {
-    const result = getConfig("implicit-agent", true, true);
+    const result = owner.registry.getConfig("implicit-agent", true, true);
     expect(result.skills).toBe(true);
     expect(result.extensions).toBe(true);
   });
 
   it("agent with skills: true gets global loadSkillsImplicitly=true", () => {
-    const result = getConfig("test-agent", true, true);
+    const result = owner.registry.getConfig("test-agent", true, true);
     expect(result.skills).toBe(true);
   });
 
   it("agent with explicit skills list ignores global default", () => {
-    const result = getConfig("explicit-skills", false, false);
+    const result = owner.registry.getConfig("explicit-skills", false, false);
     expect(result.skills).toEqual(["tdd"]);
     // extensions not explicitly set, so global default false applies
     expect(result.extensions).toBe(false);
   });
 
   it("agent with skills: false ignores global default", () => {
-    const result = getConfig("no-skills", true, true);
+    const result = owner.registry.getConfig("no-skills", true, true);
     expect(result.skills).toBe(false);
     expect(result.extensions).toBe(false);
   });
 
   it("unknown agent type uses global defaults", () => {
-    const result = getConfig("nonexistent", false, false);
+    const result = owner.registry.getConfig("nonexistent", false, false);
     expect(result.skills).toBe(false);
     expect(result.extensions).toBe(false);
   });
 
   it("unknown agent type with load-all defaults to true", () => {
-    const result = getConfig("nonexistent", true, true);
+    const result = owner.registry.getConfig("nonexistent", true, true);
     expect(result.skills).toBe(true);
     expect(result.extensions).toBe(true);
   });
 
   it("registeredTools passes the explicit value through when set", () => {
-    const result = getConfig("explicit-tools");
+    const result = owner.registry.getConfig("explicit-tools");
     expect(result.registeredTools).toEqual(["read", "bash", "grep"]);
   });
 
   it("registeredTools stays absent when the config is silent — pi owns the fallback", () => {
-    const result = getConfig("implicit-agent");
+    const result = owner.registry.getConfig("implicit-agent");
     expect(result.registeredTools).toBeUndefined();
   });
 
   it("unknown agent type leaves registeredTools absent — no hardcoded fallback", () => {
-    const result = getConfig("nonexistent");
+    const result = owner.registry.getConfig("nonexistent");
     expect(result.registeredTools).toBeUndefined();
   });
 });
@@ -729,3 +724,6 @@ describe("ext/none — warning suppression", () => {
     expect(result.tools).not.toContain("none");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

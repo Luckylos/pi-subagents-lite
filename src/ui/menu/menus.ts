@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menus.ts — /agents command dispatcher.
  *
@@ -54,7 +55,11 @@ async function runSelectMenu(
   }
 }
 
-export async function showSettingsMenu(ctx: ExtensionCommandContext, modelOptions: string[]): Promise<void> {
+export async function showSettingsMenu(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  modelOptions: string[],
+): Promise<void> {
   const items: SelectItem[] = [
     { value: "model", label: "Model overrides", description: "Set global default and per-type model overrides" },
     { value: "concurrency", label: "Concurrency limits", description: "Set per-model slot limits" },
@@ -70,25 +75,29 @@ export async function showSettingsMenu(ctx: ExtensionCommandContext, modelOption
   await runSelectMenu(ctx, "Settings", items, async (choice) => {
     switch (choice) {
       case "model":
-        await showModelSettingsMenu(ctx, modelOptions);
+        await showModelSettingsMenu(owner, ctx, modelOptions);
         break;
       case "concurrency":
-        await showConcurrencySettingsMenu(ctx, modelOptions);
+        await showConcurrencySettingsMenu(owner, ctx, modelOptions);
         break;
       case "spawnoptions":
-        await showSpawnOptionsMenu(ctx);
+        await showSpawnOptionsMenu(owner, ctx);
         break;
       case "systemprompt":
-        await showSystemPromptMenu(ctx);
+        await showSystemPromptMenu(owner, ctx);
         break;
       case "widget":
-        await showWidgetSettingsMenu(ctx);
+        await showWidgetSettingsMenu(owner, ctx);
         break;
     }
   });
 }
 
-export async function showAgentsMainMenu(ctx: ExtensionCommandContext, modelOptions: string[]): Promise<void> {
+export async function showAgentsMainMenu(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  modelOptions: string[],
+): Promise<void> {
   const items: SelectItem[] = [
     { value: "running", label: "Running agents", description: "List running/queued agents" },
     { value: "spawn", label: "Spawn agent", description: "Manually spawn a new agent" },
@@ -99,16 +108,16 @@ export async function showAgentsMainMenu(ctx: ExtensionCommandContext, modelOpti
   await runSelectMenu(ctx, "Agents", items, async (choice) => {
     switch (choice) {
       case "running":
-        await showRunningAgentsMenu(ctx);
+        await showRunningAgentsMenu(owner, ctx);
         break;
       case "spawn":
-        await showSpawnAgentMenu(ctx, modelOptions);
+        await showSpawnAgentMenu(owner, ctx, modelOptions);
         break;
       case "settings":
-        await showSettingsMenu(ctx, modelOptions);
+        await showSettingsMenu(owner, ctx, modelOptions);
         break;
       case "debug":
-        await showDebugMenu(ctx);
+        await showDebugMenu(owner, ctx);
         break;
     }
   });

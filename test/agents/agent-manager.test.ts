@@ -40,7 +40,7 @@ describe("AgentManager", () => {
    */
   function getOnAssistantUsage() {
     const call = mockModules.mockRunAgent.mock.calls[mockModules.mockRunAgent.mock.calls.length - 1];
-    const callbacks = call[3]; // 4th arg is the callbacks object
+    const callbacks = call[4]; // 5th arg is the callbacks object
     return callbacks.onAssistantUsage;
   }
 
@@ -48,12 +48,12 @@ describe("AgentManager", () => {
 
   describe("totalAgentCost", () => {
     it("starts at zero", () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       expect(manager.getTotalAgentCost()).toBe(0);
     });
 
     it("accumulates cost when an agent completes", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
 
       const ctx = fakeCtx();
@@ -70,7 +70,7 @@ describe("AgentManager", () => {
     });
 
     it("accumulates cost from multiple agents", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValueOnce(mockRunResult());
 
       const ctx = fakeCtx();
@@ -92,7 +92,7 @@ describe("AgentManager", () => {
     });
 
     it("includes cost from failed agents", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockRejectedValueOnce(new Error("boom"));
 
       const ctx = fakeCtx();
@@ -106,7 +106,7 @@ describe("AgentManager", () => {
     });
 
     it("includes cost from stopped agents", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValueOnce(deferred.promise);
@@ -139,12 +139,12 @@ describe("AgentManager", () => {
 
   describe("totalAgentCount", () => {
     it("starts at zero", () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       expect(manager.getTotalAgentCount()).toBe(0);
     });
 
     it("increments when an agent completes", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
 
       const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
@@ -157,7 +157,7 @@ describe("AgentManager", () => {
     });
 
     it("increments after successful spawn only", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
 
       const id1 = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task1", {
@@ -176,7 +176,7 @@ describe("AgentManager", () => {
     });
 
     it("counts agent that fails mid-execution", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockRejectedValueOnce(new Error("boom"));
 
       const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
@@ -189,7 +189,7 @@ describe("AgentManager", () => {
     });
 
     it("does not count agent that fails to start (startAgent throws)", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       // Mock runAgent to throw synchronously (e.g. AgentOutputLog constructor fails)
       mockModules.mockRunAgent.mockImplementation(() => {
         throw new Error("start failed");
@@ -204,7 +204,7 @@ describe("AgentManager", () => {
     });
 
     it("does not count queued agent that fails to start", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValueOnce(deferred.promise);
@@ -241,7 +241,7 @@ describe("AgentManager", () => {
     }
 
     it("marks the record error with type, model, and provider error when runAgent reports a modelError", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(
         mockRunResult({
           responseText: "",
@@ -265,7 +265,7 @@ describe("AgentManager", () => {
     });
 
     it("sanitizes newlines in the provider error so multi-line errors do not break TUI layout", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(
         mockRunResult({
           responseText: "",
@@ -292,7 +292,7 @@ describe("AgentManager", () => {
     });
 
     it("keeps completed status when runAgent reports no modelError", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
 
       const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
@@ -308,7 +308,7 @@ describe("AgentManager", () => {
     });
 
     it("prefers aborted status over modelError", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult({ aborted: true, modelError: "boom" }));
 
       const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
@@ -322,7 +322,7 @@ describe("AgentManager", () => {
     });
 
     it("prefers error status over turn_limited", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult({ turnLimited: true, modelError: "boom" }));
 
       const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
@@ -336,7 +336,7 @@ describe("AgentManager", () => {
     });
 
     it("does not overwrite an externally stopped status when a modelError is reported", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
 
@@ -369,7 +369,7 @@ describe("AgentManager", () => {
 
   describe("parent interrupt binding", () => {
     it("stops a running foreground subagent with stoppedBy user and preserves partial output", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
       const controller = new AbortController();
@@ -400,7 +400,7 @@ describe("AgentManager", () => {
     });
 
     it("cancels a queued foreground subagent on parent abort without ever starting it", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
       const controller = new AbortController();
@@ -426,7 +426,7 @@ describe("AgentManager", () => {
     });
 
     it("notifies completion exactly once when a queued subagent is stopped, without tallying it", () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
 
@@ -453,7 +453,7 @@ describe("AgentManager", () => {
     });
 
     it("opens the completion gate when a queued start fails during drain", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValueOnce(firstRun.promise).mockImplementationOnce(() => {
         throw new Error("start failed");
@@ -472,7 +472,7 @@ describe("AgentManager", () => {
     });
 
     it("one abort of the shared parent signal stops every bound subagent", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValueOnce(deferred1.promise).mockReturnValueOnce(deferred2.promise);
@@ -497,7 +497,7 @@ describe("AgentManager", () => {
     });
 
     it("leaves a settled subagent untouched by a later abort of the parent signal", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
 
@@ -514,7 +514,7 @@ describe("AgentManager", () => {
     });
 
     it("cleans up the interrupt binding when spawn fails synchronously", () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockImplementation(() => {
         throw new Error("start failed");
       });
@@ -530,7 +530,7 @@ describe("AgentManager", () => {
 
   describe("interrupt binding lifecycle guards", () => {
     it("abort of the parent signal invokes the stop path exactly once, with stoppedBy user", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
       const id = spawnForeground("task", { signal: controller.signal });
@@ -545,7 +545,7 @@ describe("AgentManager", () => {
     });
 
     it("detaches the binding at settlement — a later abort never reaches the stop path", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
       const id = spawnForeground("task", { signal: controller.signal });
@@ -560,7 +560,7 @@ describe("AgentManager", () => {
     });
 
     it("detaches the binding when the agent is stopped — a later abort never reaches the stop path", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
       const id = spawnForeground("task", { signal: controller.signal });
@@ -574,7 +574,7 @@ describe("AgentManager", () => {
     });
 
     it("detaches all bindings on dispose — a later abort never reaches the stop path", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
       spawnForeground("task", { signal: controller.signal });
@@ -587,7 +587,7 @@ describe("AgentManager", () => {
     });
 
     it("detaches the binding when a queued start fails during drain", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValueOnce(firstRun.promise).mockImplementationOnce(() => {
         throw new Error("start failed");
@@ -609,7 +609,7 @@ describe("AgentManager", () => {
 
   describe("already-aborted signal at spawn", () => {
     it("records an already-aborted spawn as stopped without ever starting it", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
       controller.abort();
@@ -626,7 +626,7 @@ describe("AgentManager", () => {
     });
 
     it("removes an already-aborted queued spawn from the queue", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
       const controller = new AbortController();
@@ -647,7 +647,7 @@ describe("AgentManager", () => {
 
   describe("completion gate", () => {
     it("creates the completion gate at spawn for every record", () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
 
@@ -660,7 +660,7 @@ describe("AgentManager", () => {
     });
 
     it("keeps the completion gate separate from the run's own promise", () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
 
@@ -671,7 +671,7 @@ describe("AgentManager", () => {
     });
 
     it("flips the started marker synchronously when the run starts", () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
 
@@ -684,7 +684,7 @@ describe("AgentManager", () => {
 
   describe("dispose", () => {
     it("marks a queued foreground subagent error with the dispose message and opens its gate", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const firstRun = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
 
@@ -703,7 +703,7 @@ describe("AgentManager", () => {
     });
 
     it("opens the gate of a running subagent when its run settles after dispose", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
 
@@ -718,7 +718,7 @@ describe("AgentManager", () => {
 
   describe("clear", () => {
     it("removes a finished record and disposes its session", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
 
       const id = spawnForeground("task");
@@ -734,7 +734,7 @@ describe("AgentManager", () => {
     });
 
     it("rejects clear for running and queued records", () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
 
@@ -752,7 +752,7 @@ describe("AgentManager", () => {
     });
 
     it("returns true for a terminal record and false for active or unknown ids", async () => {
-      manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+      manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValueOnce(deferred1.promise).mockReturnValueOnce(deferred2.promise);
@@ -772,7 +772,7 @@ describe("AgentManager", () => {
     });
 
     it("opens the completion gate when a stopped-but-settling record is cleared", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
       const controller = new AbortController();
@@ -799,7 +799,7 @@ describe("AgentManager", () => {
     });
 
     it("detaches the parent binding when a finished record is cleared", async () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const controller = new AbortController();
 
@@ -820,11 +820,11 @@ describe("AgentManager", () => {
     it("keeps a settled record after the old eviction cutoff, even once its result was consumed", async () => {
       vi.useFakeTimers();
       try {
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
         // Drive the real spawn path — same route as a foreground tool spawn.
         const { SpawnCoordinator } = await import("../../src/spawn/spawn-coordinator.js");
-        const coordinator = new SpawnCoordinator(manager);
+        const coordinator = new SpawnCoordinator(owner, manager);
         const { agentId } = await coordinator.spawn(fakePi(), fakeCtx(), {
           type: "general-purpose",
           prompt: "task",
@@ -847,7 +847,7 @@ describe("AgentManager", () => {
 
   describe("outputThinkingBufferSize", () => {
     it("reads bufferSize live from store at spawn time", () => {
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       mockStoreState.outputThinkingBufferSize = 100;
       mockStoreState.outputTranscript = true;
@@ -884,3 +884,6 @@ describe("AgentManager", () => {
     });
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

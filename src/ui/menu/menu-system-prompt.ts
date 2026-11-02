@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-system-prompt.ts — System prompt settings menu concern.
  *
@@ -17,8 +18,8 @@ import type { SystemPromptMode } from "../../agents/types.ts";
 import { getStore } from "../../shell.ts";
 import { CUSTOM_PROMPT_PATH } from "../../config/config-io.ts";
 
-export async function showSystemPromptMenu(ctx: ExtensionCommandContext): Promise<void> {
-  const store = getStore();
+export async function showSystemPromptMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const store = getStore(owner);
 
   const buildItems = (): SettingItem[] => {
     const items: SettingItem[] = [

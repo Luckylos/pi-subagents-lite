@@ -4,7 +4,7 @@
 
 import { describe, it, expect, beforeEach } from "vite-plus/test";
 import { resolveAgentColor, hexToAnsi, agentColorAnsi } from "../src/agent-color.js";
-import { registerAgents } from "../src/agents/agent-types.js";
+
 import type { AgentConfig } from "../src/agents/types.js";
 
 const HEX_RE = /^#[0-9A-F]{6}$/;
@@ -111,7 +111,7 @@ describe("hexToAnsi", () => {
 
 describe("agentColorAnsi", () => {
   beforeEach(() => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map<string, AgentConfig>([
         ["color-agent", { name: "color-agent", description: "Has color", color: "red", systemPrompt: "" }],
         ["hex-agent", { name: "hex-agent", description: "Has hex color", color: "#FF5733", systemPrompt: "" }],
@@ -121,28 +121,31 @@ describe("agentColorAnsi", () => {
   });
 
   it("returns ANSI escape for agent with named color", () => {
-    const result = agentColorAnsi("color-agent");
+    const result = agentColorAnsi(owner, "color-agent");
     expect(result).toMatch(/^\x1b\[38;2;\d+;\d+;\d+m$/);
   });
 
   it("returns ANSI escape for agent with hex color", () => {
-    const result = agentColorAnsi("hex-agent");
+    const result = agentColorAnsi(owner, "hex-agent");
     expect(result).toMatch(/^\x1b\[38;2;\d+;\d+;\d+m$/);
   });
 
   it("returns empty string for agent without color", () => {
-    expect(agentColorAnsi("no-color-agent")).toBe("");
+    expect(agentColorAnsi(owner, "no-color-agent")).toBe("");
   });
 
   it("returns empty string for unknown agent type", () => {
-    expect(agentColorAnsi("nonexistent")).toBe("");
+    expect(agentColorAnsi(owner, "nonexistent")).toBe("");
   });
 
   it("returns empty string for undefined type", () => {
-    expect(agentColorAnsi(undefined)).toBe("");
+    expect(agentColorAnsi(owner, undefined)).toBe("");
   });
 
   it("returns empty string for empty type", () => {
-    expect(agentColorAnsi("")).toBe("");
+    expect(agentColorAnsi(owner, "")).toBe("");
   });
 });
+
+import { createTestOwner } from "./owner-fixtures.js";
+const owner = await createTestOwner();

@@ -38,7 +38,7 @@ describe("runAgent — notify buffering", () => {
 
     const ctx = fakeCtx({ ui: { notify: vi.fn() } });
 
-    const promise = runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    const promise = runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     // At this point setup is done but prompt is still pending — notify should NOT have been called yet
     await promptStarted;
@@ -65,7 +65,7 @@ describe("runAgent — notify buffering", () => {
 
     const ctx = fakeCtx({ ui: { notify: vi.fn() } });
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("both tools and exclude_tools set"), "warning");
@@ -86,7 +86,7 @@ describe("runAgent — notify buffering", () => {
     const ctx = fakeCtx({ ui: undefined });
     // No ctx.ui — should fall back to console.warn
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("both tools and exclude_tools set"));
   });
@@ -106,7 +106,7 @@ describe("runAgent — notify buffering", () => {
     const ctx = fakeCtx({ ui: undefined });
     // No ctx.ui — console.warn fallback
 
-    const promise = runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    const promise = runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     // Setup done, prompt pending — console.warn should NOT have been called yet
     await promptStarted;
@@ -118,3 +118,6 @@ describe("runAgent — notify buffering", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("both tools and exclude_tools set"));
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

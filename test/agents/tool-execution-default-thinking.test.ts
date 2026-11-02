@@ -121,46 +121,50 @@ vi.mock("../../src/pi-settings.js", () => ({
   ),
 }));
 
-vi.mock("../../src/shell.js", () => ({
-  getStore: () => ({
-    get agent() {
-      return {
-        graceTurns: 5,
-        forceBackground: false,
-        defaultThinking: storeState.defaultThinking,
-        defaultMaxTurns: storeState.defaultMaxTurns,
-      };
-    },
-    modelFor: vi.fn(() => storeState.modelFor),
-  }),
-  getPiInstance: () => ({ sendMessage: vi.fn(), exec: vi.fn() }),
-  getSessionCtx: () => ({ cwd: "/home/test/project" }),
-  getManager: () => ({
-    spawn: mockSpawn,
-    getRecord: mockGetRecord,
-    listAgents: vi.fn(() => []),
-    getTotalAgentCost: vi.fn(() => 0),
-    abort: vi.fn(() => false),
-  }),
-  getCoordinator: () => ({
-    spawn: vi.fn(async (pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent) => {
-      mockSpawn(pi, ctx, intent.type, intent.prompt, {
-        thinkingLevel: intent.thinkingLevel,
-        maxTurns: intent.maxTurns,
-      });
-      const record = mockGetRecord("agent-id-123");
-      if (!intent.runInBackground && record?.execution?.promise) {
-        await record.execution.promise;
-      }
-      return { agentId: "agent-id-123", record };
-    }),
-    isBackground: vi.fn(() => false),
-    scheduleNudge: vi.fn(),
-    onAgentComplete: vi.fn(),
-    dispose: vi.fn(),
-  }),
-  getWidget: () => ({ ensureTimer: vi.fn(), update: vi.fn() }),
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: () => ({
+        get agent() {
+          return {
+            graceTurns: 5,
+            forceBackground: false,
+            defaultThinking: storeState.defaultThinking,
+            defaultMaxTurns: storeState.defaultMaxTurns,
+          };
+        },
+        modelFor: vi.fn(() => storeState.modelFor),
+      }),
+      getPiInstance: () => ({ sendMessage: vi.fn(), exec: vi.fn() }),
+      getSessionCtx: () => ({ cwd: "/home/test/project" }),
+      getManager: () => ({
+        spawn: mockSpawn,
+        getRecord: mockGetRecord,
+        listAgents: vi.fn(() => []),
+        getTotalAgentCost: vi.fn(() => 0),
+        abort: vi.fn(() => false),
+      }),
+      getCoordinator: () => ({
+        spawn: vi.fn(async (pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent) => {
+          mockSpawn(pi, ctx, intent.type, intent.prompt, {
+            thinkingLevel: intent.thinkingLevel,
+            maxTurns: intent.maxTurns,
+          });
+          const record = mockGetRecord("agent-id-123");
+          if (!intent.runInBackground && record?.execution?.promise) {
+            await record.execution.promise;
+          }
+          return { agentId: "agent-id-123", record };
+        }),
+        isBackground: vi.fn(() => false),
+        scheduleNudge: vi.fn(),
+        onAgentComplete: vi.fn(),
+        dispose: vi.fn(),
+      }),
+      getWidget: () => ({ ensureTimer: vi.fn(), update: vi.fn() }),
+    }))(),
+  ),
+);
 
 vi.mock("../../src/agents/usage.js", () => ({
   addUsage: vi.fn(),
@@ -207,7 +211,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     storeState.defaultThinking = "max";
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(event.input.thinking).toBe("max");
   });
@@ -217,7 +221,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     storeState.defaultThinking = "max";
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(event.input.thinking).toBe("high");
   });
@@ -225,7 +229,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
   it("reads the per-model level keyed by the parent model's provider/modelId", async () => {
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(vi.mocked(getPiModelThinkingLevel)).toHaveBeenCalledWith("/home/test/project", "test", "model", {
       projectTrusted: true,
@@ -244,7 +248,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     });
     const event = makeEvent({ worktree_path: "/repo-b" });
 
-    await toolCallListener(event, fakeCtx({ cwd: "/home/test/project" }));
+    await toolCallListener(owner, event, fakeCtx({ cwd: "/home/test/project" }));
 
     // Keyed by the validated path (what the spawn will use), not the raw argument.
     expect(vi.mocked(getPiModelThinkingLevel)).toHaveBeenCalledWith(
@@ -272,7 +276,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockResolveSubagentTrust.mockReturnValue(false);
     const event = makeEvent({ worktree_path: "/repo-b" });
 
-    await toolCallListener(event, fakeCtx({ cwd: "/home/test/project" }));
+    await toolCallListener(owner, event, fakeCtx({ cwd: "/home/test/project" }));
 
     // pi ignores only the untrusted project's layer on the child's settings
     // instance, so the user's own global entry still decides.
@@ -297,7 +301,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockResolveSubagentTrust.mockReturnValue(false);
     const event = makeEvent({ worktree_path: "/repo-b" });
 
-    await toolCallListener(event, fakeCtx({ cwd: "/home/test/project", thinkingLevel: "minimal" }));
+    await toolCallListener(owner, event, fakeCtx({ cwd: "/home/test/project", thinkingLevel: "minimal" }));
 
     expect(event.input.thinking).toBe("high");
   });
@@ -315,7 +319,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockResolveSubagentTrust.mockReturnValue(false);
     const event = makeEvent({ worktree_path: "/repo-b" });
 
-    await toolCallListener(event, fakeCtx({ cwd: "/home/test/project" }));
+    await toolCallListener(owner, event, fakeCtx({ cwd: "/home/test/project" }));
 
     // The untrusted project's settings file must not set the spawn's thinking
     // through the injected value (it would win as the explicit param).
@@ -334,7 +338,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockResolveSubagentTrust.mockReturnValue(false);
     const event = makeEvent({ worktree_path: "/repo-b" });
 
-    await toolCallListener(event, fakeCtx({ cwd: "/home/test/project" }));
+    await toolCallListener(owner, event, fakeCtx({ cwd: "/home/test/project" }));
 
     expect(event.input.thinking).toBe("medium");
   });
@@ -346,7 +350,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     });
     const event = makeEvent({ worktree_path: "/missing" });
 
-    await toolCallListener(event, fakeCtx({ cwd: "/home/test/project" }));
+    await toolCallListener(owner, event, fakeCtx({ cwd: "/home/test/project" }));
 
     expect(vi.mocked(getPiModelThinkingLevel)).not.toHaveBeenCalled();
   });
@@ -356,7 +360,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "low" }));
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(event.input.thinking).toBe("low");
   });
@@ -366,7 +370,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     perModelState.global = "high";
     const event = makeEvent({ thinking: "medium" });
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(event.input.thinking).toBe("medium");
     // An explicit param means the chain is never consulted.
@@ -376,7 +380,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
   it("leaves thinking undefined when nothing is configured", async () => {
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(event.input.thinking).toBeUndefined();
   });
@@ -386,7 +390,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "parent" }));
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx({ thinkingLevel: "minimal" }));
+    await toolCallListener(owner, event, fakeCtx({ thinkingLevel: "minimal" }));
 
     expect(event.input.thinking).toBe("minimal");
   });
@@ -395,7 +399,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     storeState.defaultThinking = "parent";
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx({ thinkingLevel: "low" }));
+    await toolCallListener(owner, event, fakeCtx({ thinkingLevel: "low" }));
 
     expect(event.input.thinking).toBe("low");
   });
@@ -404,7 +408,7 @@ describe("toolCallListener — thinking injection (frontmatter > per-model > def
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "parent" }));
     const event = makeEvent();
 
-    await toolCallListener(event, fakeCtx());
+    await toolCallListener(owner, event, fakeCtx());
 
     expect(event.input.thinking).toBeUndefined();
   });
@@ -439,7 +443,7 @@ describe("executeAgentTool — explicit/frontmatter resolution, per-model + defa
   it("defers defaultThinking to the spawn runner (its chain keeps per-model above it)", async () => {
     storeState.defaultThinking = "max";
 
-    await executeAgentTool("tc-1", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-1", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnThinkingLevel()).toBeUndefined();
   });
@@ -448,7 +452,7 @@ describe("executeAgentTool — explicit/frontmatter resolution, per-model + defa
     storeState.defaultThinking = "max";
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "low" }));
 
-    await executeAgentTool("tc-2", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-2", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnThinkingLevel()).toBe("low");
   });
@@ -458,6 +462,7 @@ describe("executeAgentTool — explicit/frontmatter resolution, per-model + defa
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "low" }));
 
     await executeAgentTool(
+      owner,
       "tc-3",
       { agent: "general-purpose", prompt: "do it", thinking: "medium" },
       undefined,
@@ -469,7 +474,7 @@ describe("executeAgentTool — explicit/frontmatter resolution, per-model + defa
   });
 
   it("keeps thinking undefined when nothing is configured (inherit parent)", async () => {
-    await executeAgentTool("tc-4", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-4", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnThinkingLevel()).toBeUndefined();
   });
@@ -478,6 +483,7 @@ describe("executeAgentTool — explicit/frontmatter resolution, per-model + defa
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "parent" }));
 
     await executeAgentTool(
+      owner,
       "tc-5",
       { agent: "general-purpose", prompt: "do it" },
       undefined,
@@ -491,13 +497,14 @@ describe("executeAgentTool — explicit/frontmatter resolution, per-model + defa
   it("never spawns with the `parent` value itself when no parent level is available", async () => {
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ thinkingLevel: "parent" }));
 
-    await executeAgentTool("tc-6", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-6", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnThinkingLevel()).toBeUndefined();
   });
 
   it("resolves a `parent` value in a replayed thinking param against this session's parent level", async () => {
     await executeAgentTool(
+      owner,
       "tc-7",
       { agent: "general-purpose", prompt: "do it", thinking: "parent" },
       undefined,
@@ -539,7 +546,7 @@ describe("executeAgentTool — defaultMaxTurns fallback", () => {
     storeState.defaultMaxTurns = 50;
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxTurns: undefined }));
 
-    await executeAgentTool("tc-mt-1", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-mt-1", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnMaxTurns()).toBe(50);
   });
@@ -548,6 +555,7 @@ describe("executeAgentTool — defaultMaxTurns fallback", () => {
     storeState.defaultMaxTurns = 50;
 
     await executeAgentTool(
+      owner,
       "tc-mt-2",
       { agent: "general-purpose", prompt: "do it", max_turns: 10 },
       undefined,
@@ -562,7 +570,7 @@ describe("executeAgentTool — defaultMaxTurns fallback", () => {
     storeState.defaultMaxTurns = 50;
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxTurns: 30 }));
 
-    await executeAgentTool("tc-mt-3", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-mt-3", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnMaxTurns()).toBe(30);
   });
@@ -570,8 +578,11 @@ describe("executeAgentTool — defaultMaxTurns fallback", () => {
   it("keeps maxTurns undefined when nothing is configured", async () => {
     mockGetAgentConfig.mockReturnValue(makeAgentConfig({ maxTurns: undefined }));
 
-    await executeAgentTool("tc-mt-4", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-mt-4", { agent: "general-purpose", prompt: "do it" }, undefined, undefined, ctx);
 
     expect(spawnMaxTurns()).toBeUndefined();
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

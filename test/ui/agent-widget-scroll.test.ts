@@ -73,7 +73,7 @@ describe("scroll model state", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
     widget.setMaxLinesCompact(5);
@@ -123,7 +123,7 @@ describe("scroll viewport navigation", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
     widget.setMaxLinesCompact(5);
@@ -282,7 +282,7 @@ describe("overflow line format", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
     widget.setMaxLinesCompact(5); // body = 4 lines, 4 agents fit
@@ -314,7 +314,7 @@ describe("non-navigation overflow", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
     widget.setMaxLinesCompact(5); // body = 4 lines, 4 agents fit
@@ -355,7 +355,7 @@ describe("highlighted agent always visible", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     // Full mode: a running block is 2 lines (header + activity).
     widget.setMaxLines(2); // maxBody = 1 — a single running block exceeds it
   });
@@ -386,7 +386,7 @@ describe("roster changes during navigation", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
     widget.setMaxLinesCompact(5); // body = 4 lines → 3 visible + overflow
@@ -461,7 +461,7 @@ describe("queued agents during navigation", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
     widget.setMaxLinesCompact(5); // body = 4 lines → 3 visible + overflow
@@ -501,3 +501,6 @@ describe("queued agents during navigation", () => {
     expect(lines.some((l: string) => /\d+ queued/.test(l))).toBe(false);
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

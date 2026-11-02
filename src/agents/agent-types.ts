@@ -19,180 +19,137 @@ import type { AgentConfig } from "./types.ts";
  */
 export const BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 
-const agents = new Map<string, AgentConfig>();
-
-/**
- * Directories to scan for agent .md files at startup and on-demand.
- * Set by setAgentScanDirs() during session_start.
- */
-let userAgentDir = "";
-let projectAgentDir = "";
-let sharedAgentDir = "";
-
-export interface RegisterAgentsOptions {
-  /** When true, skip built-in DEFAULT_AGENTS. */
-  disableDefaultAgents?: boolean;
-}
-
-/** Register agents: defaults overlaid by user agents; hidden agents stay registered but unspawnable. */
-export function registerAgents(userAgents: Map<string, AgentConfig>, options?: RegisterAgentsOptions): void {
-  agents.clear();
-
-  if (!options?.disableDefaultAgents) {
-    for (const [name, config] of DEFAULT_AGENTS) {
-      agents.set(name, config);
-    }
-  }
-
-  for (const [name, config] of userAgents) {
-    agents.set(name, config);
-  }
-}
-
-/** Set scan dirs for on-demand discovery; called during session_start. */
-export function setAgentScanDirs(userDir: string, projectDir: string, sharedDir?: string): void {
-  userAgentDir = userDir;
-  projectAgentDir = projectDir;
-  sharedAgentDir = sharedDir ?? "";
-}
-
-export async function scanAndMerge(options?: { disableDefaultAgents?: boolean }): Promise<Map<string, AgentConfig>> {
-  const [userAgents, sharedAgents, projectAgents] = await Promise.all([
-    scanAgentFilesInDir(userAgentDir, "user"),
-    scanAgentFilesInDir(sharedAgentDir, "project"),
-    scanAgentFilesInDir(projectAgentDir, "project"),
-  ]);
-  const defaults = options?.disableDefaultAgents ? new Map<string, AgentConfig>() : DEFAULT_AGENTS;
-  return mergeAgents(defaults, userAgents, sharedAgents, projectAgents);
-}
-/**
- * Register newly discovered agents not already in the registry.
- * @param worktreeDir - Absolute path to a worktree's .pi/agents/; its agents use
- *   "project" source attribution and follow the parent project's uniqueness rules.
- */
-export async function discoverNewAgents(
-  worktreeDir?: string,
-  options?: { disableDefaultAgents?: boolean },
-): Promise<number> {
-  const merged = await scanAndMerge(options);
-
-  let count = 0;
-  for (const [name, config] of merged) {
-    if (!agents.has(name)) {
-      agents.set(name, config);
-      count++;
-    }
-  }
-
-  if (worktreeDir) {
-    const worktreeAgents = await scanAgentFilesInDir(worktreeDir, "project");
-    const wtMerged = mergeAgents(new Map(), [], [], worktreeAgents);
-    for (const [name, config] of wtMerged) {
-      if (!agents.has(name)) {
-        agents.set(name, config);
-        count++;
-      }
-    }
-  }
-
-  return count;
-}
-
-/**
- * Result of resolving a type name against the registry.
- *
- * - resolved: the requested name is a registered name (exact) or a single
- *   registered name matches case-insensitively; key is the canonical name.
- * - ambiguous: two or more registered names differ only by case; candidates in
- *   registry order. Never a silent pick (US-2).
- * - not-found: no registered name matches, even after case folding.
- *
- * Registered names are the only resolution surface: displayName is display-only
- * (no synonym matching, per the case-folding-only constraint). Hidden agents
- * participate like any registered type (they can still be called by name).
- */
 export type TypeResolution =
   | { kind: "resolved"; key: string }
   | { kind: "ambiguous"; candidates: string[] }
   | { kind: "not-found" };
 
-/** Resolve a type name: the exact registered name wins, then a single case-insensitive match; otherwise ambiguous or not-found. */
-export function resolveType(name: string): TypeResolution {
-  if (!name) return { kind: "not-found" };
-  if (agents.has(name)) return { kind: "resolved", key: name };
-  const lower = name.toLowerCase();
-  const candidates: string[] = [];
-  for (const key of agents.keys()) {
-    if (key.toLowerCase() === lower) candidates.push(key);
-  }
-  if (candidates.length === 1) return { kind: "resolved", key: candidates[0] };
-  if (candidates.length > 1) return { kind: "ambiguous", candidates };
-  return { kind: "not-found" };
-}
-
-/**
- * Resolve a type, discovering new agents from worktreeDir on miss.
- *
- * Combines resolveType + discoverNewAgents + resolveType into a single call.
- * Callers compute worktreeDir themselves (trust, validation, loadExtensions
- * checks stay in the caller).
- */
-export async function resolveTypeOrDiscover(type: string, worktreeDir?: string): Promise<TypeResolution> {
-  let resolution = resolveType(type);
-  if (resolution.kind === "not-found") {
-    await discoverNewAgents(worktreeDir);
-    resolution = resolveType(type);
-  }
-  return resolution;
-}
-
-/** Get the agent config for a type (case-insensitive). */
-export function getAgentConfig(name: string): AgentConfig | undefined {
-  const resolution = resolveType(name);
-  return resolution.kind === "resolved" ? agents.get(resolution.key) : undefined;
-}
-
-/** One visible agent's registry name and description. */
 export interface VisibleAgentInfo {
   name: string;
   description: string;
 }
 
-/**
- * Visible agents as name + description pairs, in registry order.
- * Single pass over the registry so the pair comes from one entry
- * (names + per-name getAgentConfig would re-resolve each name). This is the
- * one definition of agent visibility; getAvailableTypes derives from it.
- */
-export function getVisibleAgentInfos(): VisibleAgentInfo[] {
-  return [...agents.entries()]
-    .filter(([, config]) => config.hidden !== true)
-    .map(([name, config]) => ({ name, description: config.description }));
+export interface RegisterAgentsOptions {
+  disableDefaultAgents?: boolean;
 }
 
-/** Get all visible type names (for spawning and tool descriptions). */
-export function getAvailableTypes(): string[] {
-  return getVisibleAgentInfos().map((info) => info.name);
+/** A factory's registry, including its discovery directories and pending-scan epoch. */
+export class AgentRegistry {
+  private agents = new Map<string, AgentConfig>();
+  private userAgentDir = "";
+  private projectAgentDir = "";
+  private sharedAgentDir = "";
+  private generation = 0;
+
+  reset(): void {
+    this.generation++;
+    this.agents.clear();
+    this.userAgentDir = this.projectAgentDir = this.sharedAgentDir = "";
+  }
+
+  registerAgents(userAgents: Map<string, AgentConfig>, options?: RegisterAgentsOptions): void {
+    this.agents.clear();
+    if (!options?.disableDefaultAgents) {
+      for (const [name, config] of DEFAULT_AGENTS) this.agents.set(name, config);
+    }
+    for (const [name, config] of userAgents) this.agents.set(name, config);
+  }
+
+  setAgentScanDirs(userDir: string, projectDir: string, sharedDir?: string): void {
+    this.generation++;
+    this.userAgentDir = userDir;
+    this.projectAgentDir = projectDir;
+    this.sharedAgentDir = sharedDir ?? "";
+  }
+
+  async scanAndMerge(options?: RegisterAgentsOptions): Promise<Map<string, AgentConfig>> {
+    const [userAgents, sharedAgents, projectAgents] = await Promise.all([
+      scanAgentFilesInDir(this.userAgentDir, "user"),
+      scanAgentFilesInDir(this.sharedAgentDir, "project"),
+      scanAgentFilesInDir(this.projectAgentDir, "project"),
+    ]);
+    const defaults = options?.disableDefaultAgents ? new Map<string, AgentConfig>() : DEFAULT_AGENTS;
+    return mergeAgents(defaults, userAgents, sharedAgents, projectAgents);
+  }
+
+  async discoverNewAgents(worktreeDir?: string, options?: RegisterAgentsOptions): Promise<number> {
+    const generation = this.generation;
+    const merged = await this.scanAndMerge(options);
+    const worktreeAgents = worktreeDir ? await scanAgentFilesInDir(worktreeDir, "project") : [];
+    if (generation !== this.generation) return 0;
+    let count = 0;
+    for (const [name, config] of merged) {
+      if (!this.agents.has(name)) {
+        this.agents.set(name, config);
+        count++;
+      }
+    }
+    if (worktreeDir) {
+      const wtMerged = mergeAgents(new Map(), [], [], worktreeAgents);
+      for (const [name, config] of wtMerged) {
+        if (!this.agents.has(name)) {
+          this.agents.set(name, config);
+          count++;
+        }
+      }
+    }
+    return count;
+  }
+
+  resolveType(name: string): TypeResolution {
+    if (!name) return { kind: "not-found" };
+    if (this.agents.has(name)) return { kind: "resolved", key: name };
+    const lower = name.toLowerCase();
+    const candidates = [...this.agents.keys()].filter((key) => key.toLowerCase() === lower);
+    if (candidates.length === 1) return { kind: "resolved", key: candidates[0] };
+    if (candidates.length > 1) return { kind: "ambiguous", candidates };
+    return { kind: "not-found" };
+  }
+
+  async resolveTypeOrDiscover(type: string, worktreeDir?: string): Promise<TypeResolution> {
+    let resolution = this.resolveType(type);
+    if (resolution.kind === "not-found") {
+      await this.discoverNewAgents(worktreeDir);
+      resolution = this.resolveType(type);
+    }
+    return resolution;
+  }
+
+  getAgentConfig(name: string): AgentConfig | undefined {
+    const resolution = this.resolveType(name);
+    return resolution.kind === "resolved" ? this.agents.get(resolution.key) : undefined;
+  }
+
+  getVisibleAgentInfos(): VisibleAgentInfo[] {
+    return [...this.agents.entries()]
+      .filter(([, config]) => config.hidden !== true)
+      .map(([name, config]) => ({ name, description: config.description }));
+  }
+
+  getAvailableTypes(): string[] {
+    return this.getVisibleAgentInfos().map((info) => info.name);
+  }
+
+  getAllTypes(): string[] {
+    return [...this.agents.keys()];
+  }
+
+  getConfig(type: string, loadSkillsImplicitly = true, loadExtensionsImplicitly = true): ResolvedAgentConfig {
+    return resolveConfig(this, type, loadSkillsImplicitly, loadExtensionsImplicitly);
+  }
 }
 
-/**
- * Enabled-mode listing for the Agent tool's `agent` parameter: an
- * "Available agent types:" header plus one `name: description` line per
- * agent. Descriptions are trimmed; an empty/whitespace description degrades
- * to the bare name (no dangling colon). Callers with no visible agents must
- * not reach for this — registration keeps the no-description path instead.
- */
+export function createAgentRegistry(): AgentRegistry {
+  return new AgentRegistry();
+}
+
+/** The enabled-mode Agent schema's name/description listing. */
 export function formatAgentTypeDescriptions(infos: VisibleAgentInfo[]): string {
   const lines = infos.map(({ name, description }) => {
     const trimmed = description.trim();
     return trimmed ? `${name}: ${trimmed}` : name;
   });
   return ["Available agent types:", ...lines].join("\n");
-}
-
-/** Get all type names including hidden (for UI listing). */
-export function getAllTypes(): string[] {
-  return [...agents.keys()];
 }
 
 /** Names of tools that subagents must NOT inherit (no sub-subagent policy, ADR 0001). */
@@ -404,19 +361,20 @@ function applyGlobalDefaults(
 }
 
 /** Find the first non-hidden config: resolved type, then general-purpose, then undefined. */
-function findActiveConfig(type: string): AgentConfig | undefined {
-  const config = getAgentConfig(type);
+function findActiveConfig(registry: AgentRegistry, type: string): AgentConfig | undefined {
+  const config = registry.getAgentConfig(type);
   if (config?.hidden !== true) return config;
-  return agents.get("general-purpose");
+  return registry.getAgentConfig("general-purpose");
 }
 
 /** Get config for a type (case-insensitive). Falls back to general-purpose. */
-export function getConfig(
+function resolveConfig(
+  registry: AgentRegistry,
   type: string,
   loadSkillsImplicitly: boolean = true,
   loadExtensionsImplicitly: boolean = true,
 ): ResolvedAgentConfig {
-  const config = findActiveConfig(type);
+  const config = findActiveConfig(registry, type);
   if (config) {
     const { skills, extensions, registeredTools, ...rest } = config;
     const defaults = applyGlobalDefaults(skills, extensions, loadSkillsImplicitly, loadExtensionsImplicitly);

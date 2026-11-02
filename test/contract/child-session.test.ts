@@ -39,18 +39,13 @@ const contractStore = vi.hoisted(() => ({
   },
 }));
 
-const spawnBracket = vi.hoisted(() => ({ depth: 0, maxDepth: 0 }));
-
-vi.mock("../../src/shell.js", () => ({
-  getStore: () => contractStore,
-  enterSubagentSpawn: () => {
-    spawnBracket.depth++;
-    spawnBracket.maxDepth = Math.max(spawnBracket.maxDepth, spawnBracket.depth);
-  },
-  exitSubagentSpawn: () => {
-    spawnBracket.depth--;
-  },
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: () => contractStore,
+    }))(),
+  ),
+);
 
 import {
   AgentSession,
@@ -63,7 +58,7 @@ import {
   type EventBus,
 } from "@earendil-works/pi-coding-agent";
 import { createChildSession } from "../../src/agents/agent-runner.js";
-import { registerAgents } from "../../src/agents/agent-types.js";
+
 import { disposeChildSession } from "../../src/agents/session-teardown.js";
 import { importPiBuiltInExtensions } from "../agents/pi-builtin-registry.js";
 import { asExtensionAPI, asExtensionContext } from "../pi-boundaries.js";
@@ -79,13 +74,18 @@ interface Workspace {
   project: string;
   statePath: string;
   timelinePath: string;
+  markerPath: string;
   hasProbe: boolean;
   writeGlobalSettings(settings: Record<string, unknown>): void;
   writeProjectSettings(settings: Record<string, unknown>): void;
   writeProbeExtension(): void;
+  writeForkExtension(): void;
+  writePeerExtension(): void;
   writeLifecycleProbe(): void;
+  writeLoadMarkerProbe(): void;
   probeCount(): number;
   timeline(): string[];
+  markers(): string[];
 }
 
 /** Every workspace root made so far; all removed in afterAll (PI_CODING_AGENT_DIR is reassigned per workspace). */
@@ -104,10 +104,12 @@ function makeWorkspace(name: string): Workspace {
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const statePath = path.join(root, "probe-state.json");
   const timelinePath = path.join(root, "timeline.log");
+  const markerPath = path.join(root, "load-markers.log");
   const workspace: Workspace = {
     project,
     statePath,
     timelinePath,
+    markerPath,
     hasProbe: false,
     writeGlobalSettings(settings) {
       fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify(settings));
@@ -170,6 +172,36 @@ export default function (pi) {
         return 0;
       }
     },
+    writeForkExtension() {
+      const packageRoot = path.join(project, ".pi", "extensions", "pi-subagents-lite-fixture");
+      fs.mkdirSync(packageRoot, { recursive: true });
+      fs.cpSync(path.join(process.cwd(), "src"), path.join(packageRoot, "src"), { recursive: true });
+      fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(packageRoot, "node_modules"), "dir");
+      fs.writeFileSync(
+        path.join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "pi-subagents-lite-fixture",
+          pi: { extensions: ["./src/index.ts"] },
+        }),
+      );
+    },
+    writePeerExtension() {
+      const dir = path.join(project, ".pi", "extensions");
+      fs.mkdirSync(dir, { recursive: true });
+      const source = `
+const schema = { type: "object", properties: {}, required: [] };
+export default function (pi) {
+  pi.registerTool({
+    name: "peer_tool",
+    label: "Peer tool",
+    description: "A tool from an unrelated extension",
+    parameters: schema,
+    async execute() { return { content: [{ type: "text", text: "peer" }], details: {} }; },
+  });
+}
+`;
+      fs.writeFileSync(path.join(dir, "peer.ts"), source);
+    },
     /** Appends a marker from inside the child's own extensions, at bind time. */
     writeLifecycleProbe() {
       const dir = path.join(project, ".pi", "extensions");
@@ -182,9 +214,39 @@ export default function (pi) {
 `;
       fs.writeFileSync(path.join(dir, "lifecycle-probe.ts"), source);
     },
+    writeLoadMarkerProbe() {
+      const dir = path.join(project, ".pi", "extensions");
+      fs.mkdirSync(dir, { recursive: true });
+      workspace.hasProbe = true;
+      const source = `
+import * as fs from "node:fs";
+const markerPath = ${JSON.stringify(markerPath)};
+const markerContainer = globalThis[Symbol.for("pi-subagents-lite.child-extension-load.v1")];
+function mark(stage) { fs.appendFileSync(markerPath, stage + ":" + (markerContainer?.storage?.getStore() === true) + String.fromCharCode(10)); }
+export default function (pi) {
+  mark("factory");
+  pi.registerTool({
+    name: "probe_late",
+    label: "Probe late",
+    description: "marker probe",
+    parameters: { type: "object", properties: {}, required: [] },
+    async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; },
+  });
+  pi.on("session_start", () => mark("session_start"));
+}
+`;
+      fs.writeFileSync(path.join(dir, "probe.ts"), source);
+    },
     timeline() {
       try {
         return fs.readFileSync(timelinePath, "utf-8").split("\n").filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+    markers() {
+      try {
+        return fs.readFileSync(markerPath, "utf-8").split("\n").filter(Boolean);
       } catch {
         return [];
       }
@@ -220,7 +282,7 @@ async function until(condition: () => boolean, what: string): Promise<void> {
 
 /** The production child path: our wrapped built-in factories. */
 async function spawnChild(workspace: Workspace): Promise<AgentSession> {
-  const { session } = await createChildSession(parentCtx(workspace.project), "general-purpose", {
+  const { session } = await createChildSession(owner, parentCtx(workspace.project), "general-purpose", {
     pi: stubPi(),
     cwd: workspace.project,
   });
@@ -274,9 +336,14 @@ const registryOf = (session: AgentSession) =>
     .sort();
 const activeOf = (session: AgentSession) => [...session.getActiveToolNames()].sort();
 const callableOf = (session: AgentSession) => [...session.getCallableToolNames()].sort();
+const rawRunnerOf = (session: AgentSession) =>
+  session.extensionRunner
+    .getAllRegisteredTools()
+    .map((tool) => tool.definition.name)
+    .sort();
 
 beforeAll(() => {
-  registerAgents(new Map());
+  owner.registry.registerAgents(new Map());
 });
 
 afterAll(() => {
@@ -285,14 +352,45 @@ afterAll(() => {
 });
 
 describe("contract: child session matches a normal pi session", () => {
-  it("createChildSession brackets itself for extension loading, entering and exiting once", async () => {
-    spawnBracket.depth = 0;
-    spawnBracket.maxDepth = 0;
-    const workspace = makeWorkspace("bracket");
+  it("marks only child loader factories, not bind-time callbacks", async () => {
+    const workspace = makeWorkspace("loader-marker");
+    workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
+    workspace.writeLoadMarkerProbe();
     const child = await spawnChild(workspace);
 
-    expect(spawnBracket.maxDepth).toBe(1);
-    expect(spawnBracket.depth).toBe(0);
+    expect(workspace.markers()).toEqual(["factory:true", "session_start:false"]);
+
+    await child.reload();
+    expect(workspace.markers()).toEqual(["factory:true", "session_start:false", "factory:true", "session_start:false"]);
+
+    const reference = await spawnReference(workspace);
+    expect(workspace.markers()).toEqual([
+      "factory:true",
+      "session_start:false",
+      "factory:true",
+      "session_start:false",
+      "factory:false",
+      "session_start:false",
+    ]);
+
+    await disposeChildSession(child);
+    await disposeChildSession(reference);
+  });
+
+  it("does not register its four tools while retaining an unrelated extension", async () => {
+    const workspace = makeWorkspace("self-exclusion");
+    workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
+    workspace.writeForkExtension();
+    workspace.writePeerExtension();
+    const child = await spawnChild(workspace);
+    const ownTools = ["Agent", "StopAgent", "MessageAgent", "AgentStatus"];
+
+    for (const name of ownTools) {
+      expect(registryOf(child)).not.toContain(name);
+      expect(rawRunnerOf(child)).not.toContain(name);
+    }
+    expect(registryOf(child)).toContain("peer_tool");
+    expect(rawRunnerOf(child)).toContain("peer_tool");
 
     await disposeChildSession(child);
   });
@@ -408,7 +506,7 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
   });
 
   it("explicit frontmatter tools gate the registry exactly", async () => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([
         [
           "contract-explicit",
@@ -418,7 +516,7 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
     );
     const workspace = makeWorkspace("explicit-tools");
     workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
-    const { session } = await createChildSession(parentCtx(workspace.project), "contract-explicit", {
+    const { session } = await createChildSession(owner, parentCtx(workspace.project), "contract-explicit", {
       pi: stubPi(),
       cwd: workspace.project,
     });
@@ -430,13 +528,13 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
   });
 
   it("frontmatter extensions: false loads no built-in extensions", async () => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([["contract-no-ext", { name: "contract-no-ext", description: "", systemPrompt: "", extensions: false }]]),
     );
     const workspace = makeWorkspace("extensions-false");
     workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
     workspace.writeProbeExtension();
-    const { session } = await createChildSession(parentCtx(workspace.project), "contract-no-ext", {
+    const { session } = await createChildSession(owner, parentCtx(workspace.project), "contract-no-ext", {
       pi: stubPi(),
       cwd: workspace.project,
     });
@@ -450,7 +548,7 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
   });
 
   it("frontmatter extensions: ['codemode'] selects the built-in by bare name", async () => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([
         [
           "contract-only-codemode",
@@ -461,7 +559,7 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
     const workspace = makeWorkspace("only-codemode");
     workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
     workspace.writeProbeExtension();
-    const { session } = await createChildSession(parentCtx(workspace.project), "contract-only-codemode", {
+    const { session } = await createChildSession(owner, parentCtx(workspace.project), "contract-only-codemode", {
       pi: stubPi(),
       cwd: workspace.project,
     });
@@ -478,7 +576,7 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
   });
 
   it("frontmatter exclude_extensions: ['codemode'] deselects the built-in by bare name", async () => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([
         [
           "contract-no-codemode",
@@ -489,7 +587,7 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
     const workspace = makeWorkspace("exclude-codemode");
     workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
     workspace.writeProbeExtension();
-    const { session } = await createChildSession(parentCtx(workspace.project), "contract-no-codemode", {
+    const { session } = await createChildSession(owner, parentCtx(workspace.project), "contract-no-codemode", {
       pi: stubPi(),
       cwd: workspace.project,
     });
@@ -567,7 +665,7 @@ describe("contract: child session announced on the parent's event bus", () => {
     const { events, entries } = observeLifecycle(workspace);
 
     const { session: child } = await withRecordedBind(workspace, () =>
-      createChildSession(parentCtx(workspace.project), "general-purpose", {
+      createChildSession(owner, parentCtx(workspace.project), "general-purpose", {
         pi: stubPi(events),
         cwd: workspace.project,
       }),
@@ -590,7 +688,7 @@ describe("contract: child session announced on the parent's event bus", () => {
     const { events, entries } = observeLifecycle(workspace, { marksMicrotask: true });
 
     const { session: child } = await withRecordedBind(workspace, () =>
-      createChildSession(parentCtx(workspace.project), "general-purpose", {
+      createChildSession(owner, parentCtx(workspace.project), "general-purpose", {
         pi: stubPi(events),
         cwd: workspace.project,
       }),
@@ -609,3 +707,6 @@ describe("contract: child session announced on the parent's event bus", () => {
     await disposeChildSession(child);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

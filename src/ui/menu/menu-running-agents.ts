@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-running-agents.ts — Running agents menu concern.
  *
@@ -37,13 +38,18 @@ function isActive(record: AgentRecord): boolean {
   return record.lifecycle.status === "running" || record.lifecycle.status === "queued";
 }
 
-async function showConversationViewer(ctx: ExtensionCommandContext, record: AgentRecord): Promise<void> {
+async function showConversationViewer(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  record: AgentRecord,
+): Promise<void> {
   if (!record.execution?.session) return;
-  const manager = getManager();
+  const manager = getManager(owner);
 
   await ctx.ui.custom<void>(
     (tui, theme, kb, done) => {
       const viewer = new ConversationViewer(
+        owner,
         tui,
         record.execution.session!,
         record,
@@ -53,7 +59,7 @@ async function showConversationViewer(ctx: ExtensionCommandContext, record: Agen
         kb,
         (msg: string) => manager?.steer(record.id, msg),
       );
-      viewer.setModelDisplayStyle(getStore().agent.modelDisplayStyle);
+      viewer.setModelDisplayStyle(getStore(owner).agent.modelDisplayStyle);
       return viewer;
     },
     { overlay: true },
@@ -61,6 +67,7 @@ async function showConversationViewer(ctx: ExtensionCommandContext, record: Agen
 }
 
 async function showTextViewer(
+  owner: ExtensionOwner,
   ctx: ExtensionCommandContext,
   record: AgentRecord,
   kind: "result" | "error",
@@ -68,7 +75,7 @@ async function showTextViewer(
 ): Promise<void> {
   const titleSuffix = kind === "result" ? record.id.slice(0, SHORT_ID_LENGTH) : "Error";
   const textLines = text.split("\n");
-  const displayName = getDisplayName(record.display.type);
+  const displayName = getDisplayName(owner, record.display.type);
   const chromeLines = 5; // top border + title + sep + footer + bottom border
   const MIN_VIEWPORT = 3;
   const VIEWPORT_HEIGHT_PCT = 70;
@@ -165,6 +172,7 @@ async function showTextViewer(
  * @param onClose — close the entire menu (stop).
  */
 export function buildAgentActionsList(
+  owner: ExtensionOwner,
   ctx: ExtensionCommandContext,
   record: AgentRecord,
   theme: Theme,
@@ -207,11 +215,11 @@ export function buildAgentActionsList(
   const list = new SelectList(items, 10, buildSelectListTheme(theme));
   list.onSelect = async (item) => {
     if (item.value === "view-snapshot" || item.value === "view-conversation") {
-      await showConversationViewer(ctx, record);
+      await showConversationViewer(owner, ctx, record);
     } else if (item.value === "view-result") {
-      await showTextViewer(ctx, record, "result", record.result!);
+      await showTextViewer(owner, ctx, record, "result", record.result!);
     } else if (item.value === "view-error") {
-      await showTextViewer(ctx, record, "error", record.error!);
+      await showTextViewer(owner, ctx, record, "error", record.error!);
     } else if (item.value === "steer") {
       // Swap to an inline steer input within the menu context.
       const input = new Input();
@@ -219,7 +227,7 @@ export function buildAgentActionsList(
       input.onSubmit = async (value) => {
         const trimmed = value.trim();
         if (trimmed) {
-          const sent = await getManager()!.steer(record.id, trimmed);
+          const sent = await getManager(owner)!.steer(record.id, trimmed);
           ctx.ui.notify(sent ? `Steer sent to ${shortId}…` : `Steer failed for ${shortId}`, sent ? "info" : "error");
         }
         setActive(list);
@@ -227,11 +235,11 @@ export function buildAgentActionsList(
       input.onEscape = () => setActive(list);
       setActive(input);
     } else if (item.value === "stop") {
-      getManager()?.abort(record.id, "user");
+      getManager(owner)?.abort(record.id, "user");
       ctx.ui.notify(`Stopped ${shortId}`, "info");
       onClose();
     } else if (item.value === "clear") {
-      getManager()?.clear(record.id);
+      getManager(owner)?.clear(record.id);
       ctx.ui.notify(`Cleared ${shortId}`, "info");
       onClose();
     }
@@ -240,8 +248,8 @@ export function buildAgentActionsList(
   return list;
 }
 
-export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promise<void> {
-  const agents = getManager()?.listAgents() ?? [];
+export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const agents = getManager(owner)?.listAgents() ?? [];
   if (agents.length === 0) {
     ctx.ui.notify("No agents have been spawned this session", "info");
     return;
@@ -274,7 +282,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
                   : "\u2022";
         const headline = record.display.description ? record.display.description : "";
         const suffix = headline ? ` \u2014 ${headline}` : "";
-        const bullet = agentBulletPrefix(record.display.type);
+        const bullet = agentBulletPrefix(owner, record.display.type);
         return {
           value: record.id,
           label: `${statusIcon} ${record.id.slice(0, SHORT_ID_LENGTH)}  ${bullet}${record.display.type}  ${record.lifecycle.status}  ${duration}${suffix}${ago}`,
@@ -307,7 +315,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
     agentList.onSelect = async (item) => {
       if (item.value === "__stop-all") {
         for (const r of running) {
-          getManager()?.abort(r.id, "user");
+          getManager(owner)?.abort(r.id, "user");
         }
         ctx.ui.notify(`Stopped ${running.length} agent(s)`, "info");
         done(undefined);
@@ -315,7 +323,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
       }
       if (item.value === "__clear-all") {
         for (const r of finished) {
-          getManager()?.clear(r.id);
+          getManager(owner)?.clear(r.id);
         }
         ctx.ui.notify(`Cleared ${finished.length} finished agent(s)`, "info");
         done(undefined);
@@ -323,7 +331,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
       }
       if (item.value === "__clear-done") {
         for (const r of completed) {
-          getManager()?.clear(r.id);
+          getManager(owner)?.clear(r.id);
         }
         ctx.ui.notify(`Cleared ${completed.length} completed agent(s)`, "info");
         done(undefined);
@@ -332,6 +340,7 @@ export async function showRunningAgentsMenu(ctx: ExtensionCommandContext): Promi
       const record = agents.find((r) => r.id === item.value);
       if (record) {
         const actionsList = buildAgentActionsList(
+          owner,
           ctx,
           record,
           theme,

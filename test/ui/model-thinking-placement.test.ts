@@ -47,7 +47,7 @@ describe("modelThinkingPlacement setting", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   describe("full mode with placement = 'header'", () => {
@@ -113,3 +113,6 @@ describe("modelThinkingPlacement setting", () => {
     });
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

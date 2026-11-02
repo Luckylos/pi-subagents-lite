@@ -18,6 +18,13 @@ function memIO(initial: { global?: RawConfig } = {}): {
   return {
     io: {
       load: () => ({ global: structuredClone(cur), project: null, projectStatus: "untrusted" }),
+      updateLayer: (target, mutate) => {
+        const latest = structuredClone(cur);
+        mutate(latest);
+        cur = structuredClone(latest);
+        saves.push({ layer: target, config: structuredClone(latest) });
+        return { global: structuredClone(cur), project: null, projectStatus: "untrusted" };
+      },
       saveGlobal: (config) => {
         cur = structuredClone(config);
         saves.push({ layer: "global", config: structuredClone(config) });

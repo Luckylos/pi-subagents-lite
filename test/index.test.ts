@@ -8,9 +8,9 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vite-
 import { createMockExtensionAPI, loadExtension, shellMock, type MockExtensionAPI } from "./fixtures";
 import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import type { ResolveModelOptions } from "../src/models/model-precedence.js";
-import * as agentTypes from "../src/agents/agent-types.js";
 import { registerAgentTool } from "../src/registration.js";
 import { asExtensionAPI } from "./pi-boundaries.js";
+import { withChildExtensionLoad } from "../src/child-load-context.js";
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   DynamicBorder: class {},
@@ -144,7 +144,7 @@ vi.mock("../src/ui/renderer.js", () => ({
 }));
 
 // Mutable state shared between the shell mock and tests.
-const { mutableStore, spawnGuard } = vi.hoisted(() => ({
+const { mutableStore } = vi.hoisted(() => ({
   mutableStore: {
     agent: {
       graceTurns: 6,
@@ -156,14 +156,15 @@ const { mutableStore, spawnGuard } = vi.hoisted(() => ({
     },
     modelFor: () => "anthropic/claude-sonnet-4-6",
   },
-  spawnGuard: { depth: 0 },
 }));
 
-vi.mock("../src/shell.js", () =>
-  shellMock({
-    store: mutableStore,
-    spawnGuard,
-  }),
+vi.mock("../src/shell.js", async () =>
+  (await import("./owner-fixtures.js")).ownerShellMock(
+    await (() =>
+      shellMock({
+        store: mutableStore,
+      }))(),
+  ),
 );
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -247,7 +248,7 @@ describe("Agent tool agent param — exposeDescriptions", () => {
     mutableStore.agent.exposeDescriptions = true;
     try {
       const fresh = createMockExtensionAPI();
-      registerAgentTool(asExtensionAPI(fresh.api));
+      registerAgentTool(asExtensionAPI(fresh.api), owner);
       return fresh.tools.filter((t) => t.name === "Agent").at(-1)!;
     } finally {
       mutableStore.agent.exposeDescriptions = false;
@@ -272,7 +273,7 @@ describe("Agent tool agent param — exposeDescriptions", () => {
   });
 
   it("re-registration with exposeDescriptions on degrades whitespace-only descriptions to bare names", () => {
-    vi.mocked(agentTypes.getVisibleAgentInfos).mockReturnValueOnce([
+    vi.mocked(owner.registry.getVisibleAgentInfos).mockReturnValueOnce([
       { name: "general-purpose", description: "General-purpose agent for complex, multi-step tasks" },
       { name: "no-desc", description: "   " },
     ]);
@@ -416,15 +417,10 @@ describe("event listener registration", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  Subagent spawn guard (prevents shell clobbering)                  */
+/*  Child extension load guard (prevents owner clobbering)            */
 /* ------------------------------------------------------------------ */
 
-describe("subagent spawn guard", () => {
-  beforeEach(() => {
-    // Defensive: start every test from a clean depth.
-    while (spawnGuard.depth > 0) spawnGuard.depth--;
-  });
-
+describe("child extension load guard", () => {
   it("registers tools and listeners for the parent session", async () => {
     const api = createMockExtensionAPI();
     await loadExtension(api.api);
@@ -434,38 +430,23 @@ describe("subagent spawn guard", () => {
     expect(api.listeners.some((l) => l.event === "session_shutdown")).toBe(true);
   });
 
-  it("stays inert when loaded inside a subagent spawn", async () => {
-    spawnGuard.depth++;
-    try {
-      const api = createMockExtensionAPI();
-      await loadExtension(api.api);
+  it("stays inert when a child loader marks factory evaluation", async () => {
+    const api = createMockExtensionAPI();
+    await withChildExtensionLoad(true, () => loadExtension(api.api));
 
-      // No tools, no event handlers: the subagent must not clobber the parent shell
-      // (setPiInstance/setSessionCtx both happen in the session_start handler).
-      expect(api.tools).toHaveLength(0);
-      expect(api.listeners).toHaveLength(0);
-    } finally {
-      spawnGuard.depth--;
-    }
-    expect(spawnGuard.depth).toBe(0);
+    // No tools, no event handlers: the child must not clobber the parent owner.
+    expect(api.tools).toHaveLength(0);
+    expect(api.listeners).toHaveLength(0);
   });
 
-  it("is inert for nested spawns and recovers when depth returns to 0", async () => {
-    spawnGuard.depth++;
-    spawnGuard.depth++; // nested
-    try {
-      const api = createMockExtensionAPI();
-      await loadExtension(api.api);
-      expect(api.tools).toHaveLength(0);
-    } finally {
-      spawnGuard.depth--;
-      spawnGuard.depth--;
-    }
+  it("restores an independent parent after the marked child scope", async () => {
+    const child = createMockExtensionAPI();
+    await withChildExtensionLoad(true, () => loadExtension(child.api));
+    expect(child.tools).toHaveLength(0);
 
-    // Parent load works again once no subagent is in flight
-    const api = createMockExtensionAPI();
-    await loadExtension(api.api);
-    expect(api.tools.length).toBeGreaterThan(0);
+    const parent = createMockExtensionAPI();
+    await loadExtension(parent.api);
+    expect(parent.tools.length).toBeGreaterThan(0);
   });
 });
 
@@ -625,3 +606,6 @@ describe("Agent renderResult — context.isError override", () => {
     expect(passedResult.isError).toBe(false);
   });
 });
+
+import { createTestOwner } from "./owner-fixtures.js";
+const owner = await createTestOwner();

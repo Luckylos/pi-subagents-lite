@@ -47,7 +47,11 @@ vi.mock("../../src/spawn/project-trust.js", () => ({
   untrustedProjectWarning: vi.fn((targetPath: string) => `untrusted: ${targetPath}`),
 }));
 
-vi.mock("../../src/shell.js", () => shellMock({ sessionCtx: { cwd: "/session/cwd" }, pi: { exec: vi.fn() } }));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => shellMock({ sessionCtx: { cwd: "/session/cwd" }, pi: { exec: vi.fn() } }))(),
+  ),
+);
 
 // Import after mocks are in place
 import { computeSpawnTarget, surfaceSpawnTargetWarnings } from "../../src/spawn/spawn-target.js";
@@ -81,7 +85,7 @@ function validatedTarget(overrides: Partial<Extract<WorktreeValidationResult, { 
 
 describe("computeSpawnTarget — omitted and blank paths", () => {
   it("treats an omitted path as a trusted non-target without validating", async () => {
-    const target = await computeSpawnTarget(fakeCtx(), undefined);
+    const target = await computeSpawnTarget(owner, fakeCtx(), undefined);
 
     expect(target).toEqual({ ok: true, projectTrusted: true, warnings: [] });
     expect(mockValidateWorktreePath).not.toHaveBeenCalled();
@@ -89,14 +93,14 @@ describe("computeSpawnTarget — omitted and blank paths", () => {
   });
 
   it("treats a whitespace path as omitted (no bogus discovery dir downstream)", async () => {
-    const target = await computeSpawnTarget(fakeCtx(), "   ");
+    const target = await computeSpawnTarget(owner, fakeCtx(), "   ");
 
     expect(target).toEqual({ ok: true, projectTrusted: true, warnings: [] });
     expect(mockValidateWorktreePath).not.toHaveBeenCalled();
   });
 
   it("treats a non-string path as omitted (raw tool arguments and history are unchecked)", async () => {
-    const target = await computeSpawnTarget(fakeCtx(), 123);
+    const target = await computeSpawnTarget(owner, fakeCtx(), 123);
 
     expect(target).toEqual({ ok: true, projectTrusted: true, warnings: [] });
     expect(mockValidateWorktreePath).not.toHaveBeenCalled();
@@ -113,7 +117,7 @@ describe("computeSpawnTarget — validation plus trust", () => {
     validatedTarget({ sameRepo: false });
     mockResolveSubagentTrust.mockReturnValue(false);
 
-    const target = await computeSpawnTarget(fakeCtx({ cwd: "/ctx/cwd" }), "/repo-b");
+    const target = await computeSpawnTarget(owner, fakeCtx({ cwd: "/ctx/cwd" }), "/repo-b");
 
     expect(mockValidateWorktreePath).toHaveBeenCalledWith(
       expect.objectContaining({ exec: expect.any(Function) }),
@@ -138,7 +142,7 @@ describe("computeSpawnTarget — validation plus trust", () => {
   it("wires the trust gate from pi's building blocks at the parent cwd", async () => {
     validatedTarget({ sameRepo: false });
 
-    await computeSpawnTarget(fakeCtx({ cwd: "/ctx/cwd" }), "/repo-b");
+    await computeSpawnTarget(owner, fakeCtx({ cwd: "/ctx/cwd" }), "/repo-b");
 
     expect(mockCreateSubagentTrustDeps).toHaveBeenCalledWith(expect.any(String), "/session/cwd");
   });
@@ -155,7 +159,7 @@ describe("computeSpawnTarget — validation plus trust", () => {
       } satisfies WorktreeValidationResult;
     });
 
-    const target = await computeSpawnTarget(fakeCtx(), "/repo-b");
+    const target = await computeSpawnTarget(owner, fakeCtx(), "/repo-b");
 
     expect(target).toMatchObject({ ok: true, warnings: ["git rev-parse failed somewhere"] });
   });
@@ -172,7 +176,7 @@ describe("computeSpawnTarget — validation failures", () => {
       error: "worktree_path is not inside a git repository",
     } satisfies WorktreeValidationResult);
 
-    const target = await computeSpawnTarget(fakeCtx(), "/nope");
+    const target = await computeSpawnTarget(owner, fakeCtx(), "/nope");
 
     expect(target).toEqual({
       ok: false,
@@ -185,7 +189,7 @@ describe("computeSpawnTarget — validation failures", () => {
   it("wraps a validator crash as a self-correctable validation failure", async () => {
     mockValidateWorktreePath.mockRejectedValue(new Error("boom"));
 
-    const target = await computeSpawnTarget(fakeCtx(), "/x");
+    const target = await computeSpawnTarget(owner, fakeCtx(), "/x");
 
     expect(target).toEqual({ ok: false, error: "worktree_path validation failed: boom", warnings: [] });
   });
@@ -257,3 +261,6 @@ describe("surfaceSpawnTargetWarnings", () => {
     expect(() => surfaceSpawnTargetWarnings({ notify: undefined }, target)).not.toThrow();
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

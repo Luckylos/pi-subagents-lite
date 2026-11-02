@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 import { getPiInstance, getSessionCtx, getWidget } from "../shell.ts";
 import { SHORT_ID_LENGTH } from "../types.ts";
 
@@ -58,7 +59,10 @@ export class SpawnCoordinator {
   /** Set during dispose to prevent nudge emission after session replacement. */
   private disposed = false;
 
-  constructor(private manager: AgentManager) {}
+  constructor(
+    private owner: ExtensionOwner,
+    private manager: AgentManager,
+  ) {}
 
   /**
    * Spawn + wire tracking + (foreground) await.
@@ -92,7 +96,7 @@ export class SpawnCoordinator {
 
     // Ensure widget timer is running so it displays the new agent
     // (menu path calls this explicitly, but tool path doesn't)
-    const widget = getWidget();
+    const widget = getWidget(this.owner);
     if (widget) {
       widget.ensureTimer();
     }
@@ -120,6 +124,7 @@ export class SpawnCoordinator {
    * Batches with NUDGE_DELAY_MS window to coalesce rapid completions.
    */
   scheduleNudge(agentId: string): void {
+    if (this.disposed) return;
     this.pendingNudges.add(agentId);
 
     if (this.nudgeTimer) return;
@@ -187,8 +192,8 @@ export class SpawnCoordinator {
     // Skip if disposed — prevents stale pi usage after session replacement
     if (this.disposed) return;
 
-    // Read pi from shell at call time so we get a fresh reference after reload.
-    const pi = getPiInstance();
+    // This coordinator can deliver only through its factory's API.
+    const pi = getPiInstance(this.owner);
     if (!pi) return;
 
     const record = this.manager.getRecord(agentId);
@@ -203,7 +208,7 @@ export class SpawnCoordinator {
       // Pick delivery mode based on parent session state:
       // - steer: queues while running, delivers before next LLM call
       // - followUp: waits for agent to finish, then delivers
-      const ctx = getSessionCtx();
+      const ctx = getSessionCtx(this.owner);
       const parentIdle = ctx?.isIdle?.() ?? true;
       const deliverAs = parentIdle ? "followUp" : "steer";
 

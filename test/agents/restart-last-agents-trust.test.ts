@@ -102,21 +102,24 @@ vi.mock("../../src/agents/agent-types.js", () => ({
   discoverNewAgents: vi.fn(async () => 0),
 }));
 
-vi.mock("../../src/shell.js", () =>
-  shellMock({
-    coordinator: { spawn: mockCoordinatorSpawn },
-    store: {
-      get agent() {
-        return {
-          graceTurns: 6,
-          forceBackground: false,
-          defaultMaxTurns: 25,
-          loadExtensionsImplicitly: storeState.loadExtensionsImplicitly,
-        };
-      },
-      modelFor: () => "", // falsy → no model override resolves
-    },
-  }),
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() =>
+      shellMock({
+        coordinator: { spawn: mockCoordinatorSpawn },
+        store: {
+          get agent() {
+            return {
+              graceTurns: 6,
+              forceBackground: false,
+              defaultMaxTurns: 25,
+              loadExtensionsImplicitly: storeState.loadExtensionsImplicitly,
+            };
+          },
+          modelFor: () => "", // falsy → no model override resolves
+        },
+      }))(),
+  ),
 );
 
 // Import after mocks are in place
@@ -196,6 +199,7 @@ describe("restart with a trusted or same-repo worktree_path", () => {
     validatedTarget({ sameRepo: true, label: "repo-b-resolved" });
 
     const result = await handleRestartLastAgents(
+      owner,
       commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }])),
     );
 
@@ -211,7 +215,7 @@ describe("restart with a trusted or same-repo worktree_path", () => {
     storeState.loadExtensionsImplicitly = false;
     validatedTarget({ sameRepo: true });
 
-    await handleRestartLastAgents(commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }])));
+    await handleRestartLastAgents(owner, commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }])));
 
     // The spawn itself stays trusted; only the worktree type scan is gated.
     expect(lastSpawnIntent().projectTrusted).toBe(true);
@@ -229,6 +233,7 @@ describe("restart with an untrusted cross-repo worktree_path", () => {
     mockResolveSubagentTrust.mockReturnValue(false);
 
     const result = await handleRestartLastAgents(
+      owner,
       commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }])),
     );
 
@@ -243,7 +248,7 @@ describe("restart with an untrusted cross-repo worktree_path", () => {
     mockResolveSubagentTrust.mockReturnValue(false);
     const ctx = commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }]));
 
-    await handleRestartLastAgents(ctx);
+    await handleRestartLastAgents(owner, ctx);
 
     expect(notifyCalls(ctx)).toContainEqual(["[pi-subagents-lite] untrusted: /repo-b-resolved", "warning"]);
   });
@@ -261,6 +266,7 @@ describe("restart with an invalid worktree_path", () => {
     } satisfies WorktreeValidationResult);
 
     const result = await handleRestartLastAgents(
+      owner,
       commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/nope" }])),
     );
 
@@ -283,7 +289,7 @@ describe("restart with an invalid worktree_path", () => {
     });
     const ctx = commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }]));
 
-    await handleRestartLastAgents(ctx);
+    await handleRestartLastAgents(owner, ctx);
 
     expect(notifyCalls(ctx)).toContainEqual(["[pi-subagents-lite] git rev-parse failed somewhere", "warning"]);
   });
@@ -295,7 +301,7 @@ describe("restart with an invalid worktree_path", () => {
 
 describe("restart without a worktree_path", () => {
   it("performs no validation or trust resolution and spawns as before", async () => {
-    const result = await handleRestartLastAgents(commandCtx(entriesWithCalls([{ prompt: "Do it" }])));
+    const result = await handleRestartLastAgents(owner, commandCtx(entriesWithCalls([{ prompt: "Do it" }])));
 
     expect(result).toEqual({ restarted: ["general-purpose: Do it"], skipped: [] });
     expect(mockValidateWorktreePath).not.toHaveBeenCalled();
@@ -306,7 +312,7 @@ describe("restart without a worktree_path", () => {
   });
 
   it("treats a blank worktree_path as omitted (keys off the resolved target, not the raw string)", async () => {
-    await handleRestartLastAgents(commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "   " }])));
+    await handleRestartLastAgents(owner, commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "   " }])));
 
     expect(mockValidateWorktreePath).not.toHaveBeenCalled();
     const intent = lastSpawnIntent();
@@ -319,6 +325,7 @@ describe("restart without a worktree_path", () => {
     // Historical arguments are raw model output; a malformed value must not
     // surface as a downstream TypeError in the skipped list.
     const result = await handleRestartLastAgents(
+      owner,
       commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: 123 }])),
     );
 
@@ -339,9 +346,9 @@ describe("restart resolves each call through the shared spawn target", () => {
     validatedTarget({ sameRepo: true });
     const ctx = commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }]));
 
-    await handleRestartLastAgents(ctx);
+    await handleRestartLastAgents(owner, ctx);
 
-    expect(mockComputeSpawnTarget).toHaveBeenCalledWith(ctx, "/repo-b");
+    expect(mockComputeSpawnTarget).toHaveBeenCalledWith(owner, ctx, "/repo-b");
   });
 
   it("resolves the trust decision per call, not per restart", async () => {
@@ -363,6 +370,7 @@ describe("restart resolves each call through the shared spawn target", () => {
     mockResolveSubagentTrust.mockReturnValueOnce(true).mockReturnValueOnce(false);
 
     const result = await handleRestartLastAgents(
+      owner,
       commandCtx(
         entriesWithCalls([
           { prompt: "Task one", description: "One", worktree_path: "/repo-a" },
@@ -378,3 +386,6 @@ describe("restart resolves each call through the shared spawn target", () => {
     expect(mockResolveTypeOrDiscover).toHaveBeenNthCalledWith(2, "general-purpose", undefined);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

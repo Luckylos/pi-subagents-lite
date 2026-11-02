@@ -6,6 +6,20 @@
  */
 
 import { vi } from "vite-plus/test";
+import type { AgentRegistry } from "../src/agents/agent-types.js";
+
+/** Each shell fixture gets a distinct registry while preserving its controlled spies. */
+export async function agentRegistryFixtureFactory(): Promise<() => AgentRegistry> {
+  const actual = await vi.importActual<typeof import("../src/agents/agent-types.js")>("../src/agents/agent-types.js");
+  const module = await import("../src/agents/agent-types.js");
+  return () => {
+    const registry = actual.createAgentRegistry();
+    for (const [name, method] of Object.entries(module)) {
+      if (name in registry && typeof method === "function") Object.assign(registry, { [name]: method });
+    }
+    return registry;
+  };
+}
 
 /**
  * Returns a getAgentConfig mock function.

@@ -99,13 +99,17 @@ vi.mock("../../src/agents/agent-types.js", () => ({
   getAgentConfig: mockModules.mockGetAgentConfig,
 }));
 
-vi.mock("../../src/shell.js", () => ({
-  getStore: () => ({ agent: mockStoreAgent }),
-  // Real coordinator calls (one persistence test drives the real spawn path).
-  getWidget: () => undefined,
-  getPiInstance: () => undefined,
-  getSessionCtx: () => undefined,
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: () => ({ agent: mockStoreAgent }),
+      // Real coordinator calls (one persistence test drives the real spawn path).
+      getWidget: () => undefined,
+      getPiInstance: () => undefined,
+      getSessionCtx: () => undefined,
+    }))(),
+  ),
+);
 
 /** Mirrors AgentManager's private OnAgentComplete callback signature. */
 export type OnAgentComplete = (record: AgentRecord) => void;

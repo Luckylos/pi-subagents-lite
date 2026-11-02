@@ -28,7 +28,7 @@ describe("runAgent — codex stream error retry wiring", () => {
     session._isRetryableError = originalClassifier;
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(session._isRetryableError).not.toBe(originalClassifier);
     // Transient Codex stream errors are classified as retryable by our pattern...
@@ -273,3 +273,6 @@ describe("subscribeToSessionEvents — event forwarding", () => {
     unsub();
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

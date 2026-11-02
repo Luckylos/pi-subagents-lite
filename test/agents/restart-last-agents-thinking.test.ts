@@ -52,21 +52,24 @@ vi.mock("../../src/agents/agent-types.js", () => ({
   discoverNewAgents: vi.fn(async () => 0),
 }));
 
-vi.mock("../../src/shell.js", () =>
-  shellMock({
-    coordinator: { spawn: mockCoordinatorSpawn },
-    store: {
-      get agent() {
-        return {
-          graceTurns: 6,
-          forceBackground: false,
-          defaultMaxTurns: 25,
-          defaultThinking: storeState.defaultThinking,
-        };
-      },
-      modelFor: () => "",
-    },
-  }),
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() =>
+      shellMock({
+        coordinator: { spawn: mockCoordinatorSpawn },
+        store: {
+          get agent() {
+            return {
+              graceTurns: 6,
+              forceBackground: false,
+              defaultMaxTurns: 25,
+              defaultThinking: storeState.defaultThinking,
+            };
+          },
+          modelFor: () => "",
+        },
+      }))(),
+  ),
 );
 
 import { handleRestartLastAgents } from "../../src/agents/restart-last-agents.js";
@@ -114,7 +117,7 @@ describe("restart — thinking resolution", () => {
   it("replays a frontmatter `parent` at the replay session's own parent level", async () => {
     mockGetAgentConfig.mockReturnValue(agentConfig({ thinkingLevel: "parent" }));
 
-    await handleRestartLastAgents(historyWithCall({ prompt: "Do it" }, "minimal"));
+    await handleRestartLastAgents(owner, historyWithCall({ prompt: "Do it" }, "minimal"));
 
     expect(lastSpawnIntent().thinkingLevel).toBe("minimal");
     expect(lastSpawnIntent().invocation?.thinkingLevel).toBe("minimal");
@@ -123,7 +126,7 @@ describe("restart — thinking resolution", () => {
   it("spawns with nothing rather than the `parent` value when no parent level is available", async () => {
     mockGetAgentConfig.mockReturnValue(agentConfig({ thinkingLevel: "parent" }));
 
-    await handleRestartLastAgents(historyWithCall({ prompt: "Do it" }));
+    await handleRestartLastAgents(owner, historyWithCall({ prompt: "Do it" }));
 
     expect(lastSpawnIntent().thinkingLevel).toBeUndefined();
     expect(lastSpawnIntent().invocation?.thinkingLevel).toBeUndefined();
@@ -132,7 +135,7 @@ describe("restart — thinking resolution", () => {
   it("keeps the level of a historical explicit thinking param", async () => {
     mockGetAgentConfig.mockReturnValue(agentConfig({ thinkingLevel: "low" }));
 
-    await handleRestartLastAgents(historyWithCall({ prompt: "Do it", thinking: "high" }, "minimal"));
+    await handleRestartLastAgents(owner, historyWithCall({ prompt: "Do it", thinking: "high" }, "minimal"));
 
     expect(lastSpawnIntent().thinkingLevel).toBe("high");
   });
@@ -140,9 +143,12 @@ describe("restart — thinking resolution", () => {
   it("defers a config `parent` to the spawn runner instead of freezing the parent level", async () => {
     storeState.defaultThinking = "parent";
 
-    await handleRestartLastAgents(historyWithCall({ prompt: "Do it" }, "minimal"));
+    await handleRestartLastAgents(owner, historyWithCall({ prompt: "Do it" }, "minimal"));
 
     expect(lastSpawnIntent().thinkingLevel).toBeUndefined();
     expect(lastSpawnIntent().invocation?.thinkingLevel).toBeUndefined();
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

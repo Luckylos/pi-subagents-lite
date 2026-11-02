@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Background subagent completion notifications retain the parent session's bound API when the SDK reloads the extension factory with an uninitialized runtime. The next `session_start` takes ownership before asynchronous setup.
+- Extension factory state is isolated per parent instance: managers, queues, registries, widgets, invalidations, timers, and completion notifications no longer overwrite one another.
+- Child extension loading is marked only at the resource-loader boundary with async-local state, so the four subagent tools are absent from child registries while unrelated extension tools remain available.
+- Configuration mutations reread the target layer, preserve unrelated concurrent fields, use unique same-directory atomic temporary files, and report read/write/partial-layer failures instead of swallowing them.
 
 ### Changed
 

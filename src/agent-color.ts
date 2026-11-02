@@ -1,11 +1,10 @@
+import type { ExtensionOwner } from "./shell.ts";
 /**
  * agent-color.ts — Agent color resolution and ANSI output.
  *
  * Resolves agent color from config (named colors, hex) and produces
  * raw ANSI foreground escape codes for icon tinting.
  */
-
-import { getAgentConfig } from "./agents/agent-types.ts";
 
 // ---- Named color map ----
 
@@ -80,9 +79,9 @@ export function hexToAnsi(hex: string | undefined): string {
  * Looks up the agent config, resolves the color, and converts to ANSI.
  * Returns empty string if the agent has no color or is unknown.
  */
-export function agentColorAnsi(type: string | undefined): string {
+export function agentColorAnsi(owner: ExtensionOwner, type: string | undefined): string {
   if (!type || type.length === 0) return "";
-  const config = getAgentConfig(type);
+  const config = owner.registry.getAgentConfig(type);
   if (!config?.color) return "";
   const hex = resolveAgentColor(config.color);
   return hexToAnsi(hex);

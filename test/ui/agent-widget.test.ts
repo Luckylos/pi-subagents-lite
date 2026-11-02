@@ -71,7 +71,7 @@ describe("widget rendering format", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   describe("last running agent", () => {
@@ -226,7 +226,7 @@ describe("compact mode", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   it("defaults to non-compact mode and renders multi-line", () => {
@@ -273,7 +273,7 @@ describe("max lines configuration", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   it("setMaxLines updates the full mode max lines", () => {
@@ -376,7 +376,7 @@ describe("getLiveView callback", () => {
       responseText: "",
     });
 
-    const widget = new AgentWidget(manager, (id: string) => coordinatorViews.get(id));
+    const widget = new AgentWidget(owner, manager, (id: string) => coordinatorViews.get(id));
 
     const agent = makeRunningAgent("a1");
     manager.listAgents = () => [agent];
@@ -394,7 +394,7 @@ describe("getLiveView callback", () => {
     const manager = makeMockManager([]);
     const liveViews = new Map<string, LiveView>();
     // liveViews has no entry for a1
-    const widget = new AgentWidget(manager, (id: string) => liveViews.get(id));
+    const widget = new AgentWidget(owner, manager, (id: string) => liveViews.get(id));
 
     const agent = makeRunningAgent("a1");
     manager.listAgents = () => [agent];
@@ -413,7 +413,7 @@ describe("getLiveView callback", () => {
       responseText: "",
     });
 
-    const widget = new AgentWidget(manager, (id: string) => liveViews.get(id));
+    const widget = new AgentWidget(owner, manager, (id: string) => liveViews.get(id));
 
     const agent = makeRunningAgent("a1");
     manager.listAgents = () => [agent];
@@ -431,7 +431,7 @@ describe("getLiveView callback", () => {
       responseText: "Here is my response to the user…",
     });
 
-    const widget = new AgentWidget(manager, (id: string) => liveViews.get(id));
+    const widget = new AgentWidget(owner, manager, (id: string) => liveViews.get(id));
 
     const agent = makeRunningAgent("a1");
     manager.listAgents = () => [agent];
@@ -448,7 +448,7 @@ describe("renderFinishedLine context percent", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([]);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setUICtx(uiCtx);
 
     const finished = makeFinishedAgent("f1");
@@ -470,7 +470,7 @@ describe("renderFinishedLine context percent", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([]);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setUICtx(uiCtx);
 
     const running = makeRunningAgent("a1");
@@ -499,7 +499,7 @@ describe("renderFinishedLine watchdog stop", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([]);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setUICtx(uiCtx);
 
     const agent = makeFinishedAgent("f1");
@@ -516,7 +516,7 @@ describe("renderFinishedLine watchdog stop", () => {
     const uiCtx = makeUICtx();
     const activity = new Map();
     const manager = makeMockManager([]);
-    const widget = new AgentWidget(manager, (id) => activity.get(id));
+    const widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setUICtx(uiCtx);
 
     const agent = makeFinishedAgent("f1");
@@ -543,7 +543,7 @@ describe("stats visibility integration", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
   });
 
   it("hides tools count when showTools is false", () => {
@@ -654,7 +654,7 @@ describe("description truncation", () => {
     const agent = makeRunningAgent("test-1");
     agent.display.description = "a".repeat(100);
     const testManager = makeMockManager([agent]);
-    const widget = new AgentWidget(testManager, () => undefined);
+    const widget = new AgentWidget(owner, testManager, () => undefined);
 
     const lines = renderWidgetLines(widget);
 
@@ -667,7 +667,7 @@ describe("description truncation", () => {
     const agent = makeRunningAgent("test-1");
     agent.display.description = "x".repeat(500);
     const testManager = makeMockManager([agent]);
-    const widget = new AgentWidget(testManager, () => ({ activeTools: new Map(), responseText: "" }));
+    const widget = new AgentWidget(owner, testManager, () => ({ activeTools: new Map(), responseText: "" }));
 
     const lines = renderWidgetLines(widget);
 
@@ -682,7 +682,7 @@ describe("description truncation", () => {
     const agent = makeRunningAgent("test-1");
     agent.display.description = "Test description that should grow with width";
     const testManager = makeMockManager([agent]);
-    const widget = new AgentWidget(testManager, () => undefined);
+    const widget = new AgentWidget(owner, testManager, () => undefined);
 
     // Render at narrow width
     const narrowTUI = { terminal: { columns: 80 } };
@@ -712,7 +712,7 @@ describe("description truncation", () => {
     // Description with ANSI codes (simulating colored text)
     agent.display.description = "\x1b[31mRed description\x1b[0m with color";
     const testManager = makeMockManager([agent]);
-    const widget = new AgentWidget(testManager, () => undefined);
+    const widget = new AgentWidget(owner, testManager, () => undefined);
 
     const lines = renderWidgetLines(widget);
     const descLine = lines.find((l: string) => l.includes("Red description"));
@@ -725,7 +725,7 @@ describe("description truncation", () => {
     const agent = makeRunningAgent("test-1");
     agent.display.description = "A".repeat(100);
     const testManager = makeMockManager([agent]);
-    const widget = new AgentWidget(testManager, () => undefined);
+    const widget = new AgentWidget(owner, testManager, () => undefined);
     widget.setCompactMode(true);
 
     // Mock activity with long text
@@ -734,7 +734,7 @@ describe("description truncation", () => {
       responseText: "",
     };
     const getLiveView = () => liveView;
-    const widget2 = new AgentWidget(testManager, getLiveView);
+    const widget2 = new AgentWidget(owner, testManager, getLiveView);
     widget2.setCompactMode(true);
 
     // Force activity to be long enough to trigger prioritization
@@ -789,7 +789,7 @@ describe("finished-agent time window", () => {
 
   beforeEach(() => {
     manager = makeMockManager([]);
-    widget = new AgentWidget(manager, () => undefined);
+    widget = new AgentWidget(owner, manager, () => undefined);
   });
 
   it("shows a finished agent while it is inside the retention window", () => {
@@ -874,3 +874,6 @@ describe("finished-agent time window", () => {
     expect(renderState(widget).visible).toEqual([]);
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

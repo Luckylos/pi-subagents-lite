@@ -17,16 +17,19 @@ const { mockSteer, mockMatchAgents, mockListAgents, mockStore } = vi.hoisted(() 
   mockStore: { agent: { agentStatusLimit: 8 } },
 }));
 
-vi.mock("../../src/shell.js", () =>
-  shellMock({
-    manager: {
-      matchAgents: mockMatchAgents,
-      steer: mockSteer,
-      listAgents: mockListAgents,
-      abort: vi.fn(),
-    },
-    store: mockStore,
-  }),
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() =>
+      shellMock({
+        manager: {
+          matchAgents: mockMatchAgents,
+          steer: mockSteer,
+          listAgents: mockListAgents,
+          abort: vi.fn(),
+        },
+        store: mockStore,
+      }))(),
+  ),
 );
 
 import { executeMessageAgentTool } from "../../src/agents/tool-execution.js";
@@ -52,7 +55,7 @@ function target(
 }
 
 function message(params: Record<string, unknown> = { agent_id: ID, message: MESSAGE }) {
-  return executeMessageAgentTool("call_1", params, undefined, undefined, asExtensionContext({}));
+  return executeMessageAgentTool(owner, "call_1", params, undefined, undefined, asExtensionContext({}));
 }
 
 describe("executeMessageAgentTool", () => {
@@ -168,3 +171,6 @@ describe("executeMessageAgentTool", () => {
     expect(mockSteer).toHaveBeenCalledWith(ID, MESSAGE);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

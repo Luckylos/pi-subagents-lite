@@ -10,7 +10,11 @@ import { join } from "node:path";
 import { asExtensionContext } from "./pi-boundaries.js";
 
 const mockSetAgentScanDirs = vi.fn();
-const mockSetProjectDir = vi.fn();
+const mockSetProjectDir = vi.fn(() => ({
+  load: () => ({ global: {}, project: null, projectStatus: "untrusted" as const }),
+  saveGlobal() {},
+  saveProject() {},
+}));
 
 // Windows-style fixtures: the home-dir fix targets Windows, where HOME may
 // be unset and paths contain backslashes and spaces.
@@ -27,6 +31,11 @@ vi.mock("../src/agents/agent-types.js", () => ({
   getAvailableTypes: vi.fn(() => []),
   setAgentScanDirs: mockSetAgentScanDirs,
   scanAndMerge: vi.fn().mockResolvedValue(new Map()),
+}));
+
+vi.mock("../src/config/config-io.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/config/config-io.js")>()),
+  createConfigIO: mockSetProjectDir,
 }));
 
 vi.mock("../src/agents/default-agents.js", () => ({
@@ -67,7 +76,7 @@ vi.mock("../src/registration.js", () => ({
 vi.mock("../src/ui/format.js", () => ({
   formatMs: vi.fn(() => "0s"),
   buildStatsParts: vi.fn(() => []),
-  getDisplayName: vi.fn((type: string) => type),
+  getDisplayName: vi.fn((_owner: import("../src/shell.js").ExtensionOwner, type: string) => type),
 }));
 
 vi.mock("../src/ui/menu/menus.js", () => ({
@@ -82,25 +91,29 @@ vi.mock("../src/ui/menu/menus.js", () => ({
   buildAgentWidgetSettingsMenu: vi.fn(() => null),
 }));
 
-vi.mock("../src/shell.js", () => ({
-  getManager: vi.fn(() => null),
-  getWidget: vi.fn(() => null),
-  getStore: vi.fn(() => ({
-    agent: { disableDefaultAgents: false },
-    setDeps: vi.fn(),
-    setProjectDir: mockSetProjectDir,
-    reload: vi.fn(),
-    notifyToolsExpanded: vi.fn(),
-    dispose: vi.fn(),
-  })),
-  getCoordinator: vi.fn(() => null),
-  getPiInstance: vi.fn(() => null),
-  getSessionCtx: vi.fn(() => ({})),
-  setSessionCtx: vi.fn(),
-  setManager: vi.fn(),
-  setWidget: vi.fn(),
-  setCoordinator: vi.fn(),
-}));
+vi.mock("../src/shell.js", async () =>
+  (await import("./owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getManager: vi.fn(() => null),
+      getWidget: vi.fn(() => null),
+      getStore: vi.fn(() => ({
+        agent: { disableDefaultAgents: false },
+        setDeps: vi.fn(),
+        setProjectDir: mockSetProjectDir,
+        reload: vi.fn(),
+        notifyToolsExpanded: vi.fn(),
+        dispose: vi.fn(),
+      })),
+      getCoordinator: vi.fn(() => null),
+      getPiInstance: vi.fn(() => null),
+      getSessionCtx: vi.fn(() => ({})),
+      setSessionCtx: vi.fn(),
+      setManager: vi.fn(),
+      setWidget: vi.fn(),
+      setCoordinator: vi.fn(),
+    }))(),
+  ),
+);
 
 vi.mock("@earendil-works/pi-tui", () => ({
   matchesKey: vi.fn(() => false),
@@ -121,11 +134,12 @@ const { scanAndRegisterAgents, loadConfigAndRegisterAgents } = await import("../
 describe("events.ts session config loading", () => {
   beforeEach(() => {
     mockSetAgentScanDirs.mockClear();
+    owner.sessionCtx = null;
   });
 
   it("uses getAgentDir() (not $HOME) for the user dir and loads project dirs when trusted", async () => {
     const ctx = asExtensionContext({ cwd: MOCK_CWD, isProjectTrusted: () => true });
-    await scanAndRegisterAgents(ctx);
+    await scanAndRegisterAgents(owner, ctx);
 
     // Scan dirs: user (from getAgentDir()), project, shared
     expect(mockSetAgentScanDirs).toHaveBeenCalledWith(
@@ -137,7 +151,7 @@ describe("events.ts session config loading", () => {
 
   it("skips project dirs when the project is untrusted", async () => {
     const ctx = asExtensionContext({ cwd: MOCK_CWD, isProjectTrusted: () => false });
-    await scanAndRegisterAgents(ctx);
+    await scanAndRegisterAgents(owner, ctx);
 
     expect(mockSetAgentScanDirs).toHaveBeenCalledWith(
       join(MOCK_AGENT_DIR, "agents"), // user dir always loaded
@@ -148,15 +162,18 @@ describe("events.ts session config loading", () => {
 
   it("points the store at the project .pi dir when trusted", async () => {
     const ctx = asExtensionContext({ cwd: MOCK_CWD, isProjectTrusted: () => true });
-    await loadConfigAndRegisterAgents(ctx);
+    await loadConfigAndRegisterAgents(owner, ctx);
 
     expect(mockSetProjectDir).toHaveBeenCalledWith(join(MOCK_CWD, ".pi"));
   });
 
   it("skips the project config when untrusted", async () => {
     const ctx = asExtensionContext({ cwd: MOCK_CWD, isProjectTrusted: () => false });
-    await loadConfigAndRegisterAgents(ctx);
+    await loadConfigAndRegisterAgents(owner, ctx);
 
     expect(mockSetProjectDir).toHaveBeenCalledWith(undefined);
   });
 });
+
+import { createTestOwner } from "./owner-fixtures.js";
+const owner = await createTestOwner();

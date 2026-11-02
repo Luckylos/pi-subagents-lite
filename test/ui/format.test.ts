@@ -19,7 +19,7 @@ import {
   agentBulletPrefix,
   agentColoredText,
 } from "../../src/ui/format.js";
-import { registerAgents } from "../../src/agents/agent-types.js";
+
 import type { AgentConfig } from "../../src/agents/types.js";
 import type { AgentRecord } from "../../src/types.js";
 import { asAgentSession } from "../pi-boundaries.js";
@@ -27,15 +27,19 @@ import { asAgentSession } from "../pi-boundaries.js";
 // Mutable mock store state for testing functions that depend on getStore()
 let mockShowAgentColors = true;
 
-vi.mock("../../src/shell.js", () => ({
-  getStore: () => ({
-    agent: {
-      get showAgentColors() {
-        return mockShowAgentColors;
-      },
-    },
-  }),
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: () => ({
+        agent: {
+          get showAgentColors() {
+            return mockShowAgentColors;
+          },
+        },
+      }),
+    }))(),
+  ),
+);
 
 const mockTheme = {
   fg: (_color: string, text: string) => text,
@@ -215,24 +219,24 @@ describe("getDisplayName", () => {
       systemPrompt: "test",
     });
 
-    registerAgents(agents);
+    owner.registry.registerAgents(agents);
   });
 
   it("returns displayName for visible agents", () => {
-    expect(getDisplayName("visible-agent")).toBe("Visible Agent Display");
+    expect(getDisplayName(owner, "visible-agent")).toBe("Visible Agent Display");
   });
 
   it("returns displayName for hidden agents", () => {
     // Hidden agents resolve from their own config, not general-purpose's "Agent".
-    expect(getDisplayName("hidden-agent")).toBe("Hidden Agent Display");
+    expect(getDisplayName(owner, "hidden-agent")).toBe("Hidden Agent Display");
   });
 
   it("falls back to name when displayName is not set", () => {
-    expect(getDisplayName("no-display-name")).toBe("no-display-name");
+    expect(getDisplayName(owner, "no-display-name")).toBe("no-display-name");
   });
 
   it("falls back to 'Agent' when agent type is not found", () => {
-    expect(getDisplayName("non-existent-agent")).toBe("Agent");
+    expect(getDisplayName(owner, "non-existent-agent")).toBe("Agent");
   });
 });
 
@@ -407,7 +411,7 @@ describe("statusIcon", () => {
   }
 
   beforeEach(() => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([
         ["red-agent", { name: "red-agent", description: "Red", color: "red", systemPrompt: "" }],
         ["uncolored-agent", { name: "uncolored-agent", description: "No color", systemPrompt: "" }],
@@ -417,24 +421,24 @@ describe("statusIcon", () => {
 
   it("returns plain icon when status is unknown", () => {
     const theme = makeTrackingTheme();
-    expect(statusIcon(undefined, theme)).toBe("▸");
+    expect(statusIcon(owner, undefined, theme)).toBe("▸");
   });
 
   it("uses theme.fg for agent without color", () => {
     const theme = makeTrackingTheme();
-    const result = statusIcon("running", theme, "uncolored-agent");
+    const result = statusIcon(owner, "running", theme, "uncolored-agent");
     expect(result).toBe("[accent:◈]");
   });
 
   it("uses theme.fg when no agentType is passed", () => {
     const theme = makeTrackingTheme();
-    const result = statusIcon("running", theme);
+    const result = statusIcon(owner, "running", theme);
     expect(result).toBe("[accent:◈]");
   });
 
   it("uses agent color ANSI when agentType has a color", () => {
     const theme = makeTrackingTheme();
-    const result = statusIcon("running", theme, "red-agent");
+    const result = statusIcon(owner, "running", theme, "red-agent");
     // Should use raw ANSI foreground (not theme.fg) and include reset
     expect(result).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
     expect(result).toContain("◈");
@@ -445,7 +449,7 @@ describe("statusIcon", () => {
 
   it("tints completed status icon with agent color", () => {
     const theme = makeTrackingTheme();
-    const result = statusIcon("completed", theme, "red-agent");
+    const result = statusIcon(owner, "completed", theme, "red-agent");
     expect(result).toContain("✓");
     expect(result).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
   });
@@ -453,7 +457,7 @@ describe("statusIcon", () => {
   it("falls back to theme.fg when showAgentColors is false", () => {
     const theme = makeTrackingTheme();
     mockShowAgentColors = false;
-    const result = statusIcon("running", theme, "red-agent");
+    const result = statusIcon(owner, "running", theme, "red-agent");
     // Should use theme.fg, not agent color ANSI
     expect(result).toBe("[accent:◈]");
     expect(theme.calls).toHaveLength(1);
@@ -464,7 +468,7 @@ describe("statusIcon", () => {
 
 describe("agentBulletPrefix", () => {
   beforeEach(() => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([
         ["colored-agent", { name: "colored-agent", description: "Colored", color: "#ff0000", systemPrompt: "" }],
         ["uncolored-agent", { name: "uncolored-agent", description: "No color", systemPrompt: "" }],
@@ -478,7 +482,7 @@ describe("agentBulletPrefix", () => {
   });
 
   it("returns colored bullet when showAgentColors is true and agent has a color", () => {
-    const result = agentBulletPrefix("colored-agent");
+    const result = agentBulletPrefix(owner, "colored-agent");
     expect(result).toContain("•");
     expect(result).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
     // fg reset (\x1b[39m) after the bullet so the agent name is not tinted.
@@ -487,25 +491,25 @@ describe("agentBulletPrefix", () => {
   });
 
   it("returns empty string when showAgentColors is true but agent has no color", () => {
-    const result = agentBulletPrefix("uncolored-agent");
+    const result = agentBulletPrefix(owner, "uncolored-agent");
     expect(result).toBe("");
   });
 
   it("returns empty string when showAgentColors is false", () => {
     mockShowAgentColors = false;
-    const result = agentBulletPrefix("colored-agent");
+    const result = agentBulletPrefix(owner, "colored-agent");
     expect(result).toBe("");
   });
 
   it("returns empty string when agentType is undefined", () => {
-    const result = agentBulletPrefix(undefined);
+    const result = agentBulletPrefix(owner, undefined);
     expect(result).toBe("");
   });
 });
 
 describe("agentColoredText", () => {
   beforeEach(() => {
-    registerAgents(
+    owner.registry.registerAgents(
       new Map([
         ["colored-agent", { name: "colored-agent", description: "Colored", color: "#ff0000", systemPrompt: "" }],
         ["uncolored-agent", { name: "uncolored-agent", description: "No color", systemPrompt: "" }],
@@ -519,25 +523,28 @@ describe("agentColoredText", () => {
   });
 
   it("returns colored text when showAgentColors is true and agent has a color", () => {
-    const result = agentColoredText("my-name", "colored-agent");
+    const result = agentColoredText(owner, "my-name", "colored-agent");
     expect(result).toContain("my-name");
     expect(result).toMatch(/\x1b\[38;2;\d+;\d+;\d+m/);
     expect(result).toContain("\x1b[39m");
   });
 
   it("returns plain text when showAgentColors is true but agent has no color", () => {
-    const result = agentColoredText("my-name", "uncolored-agent");
+    const result = agentColoredText(owner, "my-name", "uncolored-agent");
     expect(result).toBe("my-name");
   });
 
   it("returns plain text when showAgentColors is false", () => {
     mockShowAgentColors = false;
-    const result = agentColoredText("my-name", "colored-agent");
+    const result = agentColoredText(owner, "my-name", "colored-agent");
     expect(result).toBe("my-name");
   });
 
   it("returns plain text when agentType is undefined", () => {
-    const result = agentColoredText("my-name", undefined);
+    const result = agentColoredText(owner, "my-name", undefined);
     expect(result).toBe("my-name");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

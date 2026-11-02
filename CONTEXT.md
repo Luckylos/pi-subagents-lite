@@ -70,6 +70,10 @@ _Avoid_: Worktree name
 
 ### Runtime
 
+**Extension instance**:
+One loading of this extension for a pi runtime, owning the parent session’s configuration, subagents, and completion notifications. Two instances in the same process do not share session-specific state.
+_Avoid_: Shell instance, plugin instance, runtime
+
 **Activity tracker**:
 Per-agent transient display state (active tools, streaming response text) bridging spawn callbacks and the TUI widget renderer. Accumulated stats live on the AgentRecord, not here.
 _Avoid_: Agent monitor, agent stats

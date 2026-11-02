@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vite-plus/test";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 // Per-run temp dirs: must never read a real user config file.
@@ -314,5 +314,41 @@ describe("createConfigIO save — per-layer writes", () => {
     io.saveProject({ agent: { default: "p" } });
 
     expect(existsSync(join(projectDir, "subagents-lite.json"))).toBe(false);
+  });
+
+  it("updateLayer rereads the latest file and preserves unrelated fields", () => {
+    writeGlobal({ agent: { graceTurns: 5, forceBackground: false } });
+    const io = createConfigIO();
+    io.load();
+    writeGlobal({ agent: { graceTurns: 9, forceBackground: false } });
+
+    io.updateLayer("global", (latest) => {
+      latest.agent ??= {};
+      latest.agent.forceBackground = true;
+    });
+
+    expect(JSON.parse(readFileSync(GLOBAL_CONFIG_PATH, "utf-8"))).toEqual({
+      agent: { graceTurns: 9, forceBackground: true },
+    });
+    expect(readdirSync(MOCK_AGENT_DIR).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("updateLayer rejects malformed JSON without overwriting the original bytes", () => {
+    const malformed = "{ broken";
+    writeFileSync(GLOBAL_CONFIG_PATH, malformed);
+    const io = createConfigIO();
+
+    expect(() => io.updateLayer("global", () => {})).toThrow("Failed to parse config");
+    expect(readFileSync(GLOBAL_CONFIG_PATH, "utf-8")).toBe(malformed);
+  });
+
+  it("updateLayer reports an unreadable target instead of treating it as empty", () => {
+    rmSync(GLOBAL_CONFIG_PATH, { force: true });
+    mkdirSync(GLOBAL_CONFIG_PATH);
+    const io = createConfigIO();
+
+    expect(() => io.updateLayer("global", () => {})).toThrow("Failed to read config");
+    expect(existsSync(GLOBAL_CONFIG_PATH)).toBe(true);
+    rmSync(GLOBAL_CONFIG_PATH, { recursive: true, force: true });
   });
 });

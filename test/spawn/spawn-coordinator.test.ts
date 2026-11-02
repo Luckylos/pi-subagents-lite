@@ -42,11 +42,15 @@ const { mockPi, mockGetPiInstance } = vi.hoisted(() => ({
 // raw Mock so tests can reach .mock calls and implementations.
 const mockPiApi = asExtensionAPI(mockPi);
 
-vi.mock("../../src/shell.js", () => ({
-  getPiInstance: () => mockGetPiInstance(),
-  getSessionCtx: () => ({ isIdle: () => true }),
-  getWidget: () => null,
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getPiInstance: () => mockGetPiInstance(),
+      getSessionCtx: () => ({ isIdle: () => true }),
+      getWidget: () => null,
+    }))(),
+  ),
+);
 
 function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & MockManager {
   const records = new Map<string, AgentRecord>();
@@ -136,12 +140,13 @@ describe("SpawnCoordinator", () => {
     ctx = makeMockCtx();
     mockPi.sendMessage.mockReset(); // full reset — no impl or calls leak between tests
     mockGetPiInstance.mockReturnValue(mockPiApi);
+    owner = await createTestOwner();
     const mod = await import("../../src/spawn/spawn-coordinator.js");
     SpawnCoordinator = mod.SpawnCoordinator;
   });
 
   it("spawns a background agent and returns result", async () => {
-    const coordinator = new SpawnCoordinator(manager);
+    const coordinator = new SpawnCoordinator(owner, manager);
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "do something",
@@ -160,7 +165,7 @@ describe("SpawnCoordinator", () => {
   });
 
   it("spawns a foreground agent and awaits its promise", async () => {
-    const coordinator = new SpawnCoordinator(manager);
+    const coordinator = new SpawnCoordinator(owner, manager);
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "do something",
@@ -175,7 +180,7 @@ describe("SpawnCoordinator", () => {
   });
 
   it("creates a live view on spawn", async () => {
-    const coordinator = new SpawnCoordinator(manager);
+    const coordinator = new SpawnCoordinator(owner, manager);
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "do something",
@@ -191,7 +196,7 @@ describe("SpawnCoordinator", () => {
   });
 
   it("keeps the live view after foreground completion (the agent can be continued)", async () => {
-    const coordinator = new SpawnCoordinator(manager);
+    const coordinator = new SpawnCoordinator(owner, manager);
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "do something",
@@ -206,7 +211,7 @@ describe("SpawnCoordinator", () => {
   });
 
   it("registers background agent in backgroundAgentIds", async () => {
-    const coordinator = new SpawnCoordinator(manager);
+    const coordinator = new SpawnCoordinator(owner, manager);
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "do something",
@@ -219,7 +224,7 @@ describe("SpawnCoordinator", () => {
   });
 
   it("does not register foreground agent in backgroundAgentIds", async () => {
-    const coordinator = new SpawnCoordinator(manager);
+    const coordinator = new SpawnCoordinator(owner, manager);
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "do something",
@@ -233,7 +238,7 @@ describe("SpawnCoordinator", () => {
 
   describe("nudge scheduling", () => {
     it("emits individual nudge after delay window", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -254,7 +259,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("batches multiple nudges within the delay window", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const r1 = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -281,7 +286,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("does not emit nudge for agent without record", () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       // agent-999 doesn't exist in the mock manager
       coordinator.scheduleNudge("agent-999");
 
@@ -291,7 +296,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("starts new batch window for nudges arriving after the previous window", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const r1 = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -324,7 +329,7 @@ describe("SpawnCoordinator", () => {
 
   describe("nudge content", () => {
     it("includes the recorded error message when the background agent failed", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -347,7 +352,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("keeps the nudge unchanged for non-error completions", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -370,7 +375,7 @@ describe("SpawnCoordinator", () => {
 
   describe("onAgentComplete", () => {
     it("keeps the live view after completion (a continuation re-feeds it)", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -386,7 +391,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("schedules nudge for background agents", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -405,7 +410,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("re-feeds the live view with activity after completion", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -428,7 +433,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("does not schedule nudge for foreground agents", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -446,7 +451,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("nudges on every continuation settlement of a background agent", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -474,7 +479,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("schedules a nudge for a continued foreground agent", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -491,7 +496,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("does not nudge a foreground agent's initial completion", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -508,7 +513,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("delivers no nudge for a never-started foreground stop", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -526,7 +531,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("keeps the never-started background stop nudge unchanged", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -545,7 +550,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("never emits more than one nudge for settlements within one batch window", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -566,7 +571,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("keeps a continued foreground agent reporting as foreground", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -583,7 +588,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("catches sendMessage errors silently (stale pi)", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -605,7 +610,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("skips nudge emission when disposed", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -631,7 +636,7 @@ describe("SpawnCoordinator", () => {
     it("falls back to ui.notify for a continued foreground agent when sendMessage fails", async () => {
       const notify = vi.fn();
       const ctxWithUi = asExtensionContext({ ...makeMockCtx(), ui: { notify } });
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctxWithUi, {
         type: "builder",
         prompt: "task",
@@ -655,7 +660,7 @@ describe("SpawnCoordinator", () => {
     it("does not fall back to ui.notify for a foreground agent's initial completion", async () => {
       const notify = vi.fn();
       const ctxWithUi = asExtensionContext({ ...makeMockCtx(), ui: { notify } });
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctxWithUi, {
         type: "builder",
         prompt: "task",
@@ -679,7 +684,7 @@ describe("SpawnCoordinator", () => {
     it("keeps the spawning ctx across a background agent's first nudge for the continuation fallback", async () => {
       const notify = vi.fn();
       const ctxWithUi = asExtensionContext({ ...makeMockCtx(), ui: { notify } });
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctxWithUi, {
         type: "builder",
         prompt: "task",
@@ -708,7 +713,7 @@ describe("SpawnCoordinator", () => {
 
   describe("dispose", () => {
     it("clears nudge timer", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -727,7 +732,7 @@ describe("SpawnCoordinator", () => {
     });
 
     it("clears live views", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -747,7 +752,7 @@ describe("SpawnCoordinator", () => {
 
   describe("stale pi protection", () => {
     it("reads pi from shell at nudge time, not from spawn", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -763,8 +768,8 @@ describe("SpawnCoordinator", () => {
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("uses fresh shell pi when shell is updated between spawn and nudge", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+    it("keeps its own API when another fixture API changes before the nudge", async () => {
+      const coordinator = new SpawnCoordinator(owner, manager);
 
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -781,12 +786,12 @@ describe("SpawnCoordinator", () => {
       coordinator.scheduleNudge(result.agentId);
       vi.advanceTimersByTime(200);
 
-      expect(freshPi.sendMessage).toHaveBeenCalledTimes(1);
-      expect(mockPi.sendMessage).not.toHaveBeenCalled();
+      expect(freshPi.sendMessage).not.toHaveBeenCalled();
+      expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("skips nudge silently when shell has no pi", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+    it("keeps its own API when an unbound fixture has no API", async () => {
+      const coordinator = new SpawnCoordinator(owner, manager);
       const notify = vi.fn();
       const ctxWithUi = asExtensionContext({ ...makeMockCtx(), ui: { notify } });
 
@@ -804,10 +809,7 @@ describe("SpawnCoordinator", () => {
       coordinator.scheduleNudge(result.agentId);
       vi.advanceTimersByTime(200);
 
-      // The record exists, so without the !pi guard the nudge would reach
-      // the sendMessage try/catch and fall back to ui.notify. Assert both
-      // paths stay silent to pin the guard.
-      expect(mockPi.sendMessage).not.toHaveBeenCalled();
+      expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
       expect(notify).not.toHaveBeenCalled();
     });
   });
@@ -824,7 +826,7 @@ describe("SpawnCoordinator", () => {
 
       for (const { status, expected } of statuses) {
         mockPi.sendMessage.mockClear();
-        const coordinator = new SpawnCoordinator(manager);
+        const coordinator = new SpawnCoordinator(owner, manager);
 
         const result = await coordinator.spawn(mockPiApi, ctx, {
           type: "builder",
@@ -852,7 +854,7 @@ describe("SpawnCoordinator", () => {
   describe("completion gate — foreground wait", () => {
     it("blocks a foreground spawn until the completion gate opens", async () => {
       const manager = makeMockManager({ pendingGate: true });
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       let settled = false;
       const spawnPromise = coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -879,7 +881,7 @@ describe("SpawnCoordinator", () => {
 
     it("returns immediately for background spawns regardless of the gate", async () => {
       const manager = makeMockManager({ pendingGate: true });
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "do something",
@@ -893,7 +895,7 @@ describe("SpawnCoordinator", () => {
 
     it("carries the parent signal through to the manager spawn options", async () => {
       const controller = new AbortController();
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "do something",
@@ -909,7 +911,7 @@ describe("SpawnCoordinator", () => {
 
   describe("nudge content — queued background stop", () => {
     it("delivers exactly one Stopped nudge carrying the never-started note", async () => {
-      const coordinator = new SpawnCoordinator(manager);
+      const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
         prompt: "task",
@@ -933,3 +935,6 @@ describe("SpawnCoordinator", () => {
     });
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+let owner = await createTestOwner();

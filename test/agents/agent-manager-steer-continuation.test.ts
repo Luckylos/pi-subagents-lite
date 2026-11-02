@@ -48,18 +48,18 @@ describe("AgentManager", () => {
 
   function getOnAssistantUsage() {
     const call = mockModules.mockRunAgent.mock.calls[mockModules.mockRunAgent.mock.calls.length - 1];
-    const callbacks = call[3];
+    const callbacks = call[4];
     return callbacks.onAssistantUsage;
   }
 
   function getOnTurnEnd() {
     const call = mockModules.mockRunAgent.mock.calls[mockModules.mockRunAgent.mock.calls.length - 1];
-    return call[3].onTurnEnd;
+    return call[4].onTurnEnd;
   }
 
   function getOnToolActivity() {
     const call = mockModules.mockRunAgent.mock.calls[mockModules.mockRunAgent.mock.calls.length - 1];
-    return call[3].onToolActivity;
+    return call[4].onToolActivity;
   }
 
   async function spawnSettled(options: Record<string, unknown> = {}): Promise<string> {
@@ -70,7 +70,7 @@ describe("AgentManager", () => {
   }
 
   it("continues a settled agent by prompting its session, returning true immediately", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(deferred.promise);
     const id = await spawnSettled();
@@ -99,7 +99,7 @@ describe("AgentManager", () => {
   });
 
   it("keeps the completion gate untouched across continuation", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(deferred.promise);
     const id = await spawnSettled();
@@ -114,7 +114,7 @@ describe("AgentManager", () => {
   });
 
   it("returns false for a settled agent without a session", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult({ session: undefined }));
     const id = spawnForeground("first task");
     const record = manager.getRecord(id)!;
@@ -126,7 +126,7 @@ describe("AgentManager", () => {
   });
 
   it("returns false while the record is still settling (settled guard)", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(deferred.promise);
     const id = spawnForeground("first task");
@@ -134,7 +134,7 @@ describe("AgentManager", () => {
     // Simulate a session already created, then stop: status flips to stopped
     // synchronously while the run is still settling (settled stays false).
     const session = mockAgentSession();
-    mockModules.mockRunAgent.mock.calls[0][3].onSessionCreated(session);
+    mockModules.mockRunAgent.mock.calls[0][4].onSessionCreated(session);
     manager.abort(id, "user");
     expect(record.lifecycle.status).toBe("stopped");
 
@@ -146,7 +146,7 @@ describe("AgentManager", () => {
   });
 
   it("rejects when the session is streaming", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const id = await spawnSettled();
     const record = manager.getRecord(id)!;
     record.execution.session = asAgentSession(mockAgentSession({ isStreaming: true }));
@@ -156,7 +156,7 @@ describe("AgentManager", () => {
   });
 
   it("re-reserves the concurrency slot and rejects when it is full", async () => {
-    manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+    manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
     const firstRun = makeResolvablePromise();
     const secondRun = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValueOnce(firstRun.promise).mockReturnValueOnce(secondRun.promise);
@@ -177,7 +177,7 @@ describe("AgentManager", () => {
   });
 
   it("skips re-reservation entirely when modelKey is undefined", async () => {
-    manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+    manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
     const deferred = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(deferred.promise);
     const id = await spawnSettled({ modelKey: undefined });
@@ -190,7 +190,7 @@ describe("AgentManager", () => {
   });
 
   it("releases the slot and drains the queue when the continuation settles", async () => {
-    manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+    manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
     const idA = await spawnSettled();
@@ -209,7 +209,7 @@ describe("AgentManager", () => {
   });
 
   it("preserves stats and accumulates the turn count across continuation", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
@@ -240,7 +240,7 @@ describe("AgentManager", () => {
   });
 
   it("forwards continuation activity and streamed text to the spawn-time live-view callbacks", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const onToolActivity = vi.fn();
     const onTextDelta = vi.fn();
     const contRun = makeResolvablePromise();
@@ -261,7 +261,7 @@ describe("AgentManager", () => {
   });
 
   it("tallies only the cost delta and does not double-count the agent", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const id = spawnForeground("first task");
     const record = manager.getRecord(id)!;
@@ -287,7 +287,7 @@ describe("AgentManager", () => {
   });
 
   it("notifies completion on every settlement", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
     const id = await spawnSettled();
@@ -300,7 +300,7 @@ describe("AgentManager", () => {
   });
 
   it("clears the stale result when the continuation fails", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const id = await spawnSettled();
     const record = manager.getRecord(id)!;
     expect(record.result).toBe("done");
@@ -317,7 +317,7 @@ describe("AgentManager", () => {
   });
 
   it("classifies provider model errors like the first run", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
     const id = await spawnSettled();
@@ -341,7 +341,7 @@ describe("AgentManager", () => {
   });
 
   it("forwards Stop through the fresh abort controller during a continuation", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
     const id = await spawnSettled();
@@ -362,7 +362,7 @@ describe("AgentManager", () => {
   });
 
   it("does not re-attach the parent abort binding on continuation", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
     const controller = new AbortController();
@@ -381,7 +381,7 @@ describe("AgentManager", () => {
     vi.useFakeTimers();
     try {
       mockStoreState.idleTimeoutMinutes = 45;
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const id = spawnForeground("task");
       const record = manager.getRecord(id)!;
@@ -415,7 +415,7 @@ describe("AgentManager", () => {
     vi.useFakeTimers();
     try {
       mockStoreState.idleTimeoutMinutes = 45;
-      manager = new AgentManager(onComplete);
+      manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
       const id = spawnForeground("task");
       const record = manager.getRecord(id)!;
@@ -448,7 +448,7 @@ describe("AgentManager", () => {
   });
 
   it("delivers a steer sent before the session existed when that session is created, then delegates live steers in order", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(deferred.promise);
     const id = spawnForeground("task");
@@ -460,7 +460,7 @@ describe("AgentManager", () => {
     const session = mockAgentSession();
     const delivered = () => session.steer.mock.calls.map(([message]) => message);
 
-    mockModules.mockRunAgent.mock.calls[0][3].onSessionCreated(session);
+    mockModules.mockRunAgent.mock.calls[0][4].onSessionCreated(session);
     expect(delivered()).toEqual(["early"]);
 
     await expect(manager.steer(id, "later")).resolves.toBe(true);
@@ -472,7 +472,7 @@ describe("AgentManager", () => {
   });
 
   it("messaging a settled agent reuses its record rather than creating a second one", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const contRun = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun.promise);
     const id = await spawnSettled();
@@ -488,12 +488,12 @@ describe("AgentManager", () => {
   });
 
   it("continues an agent the user stopped, through its live session", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const firstRun = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
     const id = spawnForeground("first task");
     const record = manager.getRecord(id)!;
-    mockModules.mockRunAgent.mock.calls[0][3].onSessionCreated(asAgentSession(mockAgentSession()));
+    mockModules.mockRunAgent.mock.calls[0][4].onSessionCreated(asAgentSession(mockAgentSession()));
     manager.abort(id, "user");
     await settleRun(firstRun);
     expect(record.lifecycle.status).toBe("stopped");
@@ -509,7 +509,7 @@ describe("AgentManager", () => {
   });
 
   it("does not continue a record that never settled (queued stop)", async () => {
-    manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+    manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
     const firstRun = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
     const _id1 = spawnForeground("first");
@@ -526,7 +526,7 @@ describe("AgentManager", () => {
   });
 
   it("initializes settlementCount to 0 at spawn", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockReturnValue(makeResolvablePromise().promise);
     const id = spawnForeground("first task");
 
@@ -535,7 +535,7 @@ describe("AgentManager", () => {
 
   it("increments settlementCount on every settlement, before notifying", async () => {
     const observedCounts: number[] = [];
-    manager = new AgentManager((record) => {
+    manager = new AgentManager(owner, (record) => {
       onComplete(record);
       observedCounts.push(record.execution.settlementCount);
     });
@@ -563,7 +563,7 @@ describe("AgentManager", () => {
   });
 
   it("keeps settlementCount at 0 for a never-started queued stop", async () => {
-    manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+    manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
     const firstRun = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
     const _id1 = spawnForeground("first");
@@ -580,3 +580,6 @@ describe("AgentManager", () => {
     firstRun.resolve(mockRunResult());
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

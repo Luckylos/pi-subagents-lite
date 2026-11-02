@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * agent-widget.ts — Persistent widget showing running/completed agents above the editor.
  */
@@ -173,6 +174,7 @@ export class AgentWidget {
   private viewerOpen = false;
 
   constructor(
+    private owner: ExtensionOwner,
     private manager: AgentManager,
     private getLiveView: (id: string) => LiveView | undefined,
   ) {}
@@ -507,7 +509,7 @@ export class AgentWidget {
         try {
           this.update();
         } catch (err) {
-          getSessionCtx()?.ui?.notify(`[subagents] Widget timer error: ${String(err)}`, "warning");
+          getSessionCtx(this.owner)?.ui?.notify(`[subagents] Widget timer error: ${String(err)}`, "warning");
         }
       }, WIDGET_REFRESH_INTERVAL);
     }
@@ -539,7 +541,7 @@ export class AgentWidget {
     theme: Theme,
     agentType?: string,
   ): { icon: string; statusText: string } {
-    const icon = statusIcon(lifecycle.status, theme, agentType);
+    const icon = statusIcon(this.owner, lifecycle.status, theme, agentType);
     switch (lifecycle.status) {
       case "completed":
         return { icon, statusText: "" };
@@ -563,7 +565,7 @@ export class AgentWidget {
   }
 
   private renderFinishedLine(a: AgentRecord, theme: Theme, _w: number): string {
-    const name = getDisplayName(a.display.type);
+    const name = getDisplayName(this.owner, a.display.type);
     const { icon, statusText } = this.finishedIconAndStatus(a.lifecycle, a.error, theme, a.display.type || undefined);
 
     const durationMs = (a.lifecycle.completedAt ?? Date.now()) - a.lifecycle.startedAt;
@@ -679,7 +681,9 @@ export class AgentWidget {
     // Only color connector characters (│, └), not plain indentation spaces
     const hasConnector = prefix.trim().length > 0;
     const coloredPrefix = hasConnector
-      ? applyAgentColor(prefix, agentColorAnsi(a.display.type || undefined), () => theme.fg("dim", prefix))
+      ? applyAgentColor(this.owner, prefix, agentColorAnsi(this.owner, a.display.type || undefined), () =>
+          theme.fg("dim", prefix),
+        )
       : theme.fg("dim", prefix);
     return truncate(coloredPrefix + theme.fg("dim", parts.join("  ")));
   }
@@ -703,14 +707,14 @@ export class AgentWidget {
 
   /** Colored spinner frame for an agent: uses agent color when configured, else theme accent. */
   private coloredFrame(frame: string, agentType: string | undefined, theme: Theme): string {
-    return applyAgentColor(frame, agentColorAnsi(agentType), () => theme.fg("accent", frame));
+    return applyAgentColor(this.owner, frame, agentColorAnsi(this.owner, agentType), () => theme.fg("accent", frame));
   }
 
   private buildRunningBlocks(running: AgentRecord[], theme: Theme, w: number, frame: string): RenderBlock[] {
     const truncate = (line: string) => truncateToWidth(line, w);
     const blocks: RenderBlock[] = [];
     for (const a of running) {
-      const name = getDisplayName(a.display.type);
+      const name = getDisplayName(this.owner, a.display.type);
       const bg = this.getLiveView(a.id);
       const statsLine = this.buildStatsLine(a, theme);
       const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…";
@@ -747,8 +751,11 @@ export class AgentWidget {
         const line = this.buildMetadataLine(a, "  │ ", theme, truncate);
         if (line) metadataLines.push(line);
         const connectorPrefix = "  └ ";
-        const coloredConnector = applyAgentColor(connectorPrefix, agentColorAnsi(a.display.type || undefined), () =>
-          theme.fg("dim", connectorPrefix),
+        const coloredConnector = applyAgentColor(
+          this.owner,
+          connectorPrefix,
+          agentColorAnsi(this.owner, a.display.type || undefined),
+          () => theme.fg("dim", connectorPrefix),
         );
         metadataLines.push(truncate(coloredConnector + theme.fg("dim", activity)));
         blocks.push({
@@ -944,7 +951,7 @@ export class AgentWidget {
     const truncate = (line: string) => truncateToWidth(line, w);
     const blocks: RenderBlock[] = [];
     for (const a of queued) {
-      const name = getDisplayName(a.display.type);
+      const name = getDisplayName(this.owner, a.display.type);
       const desc = a.display.description;
       const header = `  ${theme.fg("muted", "◦")} ${theme.fg("dim", name)}  ${theme.fg("dim", desc)}`;
       blocks.push({ header: truncate(header), metadataLines: [] });
@@ -1083,7 +1090,7 @@ export class AgentWidget {
                 return lines;
               } catch (err) {
                 this.lastWidgetLines = [];
-                getSessionCtx()?.ui?.notify(`[subagents] Widget render error: ${String(err)}`, "warning");
+                getSessionCtx(this.owner)?.ui?.notify(`[subagents] Widget render error: ${String(err)}`, "warning");
                 return [];
               }
             },

@@ -120,7 +120,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
 
   it("uses ctx.ui.custom (not ctx.ui.select/runMenuLoop)", async () => {
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
@@ -128,7 +128,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
   it("shows default concurrency with current value", async () => {
     mockModules.mockConfig.concurrency = { default: 4 };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultConcurrency")!;
     expect(item.currentValue).toBe("4");
   });
@@ -136,7 +136,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
   it("tags a session-sourced default with [session]", async () => {
     mockModules.mockSessionConcurrency.default = 9;
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultConcurrency")!;
     expect(item.currentValue).toBe("9 [session]");
   });
@@ -144,7 +144,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
   it("tags a project-sourced provider limit with [project]", async () => {
     mockModules.mockProjectConfig.concurrency.providers = { llamacpp: 2 };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "provider:llamacpp")!;
     expect(item.currentValue).toBe("2 slots [project]");
   });
@@ -152,7 +152,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
   it("sets the default at a target level via the picker", async () => {
     mockModules.mockProjectTargetOffered = true;
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultConcurrency")!;
     const done = vi.fn();
     item.submenu!("4", done);
@@ -176,7 +176,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
     mockModules.mockConfig.concurrency = { default: 4 };
     mockModules.mockProjectConfig.concurrency.default = 8;
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultConcurrency")!;
     const done = vi.fn();
     item.submenu!("8", done);
@@ -196,7 +196,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
   it("hides Clear when no layer carries the default", async () => {
     mockModules.mockConfig.concurrency = {};
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultConcurrency")!;
     const done = vi.fn();
     item.submenu!("4", done);
@@ -206,7 +206,7 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
 
   it("styles section headers like the model settings menu", async () => {
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const items = settingsListCalls[0].items;
     // Section headers are bare labels, styled by the theme like model settings.
     expect(items.some((i) => i.label === "Per-provider limits")).toBe(true);
@@ -223,7 +223,7 @@ describe("showConcurrencySettingsMenu — per-provider limits", () => {
   it("shows configured per-provider limits as items", async () => {
     mockModules.mockConfig.concurrency = { default: 4, providers: { llamacpp: 2 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("provider:llamacpp");
     const item = settingsListCalls[0].items.find((i) => i.id === "provider:llamacpp")!;
@@ -233,7 +233,7 @@ describe("showConcurrencySettingsMenu — per-provider limits", () => {
   it("edit provider limit submenu shows Set targets plus Clear", async () => {
     mockModules.mockConfig.concurrency = { default: 4, providers: { llamacpp: 2 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "provider:llamacpp")!;
     const done = vi.fn();
     item.submenu!("2", done);
@@ -248,7 +248,7 @@ describe("showConcurrencySettingsMenu — per-provider limits", () => {
     mockModules.mockConfig.concurrency = { default: 4, providers: { llamacpp: 2 } };
     mockModules.mockProjectConfig.concurrency.providers = { llamacpp: 3 };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "provider:llamacpp")!;
     const done = vi.fn();
     item.submenu!("2", done);
@@ -269,7 +269,7 @@ describe("showConcurrencySettingsMenu — per-provider limits", () => {
     mockModules.mockProjectTargetOffered = true;
     mockModules.mockProjectConfig.concurrency.providers = { llamacpp: 2 };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "provider:llamacpp")!;
     const done = vi.fn();
     item.submenu!("2", done);
@@ -282,7 +282,7 @@ describe("showConcurrencySettingsMenu — per-provider limits", () => {
   it("edit provider limit — target pick then Input applies at the picked level", async () => {
     mockModules.mockConfig.concurrency = { default: 4, providers: { llamacpp: 2 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "provider:llamacpp")!;
     const done = vi.fn();
     const proxy = item.submenu!("2", done);
@@ -307,7 +307,7 @@ describe("showConcurrencySettingsMenu — per-provider limits", () => {
   it("add provider limit — pick, target, then value", async () => {
     mockModules.mockProjectTargetOffered = true;
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "addProviderLimit")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -336,7 +336,7 @@ describe("showConcurrencySettingsMenu — per-model limits", () => {
   it("shows configured per-model limits as items", async () => {
     mockModules.mockConfig.concurrency = { default: 4, models: { "llamacpp/4b": 3 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("model:llamacpp/4b");
     const item = settingsListCalls[0].items.find((i) => i.id === "model:llamacpp/4b")!;
@@ -346,7 +346,7 @@ describe("showConcurrencySettingsMenu — per-model limits", () => {
   it("edit model limit submenu shows Set targets plus Clear", async () => {
     mockModules.mockConfig.concurrency = { default: 4, models: { "llamacpp/4b": 1 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "model:llamacpp/4b")!;
     const done = vi.fn();
     item.submenu!("1", done);
@@ -358,7 +358,7 @@ describe("showConcurrencySettingsMenu — per-model limits", () => {
   it("edit model limit — target pick then Input applies at the picked level", async () => {
     mockModules.mockConfig.concurrency = { default: 4, models: { "llamacpp/4b": 1 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "model:llamacpp/4b")!;
     const done = vi.fn();
     const proxy = item.submenu!("1", done);
@@ -391,7 +391,7 @@ describe("showConcurrencySettingsMenu — clear all limits per target", () => {
       models: { "llamacpp/4b": 3, "openai/gpt-4o": 1 },
     };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b", "openai/gpt-4o"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "resetAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -413,7 +413,7 @@ describe("showConcurrencySettingsMenu — clear all limits per target", () => {
     mockModules.mockConfig.concurrency = { default: 4, providers: { llamacpp: 2 } };
     mockModules.mockProjectConfig.concurrency = { default: 8, providers: { llamacpp: 3 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "resetAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -429,7 +429,7 @@ describe("showConcurrencySettingsMenu — clear all limits per target", () => {
   it("clear all at session clears only the session layer", async () => {
     mockModules.mockSessionConcurrency = { default: 9, providers: { llamacpp: 3 } };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, ["llamacpp/4b"]);
+    await showConcurrencySettingsMenu(owner, ctx, ["llamacpp/4b"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "resetAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -445,7 +445,7 @@ describe("showConcurrencySettingsMenu — clear all limits per target", () => {
   it("hides Clear all when no layer carries any concurrency entry", async () => {
     mockModules.mockConfig.concurrency = {};
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).not.toContain("resetAll");
   });
@@ -454,7 +454,7 @@ describe("showConcurrencySettingsMenu — clear all limits per target", () => {
     mockModules.mockConfig.concurrency = { default: 4 };
     mockModules.mockSessionConcurrency = { default: 9 };
     const ctx = createMockCtx();
-    await showConcurrencySettingsMenu(ctx, []);
+    await showConcurrencySettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "resetAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -462,3 +462,6 @@ describe("showConcurrencySettingsMenu — clear all limits per target", () => {
     expect(targetList.items.map((i) => i.id)).toEqual(["session", "global", "all"]);
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

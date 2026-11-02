@@ -49,7 +49,7 @@ describe("widget worktree label — full mode", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(false);
   });
 
@@ -131,7 +131,7 @@ describe("widget worktree label — compact mode", () => {
   beforeEach(() => {
     manager = makeMockManager([]);
     activity = new Map();
-    widget = new AgentWidget(manager, (id) => activity.get(id));
+    widget = new AgentWidget(owner, manager, (id) => activity.get(id));
     widget.setCompactMode(true);
     widget.setWidgetShortcut(true);
   });
@@ -164,3 +164,6 @@ describe("widget worktree label — compact mode", () => {
     expect(lines.some((l: string) => l.includes("reading"))).toBe(true);
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

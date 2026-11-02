@@ -10,12 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vite-plus/test";
-import {
-  registerAgents,
-  getVisibleAgentInfos,
-  formatAgentTypeDescriptions,
-  getAvailableTypes,
-} from "../../src/agents/agent-types.js";
+import { formatAgentTypeDescriptions } from "../../src/agents/agent-types.js";
 import type { AgentConfig } from "../../src/agents/types.js";
 
 function agent(overrides: Partial<AgentConfig> & { name: string }): AgentConfig {
@@ -33,12 +28,12 @@ const REGISTRY = new Map<string, AgentConfig>([
 ]);
 
 beforeEach(() => {
-  registerAgents(REGISTRY, { disableDefaultAgents: true });
+  owner.registry.registerAgents(REGISTRY, { disableDefaultAgents: true });
 });
 
 describe("getVisibleAgentInfos", () => {
   it("returns name and raw description per visible agent, in registry order, hidden excluded", () => {
-    expect(getVisibleAgentInfos()).toEqual([
+    expect(owner.registry.getVisibleAgentInfos()).toEqual([
       { name: "general-purpose", description: "General-purpose agent for complex, multi-step tasks" },
       { name: "Explore", description: "Fast codebase exploration agent (read-only)" },
       { name: "Bare", description: "   " },
@@ -46,13 +41,13 @@ describe("getVisibleAgentInfos", () => {
   });
 
   it("pairs with getAvailableTypes: the name lists are identical", () => {
-    expect(getVisibleAgentInfos().map((info) => info.name)).toEqual(getAvailableTypes());
+    expect(owner.registry.getVisibleAgentInfos().map((info) => info.name)).toEqual(owner.registry.getAvailableTypes());
   });
 });
 
 describe("formatAgentTypeDescriptions", () => {
   it("builds the header plus one trimmed name: description line per agent", () => {
-    expect(formatAgentTypeDescriptions(getVisibleAgentInfos())).toBe(
+    expect(formatAgentTypeDescriptions(owner.registry.getVisibleAgentInfos())).toBe(
       "Available agent types:\n" +
         "general-purpose: General-purpose agent for complex, multi-step tasks\n" +
         "Explore: Fast codebase exploration agent (read-only)\n" +
@@ -75,3 +70,6 @@ describe("formatAgentTypeDescriptions", () => {
     expect(formatAgentTypeDescriptions([])).toBe("Available agent types:");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

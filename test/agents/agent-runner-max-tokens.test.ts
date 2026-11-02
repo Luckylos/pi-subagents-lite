@@ -33,7 +33,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       compat: { maxTokensField: "max_tokens" },
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = {
       model: "llama-3.1-8b",
@@ -55,7 +55,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
 
     const model = makeMockModel({ compat: { maxTokensField: "max_completion_tokens" } });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!(
       { model: "some-model", messages: [{ role: "user", content: "do something" }] },
@@ -83,7 +83,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       baseUrl: "https://opencode.ai/zen/go/v1",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!(
       { model: "custom-model", messages: [{ role: "user", content: "do something" }] },
@@ -110,7 +110,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       compat: { maxTokensField: "max_tokens" },
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!(
       { model: "catalog-model", messages: [{ role: "user", content: "do something" }] },
@@ -139,7 +139,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       baseUrl: "https://api.anthropic.com",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!(
       { model: "claude-sonnet", messages: [{ role: "user", content: "do something" }] },
@@ -165,7 +165,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       baseUrl: "https://api.openai.com/v1",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!(
       { model: "gpt-5.4", input: [], stream: true, max_output_tokens: 16384 },
@@ -190,7 +190,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       baseUrl: "https://api.openai.com/v1",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const oauthPayload = { model: "gpt-5.4", input: [], stream: true };
     const finalPayload = await session.agent.onPayload!(oauthPayload, model);
@@ -208,7 +208,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
 
     const model = makeMockModel({ api: "openai-responses" });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!({ model: "m", messages: [], max_output_tokens: 16384 }, model);
 
@@ -228,7 +228,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       supportsMaxOutputTokens: false,
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = { model: "m", messages: [] };
     const finalPayload = await session.agent.onPayload!(rawPayload, model);
@@ -244,7 +244,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
 
     const model = makeMockModel({ api: "azure-openai-responses" });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!({ model: "m", messages: [] }, model);
 
@@ -269,7 +269,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       baseUrl: "https://api.deepseek.com/v1",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model: initialModel });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model: initialModel });
 
     // Per-request model after a mid-run switch: no max_tokens family →
     // max_completion_tokens.
@@ -292,7 +292,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
   it("no max_tokens injected when agent config omits it", async () => {
     mockModules.mockGetAgentConfig.mockReturnValue({ ...defaultAgentConfig });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model: makeMockModel() });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model: makeMockModel() });
 
     expect(session.agent.onPayload).toBeUndefined();
   });
@@ -310,7 +310,7 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
       compat: { maxTokensField: "max_tokens" },
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model, maxTokens: 2048 });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model, maxTokens: 2048 });
 
     const rawPayload = {
       model: "llama-3.1-8b",
@@ -347,7 +347,7 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
       baseUrl: "https://bedrock.us-east-1.amazonaws.com",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = {
       modelId: "anthropic.claude-sonnet",
@@ -375,7 +375,7 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
       baseUrl: "https://generativelanguage.googleapis.com",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = {
       model: "gemini-2.5-flash",
@@ -400,7 +400,7 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
       baseUrl: "https://us-central1-aiplatform.googleapis.com",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = { model: "gemini-2.5-pro", contents: [], config: {} };
     const finalPayload = await session.agent.onPayload!(rawPayload, model);
@@ -421,7 +421,7 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
       baseUrl: "https://api.mistral.ai",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const finalPayload = await session.agent.onPayload!({ agent: "m", messages: [] }, model);
 
@@ -437,7 +437,7 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
       baseUrl: "https://pi.local",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = { model: "pi-model", context: [], options: { temperature: 0.7 } };
     const finalPayload = await session.agent.onPayload!(rawPayload, model);
@@ -458,7 +458,7 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
       baseUrl: "https://chatgpt.com/backend-api",
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, model });
 
     const rawPayload = { model: "gpt-5.5-codex", input: [] };
     const finalPayload = await session.agent.onPayload!(rawPayload, model);
@@ -466,3 +466,6 @@ describe("runAgent — maxTokens: native fields per non-completions API", () => 
     expect(finalPayload).toEqual(rawPayload);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

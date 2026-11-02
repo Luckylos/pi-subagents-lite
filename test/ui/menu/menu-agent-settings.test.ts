@@ -115,7 +115,7 @@ describe("showSpawnOptionsMenu — SettingsList integration", () => {
 
   it("uses ctx.ui.custom (not ctx.ui.select)", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
@@ -126,7 +126,7 @@ describe("showSpawnOptionsMenu — force background", () => {
 
   it("shows 'Force background · OFF' when disabled", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const fb = settingsListCalls[0].items.find((i) => i.id === "forceBackground")!;
     expect(fb.currentValue).toBe("OFF");
   });
@@ -134,7 +134,7 @@ describe("showSpawnOptionsMenu — force background", () => {
   it("shows 'Force background · ON' when enabled", async () => {
     mockModules.mockConfig.agent.forceBackground = true;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const fb = settingsListCalls[0].items.find((i) => i.id === "forceBackground")!;
     expect(fb.currentValue).toBe("ON");
   });
@@ -142,7 +142,7 @@ describe("showSpawnOptionsMenu — force background", () => {
   it("toggles force background via onChange", async () => {
     mockModules.mockConfig.agent.forceBackground = false;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     settingsListCalls[0].onChange("forceBackground", "ON");
     expect(mockModules.mockConfig.agent.forceBackground).toBe(true);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), "info");
@@ -154,7 +154,7 @@ describe("showSpawnOptionsMenu — grace turns", () => {
 
   it("shows 'Grace turns · 6' with default value", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const gt = settingsListCalls[0].items.find((i) => i.id === "graceTurns")!;
     expect(gt.currentValue).toBe("6");
     expect(typeof gt.submenu).toBe("function");
@@ -163,7 +163,7 @@ describe("showSpawnOptionsMenu — grace turns", () => {
   it("shows configured grace turns value", async () => {
     mockModules.mockConfig.agent.graceTurns = 10;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const gt = settingsListCalls[0].items.find((i) => i.id === "graceTurns")!;
     expect(gt.currentValue).toBe("10");
   });
@@ -171,7 +171,7 @@ describe("showSpawnOptionsMenu — grace turns", () => {
   it("grace turns submenu creates Input and handles valid submit", async () => {
     mockModules.mockConfig.agent.graceTurns = 5;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const gt = settingsListCalls[0].items.find((i) => i.id === "graceTurns")!;
     const mockDone = vi.fn();
@@ -189,7 +189,7 @@ describe("showSpawnOptionsMenu — grace turns", () => {
   it("grace turns submenu rejects negative numbers", async () => {
     mockModules.mockConfig.agent.graceTurns = 3;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const gt = settingsListCalls[0].items.find((i) => i.id === "graceTurns")!;
     const mockDone = vi.fn();
@@ -203,7 +203,7 @@ describe("showSpawnOptionsMenu — grace turns", () => {
 
   it("grace turns submenu handles escape", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const gt = settingsListCalls[0].items.find((i) => i.id === "graceTurns")!;
     const mockDone = vi.fn();
@@ -219,7 +219,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
 
   it("shows 'Default max turns · (not set)' when no default is set", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     expect(dmt.currentValue).toBe("(not set)");
     expect(typeof dmt.submenu).toBe("function");
@@ -228,7 +228,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
   it("shows configured max turns value", async () => {
     mockModules.mockConfig.agent.defaultMaxTurns = 50;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     expect(dmt.currentValue).toBe("50");
   });
@@ -236,7 +236,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
   it("tags a project-sourced max turns with [project]", async () => {
     mockModules.mockProjectConfig.agent.defaultMaxTurns = 50;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     expect(dmt.currentValue).toBe("50 [project]");
   });
@@ -244,7 +244,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
   it("max turns submenu: target pick then valid number", async () => {
     mockModules.mockProjectTargetOffered = true;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -267,7 +267,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
     mockModules.mockConfig.agent.defaultMaxTurns = 50;
     mockModules.mockProjectConfig.agent.defaultMaxTurns = 30;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -293,7 +293,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
     mockModules.mockConfig.agent.defaultMaxTurns = 50;
     mockModules.mockProjectConfig.agent.defaultMaxTurns = 30;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -309,7 +309,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
 
   it("max turns submenu: Clear... offers only global and all when the project target is unavailable", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -324,7 +324,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
   it("max turns submenu: escape from the nested Clear... picker returns to the outer picker", async () => {
     mockModules.mockConfig.agent.defaultMaxTurns = 50;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -350,7 +350,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
   it("rebuilds after a submenu value change so the row shows the new value with its provenance tag", async () => {
     mockModules.mockProjectTargetOffered = true;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const recorded = settingsListCalls[0];
 
     mockModules.mockProjectConfig.agent.defaultMaxTurns = 50;
@@ -363,7 +363,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
   it("max turns submenu accepts 'unlimited' to clear at the picked level", async () => {
     mockModules.mockConfig.agent.defaultMaxTurns = 50;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -379,7 +379,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
 
   it("max turns submenu rejects value < 1", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -396,7 +396,7 @@ describe("showSpawnOptionsMenu — default max turns", () => {
 
   it("max turns submenu handles escape from the target picker", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const dmt = settingsListCalls[0].items.find((i) => i.id === "defaultMaxTurns")!;
     const mockDone = vi.fn();
@@ -412,7 +412,7 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
 
   it("is labelled distinctly from pi's own defaultThinkingLevel setting", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     expect(dt.label).toBe("Subagent default thinking");
     // The row's own description names the agent file as the source above it.
@@ -421,7 +421,7 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
 
   it("shows 'pi default' when no default is set", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     expect(dt.currentValue).toBe("pi default");
   });
@@ -429,7 +429,7 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
   it("shows configured thinking level", async () => {
     mockModules.mockConfig.agent.defaultThinking = "high";
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     expect(dt.currentValue).toBe("high");
   });
@@ -437,14 +437,14 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
   it("tags a project-sourced thinking level with [project]", async () => {
     mockModules.mockProjectConfig.agent.defaultThinking = "medium";
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     expect(dt.currentValue).toBe("medium [project]");
   });
 
   it("sets thinking level at global via target pick then level pick", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     const mockDone = vi.fn();
     dt.submenu!("", mockDone);
@@ -474,7 +474,7 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
   it("sets thinking level at project level via target pick", async () => {
     mockModules.mockProjectTargetOffered = true;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     const mockDone = vi.fn();
     dt.submenu!("", mockDone);
@@ -492,14 +492,14 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
   it("shows `parent` when the level is set to follow the parent session", async () => {
     mockModules.mockConfig.agent.defaultThinking = "parent";
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     expect(dt.currentValue).toBe("parent");
   });
 
   it("sets `parent` at the picked layer", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     dt.submenu!("", vi.fn());
     settingsListCalls[settingsListCalls.length - 1].list.activate("global");
@@ -511,7 +511,7 @@ describe("showSpawnOptionsMenu — Subagent default thinking", () => {
   it("selecting 'pi default' removes the key at the picked layer", async () => {
     mockModules.mockConfig.agent.defaultThinking = "high";
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const dt = settingsListCalls[0].items.find((i) => i.id === "defaultThinking")!;
     const mockDone = vi.fn();
     dt.submenu!("", mockDone);
@@ -532,7 +532,7 @@ describe("showSpawnOptionsMenu — watchdog timeouts", () => {
 
   it("shows tool and idle timeout items", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("toolTimeout");
     expect(ids).toContain("idleTimeout");
@@ -542,7 +542,7 @@ describe("showSpawnOptionsMenu — watchdog timeouts", () => {
     mockModules.mockConfig.agent.toolTimeoutMinutes = 10;
     mockModules.mockConfig.agent.idleTimeoutMinutes = 20;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const items = settingsListCalls[0].items;
     expect(items.find((i) => i.id === "toolTimeout")!.currentValue).toBe("10");
     expect(items.find((i) => i.id === "idleTimeout")!.currentValue).toBe("20");
@@ -551,7 +551,7 @@ describe("showSpawnOptionsMenu — watchdog timeouts", () => {
   it("tool timeout submenu pre-fills the current value and accepts 0", async () => {
     mockModules.mockConfig.agent.toolTimeoutMinutes = 5;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const tt = settingsListCalls[0].items.find((i) => i.id === "toolTimeout")!;
     const mockDone = vi.fn();
@@ -566,7 +566,7 @@ describe("showSpawnOptionsMenu — watchdog timeouts", () => {
 
   it("tool timeout submenu rejects negative and non-numeric input", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const tt = settingsListCalls[0].items.find((i) => i.id === "toolTimeout")!;
     const mockDone = vi.fn();
@@ -588,7 +588,7 @@ describe("showSpawnOptionsMenu — watchdog timeouts", () => {
   it("idle timeout submenu pre-fills the current value and accepts 0", async () => {
     mockModules.mockConfig.agent.idleTimeoutMinutes = 5;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const itm = settingsListCalls[0].items.find((i) => i.id === "idleTimeout")!;
     const mockDone = vi.fn();
@@ -603,7 +603,7 @@ describe("showSpawnOptionsMenu — watchdog timeouts", () => {
 
   it("idle timeout submenu rejects negative and non-numeric input", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
 
     const itm = settingsListCalls[0].items.find((i) => i.id === "idleTimeout")!;
     const mockDone = vi.fn();
@@ -628,7 +628,7 @@ describe("showSpawnOptionsMenu — item order", () => {
 
   it("has Tools section with expected items", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     // Tools section items exist
     expect(ids).toContain("agentStatusLimit");
@@ -648,7 +648,7 @@ describe("showSpawnOptionsMenu — expose agent descriptions", () => {
 
   it("shows 'Expose agent descriptions · OFF' when disabled", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const row = settingsListCalls[0].items.find((i) => i.id === "exposeDescriptions")!;
     expect(row.currentValue).toBe("OFF");
     expect(row.values).toEqual(["ON", "OFF"]);
@@ -657,21 +657,21 @@ describe("showSpawnOptionsMenu — expose agent descriptions", () => {
   it("shows 'Expose agent descriptions · ON' when enabled", async () => {
     mockModules.mockConfig.agent.exposeDescriptions = true;
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const row = settingsListCalls[0].items.find((i) => i.id === "exposeDescriptions")!;
     expect(row.currentValue).toBe("ON");
   });
 
   it("describes the toggle with a reload note", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     const row = settingsListCalls[0].items.find((i) => i.id === "exposeDescriptions")!;
     expect(row.description).toContain("reload");
   });
 
   it("persists the toggle via the mutator and notifies", async () => {
     const ctx = createMockCtx();
-    await showSpawnOptionsMenu(ctx);
+    await showSpawnOptionsMenu(owner, ctx);
     settingsListCalls[0].onChange("exposeDescriptions", "ON");
     expect(mockModules.mockConfig.agent.exposeDescriptions).toBe(true);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("reload"), "info");
@@ -679,3 +679,6 @@ describe("showSpawnOptionsMenu — expose agent descriptions", () => {
     expect(mockModules.mockConfig.agent.exposeDescriptions).toBe(false);
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -4,7 +4,9 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { matchesKey, isKeyRelease } from "@earendil-works/pi-tui";
-import { registerAgents, setAgentScanDirs, scanAndMerge } from "./agents/agent-types.ts";
+import { ConfigStore } from "./config/config-store.ts";
+import { createConfigIO } from "./config/config-io.ts";
+import type { ExtensionOwner } from "./shell.ts";
 import { AgentManager } from "./agents/agent-manager.ts";
 import { AgentWidget, type UICtx } from "./ui/agent-widget.ts";
 import { ConversationViewer } from "./ui/conversation-viewer.ts";
@@ -17,7 +19,6 @@ import {
   getWidget,
   getCoordinator,
   getStore,
-  setPiInstance,
   setSessionCtx,
   setManager,
   setWidget,
@@ -27,46 +28,49 @@ import {
 // --- Config loader — session_start handler logic ---
 
 /** Idempotent — safe to call on every session_start. */
-export function ensureManagerAndWidget(): void {
-  const currentManager = getManager();
-  const currentWidget = getWidget();
+export function ensureManagerAndWidget(owner: ExtensionOwner): void {
+  if (!owner.sessionCtx || !owner.store) return;
+  const currentManager = getManager(owner);
+  const currentWidget = getWidget(owner);
 
   if (!currentManager) {
     // Coordinator needs the manager, so wire onComplete after creating it.
     // Invalidate row when agent starts running (queued → running transition)
     const onStart = (record: AgentRecord) => {
-      invalidateAgentRow(record.id);
-      getWidget()?.update();
+      if (owner.manager !== newManager) return;
+      invalidateAgentRow(owner, record.id);
+      getWidget(owner)?.update();
     };
 
-    const newManager = new AgentManager(
-      undefined,
-      getStore().concurrency as unknown as ConstructorParameters<typeof AgentManager>[1],
-      onStart,
-    );
-    setManager(newManager);
+    const newManager = new AgentManager(owner, undefined, getStore(owner).concurrency, onStart);
+    setManager(owner, newManager);
     // Sync the manager as a config side-effect target (concurrency setters call setConcurrency).
-    getStore().setDeps({ manager: newManager });
+    getStore(owner).setDeps({ manager: newManager });
 
-    const coordinator = new SpawnCoordinator(newManager);
-    setCoordinator(coordinator);
+    const coordinator = new SpawnCoordinator(owner, newManager);
+    setCoordinator(owner, coordinator);
 
     newManager.setOnComplete((record) => {
+      if (owner.manager !== newManager) return;
       coordinator.onAgentComplete(record);
-      invalidateAgentRow(record.id);
-      getWidget()?.update();
+      invalidateAgentRow(owner, record.id);
+      getWidget(owner)?.update();
     });
   }
 
   if (!currentWidget) {
-    const newWidget = new AgentWidget(getManager()!, (id: string) => getCoordinator()?.liveView(id));
-    setWidget(newWidget);
+    const newWidget = new AgentWidget(owner, getManager(owner)!, (id: string) => getCoordinator(owner)?.liveView(id));
+    setWidget(owner, newWidget);
     // Sync widget as config side-effect target — setDeps re-syncs all display settings from config.
-    getStore().setDeps({ widget: newWidget });
+    getStore(owner).setDeps({ widget: newWidget });
   }
 }
 
-export async function scanAndRegisterAgents(ctx: ExtensionContext): Promise<void> {
+export async function scanAndRegisterAgents(
+  owner: ExtensionOwner,
+  ctx: ExtensionContext,
+  generation = owner.generation,
+): Promise<void> {
   const agentDir = getAgentDir();
   const userAgentDir = path.join(agentDir, "agents");
   const projectTrusted = ctx.isProjectTrusted();
@@ -74,42 +78,45 @@ export async function scanAndRegisterAgents(ctx: ExtensionContext): Promise<void
   const projectAgentDir = projectTrusted ? path.join(ctx.cwd, ".pi", "agents") : "";
 
   // Store scan dirs for on-demand discovery (agents added during the session)
-  setAgentScanDirs(userAgentDir, projectAgentDir, sharedAgentDir);
+  owner.registry.setAgentScanDirs(userAgentDir, projectAgentDir, sharedAgentDir);
 
-  const disableDefaults = getStore().agent.disableDefaultAgents;
+  const disableDefaults = getStore(owner).agent.disableDefaultAgents;
 
-  const merged = await scanAndMerge({ disableDefaultAgents: disableDefaults });
+  const merged = await owner.registry.scanAndMerge({ disableDefaultAgents: disableDefaults });
 
-  registerAgents(merged, { disableDefaultAgents: disableDefaults });
+  if (owner.generation !== generation) return;
+  owner.registry.registerAgents(merged, { disableDefaultAgents: disableDefaults });
 }
 
-export async function loadConfigAndRegisterAgents(ctx: ExtensionContext): Promise<void> {
-  // Project config (.pi/subagents-lite.json) loads only in trusted projects,
-  // mirroring the .pi/agents scan-dir gate in scanAndRegisterAgents.
+export async function loadConfigAndRegisterAgents(
+  owner: ExtensionOwner,
+  ctx: ExtensionContext,
+  generation = owner.generation,
+): Promise<void> {
   const projectDir = ctx.isProjectTrusted() ? path.join(ctx.cwd, ".pi") : undefined;
-  getStore().setProjectDir(projectDir);
-  // ConfigStore is authoritative for config + session overrides + widget/manager
-  // side effects.
-  getStore().reload();
-  ensureManagerAndWidget();
-  await scanAndRegisterAgents(ctx);
+  // Each session owns its IO instance; no ConfigStore construction at factory/import time.
+  owner.store = new ConfigStore(createConfigIO(projectDir));
+  await scanAndRegisterAgents(owner, ctx, generation);
+  if (owner.generation !== generation) return;
+  ensureManagerAndWidget(owner);
 }
 
 // --- Event listener setup ---
 
 /** Open the viewer overlay; the viewerOpen flag prevents nav deactivation while open. */
-async function openViewer(ctx: ExtensionContext, record: AgentRecord | null): Promise<void> {
+async function openViewer(owner: ExtensionOwner, ctx: ExtensionContext, record: AgentRecord | null): Promise<void> {
   if (!record) return;
   if (!record.execution?.session) return;
-  const widget = getWidget();
+  const widget = getWidget(owner);
   if (!widget) return;
-  const manager = getManager();
+  const manager = getManager(owner);
 
   try {
     widget.setViewerOpen(true);
 
     await ctx.ui.custom<void>((tui, theme, kb, done) => {
       const viewer = new ConversationViewer(
+        owner,
         tui,
         record.execution.session!,
         record,
@@ -119,7 +126,7 @@ async function openViewer(ctx: ExtensionContext, record: AgentRecord | null): Pr
         kb,
         (msg: string) => manager?.steer(record.id, msg),
       );
-      viewer.setModelDisplayStyle(getStore().agent.modelDisplayStyle);
+      viewer.setModelDisplayStyle(getStore(owner).agent.modelDisplayStyle);
       return viewer;
     });
   } finally {
@@ -130,9 +137,14 @@ async function openViewer(ctx: ExtensionContext, record: AgentRecord | null): Pr
 type InputListenerResult = { consume: true } | undefined;
 
 /** Exposed for tests to drive the real handler with a stubbed ctx. */
-export function createNavInputHandler(ctx: ExtensionContext): (data: string) => InputListenerResult {
+export function createNavInputHandler(
+  owner: ExtensionOwner,
+  ctx: ExtensionContext,
+): (data: string) => InputListenerResult {
+  const generation = owner.generation;
   return (data: string) => {
-    const widget = getWidget();
+    if (generation !== owner.generation) return undefined;
+    const widget = getWidget(owner);
 
     // Only fire on key press (not release).
     if (isKeyRelease(data)) return undefined;
@@ -171,7 +183,7 @@ export function createNavInputHandler(ctx: ExtensionContext): (data: string) => 
         }
         if (matchesKey(data, "enter")) {
           const record = widget.navSelect();
-          openViewer(ctx, record).catch((err) => {
+          openViewer(owner, ctx, record).catch((err) => {
             ctx.ui.notify(`Failed to open agent viewer: ${String(err)}`, "error");
           });
           return { consume: true };
@@ -186,10 +198,11 @@ export function createNavInputHandler(ctx: ExtensionContext): (data: string) => 
     if (matchesKey(data, "ctrl+o")) {
       // Read state after a tick so the built-in handler applies the toggle first.
       setTimeout(() => {
+        if (generation !== owner.generation || !owner.store) return;
         const ui = ctx.ui as unknown as { getToolsExpanded?: () => boolean };
         const expanded = ui.getToolsExpanded?.();
         if (expanded !== undefined) {
-          getStore().notifyToolsExpanded(expanded);
+          getStore(owner).notifyToolsExpanded(expanded);
         }
       }, 0);
     }
@@ -198,54 +211,53 @@ export function createNavInputHandler(ctx: ExtensionContext): (data: string) => 
   };
 }
 
-export function setupEventListeners(pi: ExtensionAPI): void {
-  pi.on("tool_call", toolCallListener);
+/** Disable notifications before aborting children; detach every reference synchronously. */
+function disposeSession(owner: ExtensionOwner): Promise<void> {
+  owner.unregisterTerminalInput?.();
+  owner.unregisterTerminalInput = null;
+  cleanupInvalidations(owner);
+  owner.registry.reset();
+  owner.coordinator?.dispose();
+  owner.coordinator = null;
+  owner.widget?.dispose();
+  owner.widget = null;
+  owner.store?.dispose();
+  owner.store = null;
+  const manager = owner.manager;
+  owner.manager = null;
+  owner.sessionCtx = null;
+  return manager?.dispose() ?? Promise.resolve();
+}
+
+export function setupEventListeners(pi: ExtensionAPI, owner: ExtensionOwner): void {
+  pi.on("tool_call", (event, ctx) => toolCallListener(owner, event, ctx));
 
   pi.on("turn_start", async (_event, ctx) => {
-    // Set UI context on first turn
-    if (!getWidget()) {
-      ensureManagerAndWidget();
-    }
-    getWidget()?.setUICtx(ctx.ui as unknown as UICtx);
+    getWidget(owner)?.setUICtx(ctx.ui as unknown as UICtx);
   });
 
-  let unregisterTerminalInput: (() => void) | undefined;
-
   pi.on("session_start", async (_event: unknown, ctx: ExtensionContext) => {
-    // Factory reloads may receive an unbound API; publish only after runtime binding.
-    setPiInstance(pi);
-    setSessionCtx(ctx);
-    await loadConfigAndRegisterAgents(ctx);
-    // Re-register with updated agent type list (now includes user/project agents)
-    registerAgentTool(pi);
-    // ctrl+o syncs compact mode with tool expansion (push-based, no polling)
-    if (ctx.hasUI && !unregisterTerminalInput) {
-      unregisterTerminalInput = ctx.ui.onTerminalInput(createNavInputHandler(ctx));
+    const generation = ++owner.generation;
+    await disposeSession(owner);
+    if (owner.generation !== generation) return;
+    setSessionCtx(owner, ctx);
+    await loadConfigAndRegisterAgents(owner, ctx, generation);
+    if (owner.generation !== generation) return;
+    registerAgentTool(pi, owner);
+    if (ctx.hasUI) {
+      owner.unregisterTerminalInput = ctx.ui.onTerminalInput(createNavInputHandler(owner, ctx));
     }
-    // Sync compact mode with initial tool expansion state
-    getStore().notifyToolsExpanded(false);
+    getStore(owner).notifyToolsExpanded(false);
   });
 
   pi.on("session_shutdown", async (_event: unknown, ctx: ExtensionContext) => {
-    const currentManager = getManager();
-    if (currentManager) {
-      const records = currentManager.listAgents();
-      const active = records.filter((r) => r.lifecycle.status === "running" || r.lifecycle.status === "queued");
-      if (active.length > 0 && ctx.hasUI) {
-        ctx.ui.notify(`${active.length} agent(s) killed by reload`, "warning");
-      }
+    ++owner.generation;
+    const active =
+      owner.manager?.listAgents().filter((r) => r.lifecycle.status === "running" || r.lifecycle.status === "queued") ??
+      [];
+    if (active.length > 0 && ctx.hasUI) {
+      ctx.ui.notify(`${active.length} agent(s) killed by reload`, "warning");
     }
-    // Dispose coordinator, store, widget, then manager
-    cleanupInvalidations();
-    getCoordinator()?.dispose();
-    setCoordinator(null);
-    getStore().dispose();
-    getWidget()?.dispose();
-    setWidget(null);
-    const mgr = getManager();
-    if (mgr) {
-      await mgr.dispose();
-      setManager(null);
-    }
+    await disposeSession(owner);
   });
 }

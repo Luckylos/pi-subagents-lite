@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-agent-settings.ts — Agent settings menu concern.
  *
@@ -26,8 +27,8 @@ import { VALID_THINKING_LEVELS } from "../../utils.ts";
 import { PI_DEFAULT_CHOICE, THINKING_CHOICE_TAIL } from "../../models/thinking-resolution.ts";
 import { getStore } from "../../shell.ts";
 
-export async function showSpawnOptionsMenu(ctx: ExtensionCommandContext): Promise<void> {
-  const store = getStore();
+export async function showSpawnOptionsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const store = getStore(owner);
   /** " [project]" when the effective value comes from the project layer. */
   const projectTag = (key: string): string => (store.hasProjectModelKey(key) ? " [project]" : "");
 

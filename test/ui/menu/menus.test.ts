@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mockModules, resetConfig } from "../../menu-mock-setup.js";
 import { createMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
-import { getAgentConfig } from "../../../src/agents/agent-types.js";
+
 import type { SelectItem, SettingItem, SettingsListTheme, SelectListTheme } from "@earendil-works/pi-tui";
 
 // Capture SelectList constructor calls from pi-tui
@@ -65,14 +65,14 @@ describe("showAgentsMainMenu — SelectList dispatcher", () => {
 
   it("uses ctx.ui.custom (not ctx.ui.select)", async () => {
     const ctx = createMockCtx();
-    await showAgentsMainMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showAgentsMainMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
 
   it("shows expected main menu items", async () => {
     const ctx = createMockCtx();
-    await showAgentsMainMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showAgentsMainMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(selectListCalls.length).toBe(1);
     const values = selectListCalls[0].items.map((i) => i.value);
     expect(values).toContain("running");
@@ -84,7 +84,7 @@ describe("showAgentsMainMenu — SelectList dispatcher", () => {
   it("Escape closes the menu", async () => {
     const ctx = createMockCtx();
     // custom returns undefined = escape
-    await showAgentsMainMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showAgentsMainMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     // undefined terminates the loop: no re-invocation after the first menu
     expect(ctx.ui.custom).toHaveBeenCalledTimes(1);
   });
@@ -99,14 +99,14 @@ describe("showSettingsMenu — SelectList dispatcher", () => {
 
   it("uses ctx.ui.custom (not ctx.ui.select)", async () => {
     const ctx = createMockCtx();
-    await showSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
 
   it("Escape closes the menu", async () => {
     const ctx = createMockCtx();
-    await showSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     // undefined terminates the loop: no re-invocation after the first menu
     expect(ctx.ui.custom).toHaveBeenCalledTimes(1);
   });
@@ -117,7 +117,7 @@ describe("main menu — submenu navigation", () => {
     resetAgentState();
     selectListCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "Explore")
         return { name: "Explore", description: "Explore agent", extensions: false, skills: false, systemPrompt: "" };
       if (name === "general-purpose")
@@ -150,7 +150,7 @@ describe("main menu — submenu navigation", () => {
         }),
       },
     });
-    await showAgentsMainMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showAgentsMainMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     // Dispatch ran (2nd call = debug menu) and the loop re-invoked after it (3rd call)
     expect(ctx.ui.custom).toHaveBeenCalledTimes(3);
     // The debug dispatch rendered the debug SelectList with its two items
@@ -168,7 +168,7 @@ describe("showSettingsMenu — item labels", () => {
 
   it("shows expected settings menu items", async () => {
     const ctx = createMockCtx();
-    await showSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(selectListCalls.length).toBe(1);
     const values = selectListCalls[0].items.map((i) => i.value);
     expect(values).toContain("model");
@@ -178,3 +178,6 @@ describe("showSettingsMenu — item labels", () => {
     expect(values).toContain("widget");
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -26,7 +26,7 @@ describe("runAgent — context file gating", () => {
     mockModules.mockIncludeContextFiles = true;
     mockModules.mockLoadProjectContextFiles.mockReturnValue([{ path: "AGENTS.md", content: "project instructions" }]);
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockLoadProjectContextFiles).toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -46,7 +46,7 @@ describe("runAgent — context file gating", () => {
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
     mockModules.mockIncludeContextFiles = false;
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockLoadProjectContextFiles).not.toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -67,7 +67,7 @@ describe("runAgent — context file gating", () => {
       throw new Error("permission denied");
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockLoadProjectContextFiles).toHaveBeenCalled();
     // buildAgentPrompt still called (without contextFiles)
@@ -83,7 +83,7 @@ describe("runAgent — context file gating", () => {
       includeContextFiles: false,
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockLoadProjectContextFiles).not.toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -106,7 +106,7 @@ describe("runAgent — context file gating", () => {
     });
     mockModules.mockLoadProjectContextFiles.mockReturnValue([{ path: "AGENTS.md", content: "project instructions" }]);
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockLoadProjectContextFiles).toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -155,7 +155,7 @@ describe("runAgent — include_system_prompt overrides", () => {
     const ctx = fakeCtx();
     ctx.getSystemPrompt = vi.fn().mockReturnValue("parent prompt content");
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.getSystemPrompt).toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -177,7 +177,7 @@ describe("runAgent — include_system_prompt overrides", () => {
     const ctx = fakeCtx();
     ctx.getSystemPrompt = vi.fn().mockReturnValue("parent prompt content");
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
       expect.anything(),
@@ -199,7 +199,7 @@ describe("runAgent — include_system_prompt overrides", () => {
     const ctx = fakeCtx();
     ctx.getSystemPrompt = vi.fn().mockReturnValue("parent prompt content");
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(fsReadFileSyncSpy).toHaveBeenCalledWith(expect.stringContaining("subagents-lite-prompt.md"), "utf-8");
     expect(ctx.getSystemPrompt).not.toHaveBeenCalled();
@@ -220,7 +220,7 @@ describe("runAgent — include_system_prompt overrides", () => {
       includeSystemPrompt: false,
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(fsReadFileSyncSpy).not.toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -242,7 +242,7 @@ describe("runAgent — include_system_prompt overrides", () => {
     const ctx = fakeCtx();
     ctx.getSystemPrompt = vi.fn().mockReturnValue("parent prompt content");
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.getSystemPrompt).not.toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -289,7 +289,7 @@ describe("runAgent — project trust threading", () => {
 
   it("creates the settings manager trusted by default (projectTrusted not set)", async () => {
     mockSession();
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockSettingsManagerCreate).toHaveBeenCalledWith(
       "/home/test/project", // effectiveCwd
@@ -300,7 +300,7 @@ describe("runAgent — project trust threading", () => {
 
   it("creates the settings manager untrusted for an untrusted cross-repo target", async () => {
     mockSession();
-    await runAgent(fakeCtx(), "test-agent", "do something", {
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
       cwd: "/repo-b",
       projectTrusted: false,
@@ -327,7 +327,7 @@ describe("runAgent — project trust threading", () => {
       return Promise.resolve({ session, extensionsResult: {} });
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi, projectTrusted: false });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, projectTrusted: false });
 
     // The loader opts carry the same manager instance
     expect(mockModules.getLoaderOpts().settingsManager).toBe(settingsManager);
@@ -355,7 +355,7 @@ describe("runAgent — session tool gate", () => {
   });
 
   it("silent frontmatter + implicit ON passes no tool override — pi applies defaultTools", async () => {
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts).not.toHaveProperty("tools");
     expect(sessionOpts).not.toHaveProperty("noTools");
@@ -363,7 +363,7 @@ describe("runAgent — session tool gate", () => {
 
   it("silent frontmatter + implicit OFF passes noTools: all", async () => {
     mockModules.mockLoadToolsImplicitly = false;
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts!.noTools).toBe("all");
     expect(sessionOpts).not.toHaveProperty("tools");
@@ -371,7 +371,7 @@ describe("runAgent — session tool gate", () => {
 
   it("explicit frontmatter registeredTools gates the session registry", async () => {
     mockModules.mockGetAgentConfig.mockReturnValue({ ...defaultAgentConfig, registeredTools: ["read", "bash"] });
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts!.tools).toEqual(["read", "bash"]);
     expect(sessionOpts).not.toHaveProperty("noTools");
@@ -380,7 +380,7 @@ describe("runAgent — session tool gate", () => {
   it("explicit frontmatter registeredTools gates even with implicit loading OFF", async () => {
     mockModules.mockLoadToolsImplicitly = false;
     mockModules.mockGetAgentConfig.mockReturnValue({ ...defaultAgentConfig, registeredTools: ["read"] });
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts!.tools).toEqual(["read"]);
   });
@@ -388,7 +388,7 @@ describe("runAgent — session tool gate", () => {
   it("explicit frontmatter tools: false yields an empty registry", async () => {
     mockModules.mockGetConfig.mockReturnValue({ ...defaultConfig, tools: false });
     mockModules.mockGetAgentConfig.mockReturnValue({ ...defaultAgentConfig, tools: false });
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts!.tools).toEqual([]);
   });
@@ -408,7 +408,7 @@ describe("runAgent — built-in extension factories", () => {
   });
 
   it("passes the built-in factories to every child loader", async () => {
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.getLoaderOpts().extensionFactories).toBe(BUILTIN_EXTENSION_FACTORIES);
   });
@@ -430,7 +430,7 @@ describe("runAgent — system prompt modes", () => {
     session.getActiveToolNames.mockReturnValue(["read", "bash", "edit"]);
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
       expect.anything(),
@@ -450,7 +450,7 @@ describe("runAgent — system prompt modes", () => {
     const ctx = fakeCtx();
     ctx.getSystemPrompt = vi.fn().mockReturnValue("parent prompt content");
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.getSystemPrompt).toHaveBeenCalled();
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -475,7 +475,7 @@ describe("runAgent — system prompt modes", () => {
       ui: { notify: vi.fn() },
     });
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     // Notified about the failure
     expect(ctx.ui.notify).toHaveBeenCalledWith(
@@ -517,7 +517,7 @@ describe("runAgent — custom mode", () => {
     session.getActiveToolNames.mockReturnValue(["read", "bash", "edit"]);
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(fsReadFileSyncSpy).toHaveBeenCalledWith(expect.stringContaining("subagents-lite-prompt.md"), "utf-8");
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -541,7 +541,7 @@ describe("runAgent — custom mode", () => {
 
     const ctx = fakeCtx({ ui: { notify: vi.fn() } });
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Custom prompt file not found"), "warning");
     // buildAgentPrompt called without customSystemPrompt
@@ -562,7 +562,7 @@ describe("runAgent — custom mode", () => {
 
     const ctx = fakeCtx({ ui: { notify: vi.fn() } });
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Custom prompt file is empty"), "warning");
     expect(mockModules.mockBuildAgentPrompt).toHaveBeenCalledWith(
@@ -584,7 +584,7 @@ describe("runAgent — custom mode", () => {
 
     const ctx = fakeCtx({ ui: { notify: vi.fn() } });
 
-    await runAgent(ctx, "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, ctx, "test-agent", "do something", { pi: fakePi });
 
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Failed to read custom prompt file"), "warning");
   });
@@ -593,3 +593,6 @@ describe("runAgent — custom mode", () => {
 /* ------------------------------------------------------------------ */
 /*  runAgent — notify buffering (session tree corruption fix)          */
 /* ------------------------------------------------------------------ */
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

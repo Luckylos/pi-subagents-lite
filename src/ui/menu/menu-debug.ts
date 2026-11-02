@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-debug.ts — Debug menu concern.
  *
@@ -16,7 +17,7 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { SelectList, type SelectItem } from "@earendil-works/pi-tui";
-import { getAgentConfig, getAvailableTypes, getAllTypes } from "../../agents/agent-types.ts";
+
 import type { AgentConfig } from "../../agents/types.ts";
 import { buildSelectListTheme } from "./helpers.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
@@ -38,15 +39,15 @@ function formatTools(tools: string[]): string {
  * OFF starts tool-less. One SettingsManager per action, with default trust
  * (matching the spawn default when projectTrusted is unset).
  */
-function displayToolsFor(cwd: string, config: AgentConfig): string {
+function displayToolsFor(owner: ExtensionOwner, cwd: string, config: AgentConfig): string {
   if (config.registeredTools) return formatTools(config.registeredTools);
-  if (!getStore().agent.loadToolsImplicitly) return "(none)";
+  if (!getStore(owner).agent.loadToolsImplicitly) return "(none)";
   const defaultTools = SettingsManager.create(cwd, getAgentDir()).getDefaultTools();
   return formatTools(defaultTools ?? PI_DEFAULT_ACTIVE_TOOLS);
 }
 
-async function showAgentTypes(ctx: ExtensionCommandContext): Promise<void> {
-  const types = getAllTypes();
+async function showAgentTypes(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const types = owner.registry.getAllTypes();
   if (types.length === 0) {
     ctx.ui.notify("No agent types available", "info");
     return;
@@ -54,11 +55,11 @@ async function showAgentTypes(ctx: ExtensionCommandContext): Promise<void> {
 
   const lines: string[] = ["Available agent types:\n"];
   for (const name of types) {
-    const cfg = getAgentConfig(name);
+    const cfg = owner.registry.getAgentConfig(name);
     if (!cfg) continue;
     const hidden = cfg.hidden === true ? " [HIDDEN]" : "";
     const model = cfg.model ? `  Model: ${cfg.model}` : "";
-    const tools = `  Tools: ${displayToolsFor(ctx.cwd, cfg)}`;
+    const tools = `  Tools: ${displayToolsFor(owner, ctx.cwd, cfg)}`;
     const source = cfg.source ? `  Source: ${cfg.source}` : "";
     lines.push(`  ${name}${hidden}`);
     lines.push(`    ${cfg.description}`);
@@ -71,9 +72,9 @@ async function showAgentTypes(ctx: ExtensionCommandContext): Promise<void> {
   ctx.ui.notify(lines.join("\n"), "info");
 }
 
-async function handleAgentBriefing(ctx: ExtensionCommandContext): Promise<void> {
-  const types = getAvailableTypes();
-  const agents = types.map((t) => ({ name: t, config: getAgentConfig(t) }));
+async function handleAgentBriefing(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const types = owner.registry.getAvailableTypes();
+  const agents = types.map((t) => ({ name: t, config: owner.registry.getAgentConfig(t) }));
   const lines: string[] = [
     "# Agent Types and Capabilities\n",
     "The following agent types are available. Use the `agent` parameter to select one.\n",
@@ -86,7 +87,7 @@ async function handleAgentBriefing(ctx: ExtensionCommandContext): Promise<void> 
     lines.push("");
 
     // Always present: the effective set, whether explicit or delegated to pi.
-    lines.push(`**Tools:** ${displayToolsFor(ctx.cwd, config)}`);
+    lines.push(`**Tools:** ${displayToolsFor(owner, ctx.cwd, config)}`);
     if (config.model) {
       lines.push(`**Default model:** ${config.model}`);
     }
@@ -135,12 +136,12 @@ async function handleAgentBriefing(ctx: ExtensionCommandContext): Promise<void> 
   lines.push(
     "- **Cross-repo trust:** a target in a different git repo is gated by pi's trust framework. An untrusted target still spawns, but its project resources (.pi/ settings, extensions, skills, prompts, themes, system prompt files, .agents/skills) are ignored and its `.pi/agents` types are not discovered.",
   );
-  getPiInstance().sendUserMessage(lines.join("\n"));
+  getPiInstance(owner).sendUserMessage(lines.join("\n"));
   ctx.ui.notify("Agent briefing sent to LLM", "info");
 }
 
-async function handleRestartLastAgentsMenu(ctx: ExtensionCommandContext): Promise<void> {
-  const { restarted, skipped } = await handleRestartLastAgents(ctx);
+async function handleRestartLastAgentsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const { restarted, skipped } = await handleRestartLastAgents(owner, ctx);
 
   if (restarted.length === 0 && skipped.length === 0) {
     ctx.ui.notify("No recent Agent tool calls found in session history.", "info");
@@ -161,7 +162,7 @@ async function handleRestartLastAgentsMenu(ctx: ExtensionCommandContext): Promis
   ctx.ui.notify(lines.join("\n"), "info");
 }
 
-export async function showDebugMenu(ctx: ExtensionCommandContext): Promise<void> {
+export async function showDebugMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
   await ctx.ui.custom((_tui, theme, _kb, done) => {
     const items: SelectItem[] = [
       { value: "agent-types", label: "Agent types", description: "List available agent types and their configs" },
@@ -180,11 +181,11 @@ export async function showDebugMenu(ctx: ExtensionCommandContext): Promise<void>
     const selectList = new SelectList(items, 10, buildSelectListTheme(theme));
     selectList.onSelect = async (item) => {
       if (item.value === "agent-types") {
-        await showAgentTypes(ctx);
+        await showAgentTypes(owner, ctx);
       } else if (item.value === "agent-briefing") {
-        await handleAgentBriefing(ctx);
+        await handleAgentBriefing(owner, ctx);
       } else if (item.value === "restart-last-agents") {
-        await handleRestartLastAgentsMenu(ctx);
+        await handleRestartLastAgentsMenu(owner, ctx);
       }
     };
     return new SettingsListWrapper(selectList, { title: "Debug", theme, onCancel: () => done(undefined) });

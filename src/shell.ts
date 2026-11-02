@@ -1,111 +1,67 @@
-/**
- * shell.ts — Composition root shell.
- *
- * Per ADR 0004, the single mutable container for all per-session state,
- * created at session_start, disposed at session_shutdown. Handler modules
- * read via getter functions — no module-level mutable globals.
- */
-
+/** Per-factory composition root. Construction registers ownership without session IO. */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentManager } from "./agents/agent-manager.ts";
 import type { AgentWidget } from "./ui/agent-widget.ts";
 import type { SpawnCoordinator } from "./spawn/spawn-coordinator.ts";
-import { ConfigStore } from "./config/config-store.ts";
+import type { ConfigStore } from "./config/config-store.ts";
+import { createAgentRegistry, type AgentRegistry } from "./agents/agent-types.ts";
 
-// --- Shell type ---
-
-interface Shell {
-  pi: ExtensionAPI;
-  sessionCtx: ExtensionContext;
+export interface ExtensionOwner {
+  readonly pi: ExtensionAPI;
+  readonly registry: AgentRegistry;
+  readonly rendererInvalidations: Map<string, () => void>;
+  sessionCtx: ExtensionContext | null;
+  store: ConfigStore | null;
   manager: AgentManager | null;
   widget: AgentWidget | null;
-  store: ConfigStore;
   coordinator: SpawnCoordinator | null;
+  generation: number;
+  unregisterTerminalInput: (() => void) | null;
 }
 
-// --- Mutable module-level shell (populated by index.ts at session_start) ---
-
-const shell: Shell = {
-  pi: null!,
-  sessionCtx: null!,
-  manager: null,
-  widget: null,
-  store: new ConfigStore(),
-  coordinator: null,
-};
-
-// --- Getter functions (read current state at call time) ---
-
-/** Set at init time. */
-export function getPiInstance(): ExtensionAPI {
-  return shell.pi;
+export function createExtensionOwner(pi: ExtensionAPI): ExtensionOwner {
+  return {
+    pi,
+    registry: createAgentRegistry(),
+    rendererInvalidations: new Map(),
+    sessionCtx: null,
+    store: null,
+    manager: null,
+    widget: null,
+    coordinator: null,
+    generation: 0,
+    unregisterTerminalInput: null,
+  };
 }
 
-/** Set at session_start. */
-export function getSessionCtx(): ExtensionContext {
-  return shell.sessionCtx;
+export function getPiInstance(owner: ExtensionOwner): ExtensionAPI {
+  return owner.pi;
 }
-
-/** Null until created at session_start. */
-export function getManager(): AgentManager | null {
-  return shell.manager;
+export function getSessionCtx(owner: ExtensionOwner): ExtensionContext | null {
+  return owner.sessionCtx;
 }
-
-/** Null until created at session_start. */
-export function getWidget(): AgentWidget | null {
-  return shell.widget;
+export function getManager(owner: ExtensionOwner): AgentManager | null {
+  return owner.manager;
 }
-
-/** Lives for the lifetime of the extension. */
-export function getStore(): ConfigStore {
-  return shell.store;
+export function getWidget(owner: ExtensionOwner): AgentWidget | null {
+  return owner.widget;
 }
-
-/** Null until created at session_start. */
-export function getCoordinator(): SpawnCoordinator | null {
-  return shell.coordinator;
+export function getStore(owner: ExtensionOwner): ConfigStore {
+  if (!owner.store) throw new Error("Subagents session has not started");
+  return owner.store;
 }
-
-// --- Setter functions (called by index.ts to populate the shell) ---
-
-export function setPiInstance(pi: ExtensionAPI): void {
-  shell.pi = pi;
+export function getCoordinator(owner: ExtensionOwner): SpawnCoordinator | null {
+  return owner.coordinator;
 }
-
-export function setSessionCtx(ctx: ExtensionContext): void {
-  shell.sessionCtx = ctx;
+export function setSessionCtx(owner: ExtensionOwner, ctx: ExtensionContext): void {
+  owner.sessionCtx = ctx;
 }
-
-export function setManager(m: AgentManager | null): void {
-  shell.manager = m;
+export function setManager(owner: ExtensionOwner, manager: AgentManager | null): void {
+  owner.manager = manager;
 }
-
-export function setWidget(w: AgentWidget | null): void {
-  shell.widget = w;
+export function setWidget(owner: ExtensionOwner, widget: AgentWidget | null): void {
+  owner.widget = widget;
 }
-
-export function setCoordinator(c: SpawnCoordinator | null): void {
-  shell.coordinator = c;
-}
-
-// --- Subagent spawn context ---
-
-/**
- * Nesting depth of in-flight subagent spawns. Subagent re-loads of this
- * extension would clobber parent-owned shell singletons; the factory checks
- * this flag and stays inert while a subagent is spawning.
- */
-let subagentSpawnDepth = 0;
-
-export function enterSubagentSpawn(): void {
-  subagentSpawnDepth++;
-}
-
-export function exitSubagentSpawn(): void {
-  if (subagentSpawnDepth > 0) subagentSpawnDepth--;
-}
-
-/** True while a subagent is being spawned (factory/session_start run in subagent context). */
-export function isInsideSubagentSpawn(): boolean {
-  return subagentSpawnDepth > 0;
+export function setCoordinator(owner: ExtensionOwner, coordinator: SpawnCoordinator | null): void {
+  owner.coordinator = coordinator;
 }

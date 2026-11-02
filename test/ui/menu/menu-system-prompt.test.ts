@@ -93,7 +93,7 @@ describe("showSystemPromptMenu", () => {
   it("shows correct items", async () => {
     const ctx = createMockCtx();
     const { showSystemPromptMenu } = await import("../../../src/ui/menu/menu-system-prompt.js");
-    await showSystemPromptMenu(ctx);
+    await showSystemPromptMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("systemPromptMode");
     expect(ids).toContain("includeContextFiles");
@@ -108,7 +108,7 @@ describe("showSystemPromptMenu", () => {
     vi.spyOn(fs, "existsSync").mockReturnValue(false);
     const ctx = createMockCtx();
     const { showSystemPromptMenu } = await import("../../../src/ui/menu/menu-system-prompt.js");
-    await showSystemPromptMenu(ctx);
+    await showSystemPromptMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("createPromptFile");
     vi.restoreAllMocks();
@@ -118,7 +118,7 @@ describe("showSystemPromptMenu", () => {
     mockModules.mockConfig.agent.systemPromptMode = "replace";
     const ctx = createMockCtx();
     const { showSystemPromptMenu } = await import("../../../src/ui/menu/menu-system-prompt.js");
-    await showSystemPromptMenu(ctx);
+    await showSystemPromptMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).not.toContain("createPromptFile");
   });
@@ -128,7 +128,7 @@ describe("showSystemPromptMenu", () => {
     vi.spyOn(fs, "existsSync").mockReturnValue(true);
     const ctx = createMockCtx();
     const { showSystemPromptMenu } = await import("../../../src/ui/menu/menu-system-prompt.js");
-    await showSystemPromptMenu(ctx);
+    await showSystemPromptMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).not.toContain("createPromptFile");
     vi.restoreAllMocks();
@@ -141,7 +141,7 @@ describe("showSystemPromptMenu", () => {
     const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation(() => {});
     const ctx = createMockCtx();
     const { showSystemPromptMenu } = await import("../../../src/ui/menu/menu-system-prompt.js");
-    await showSystemPromptMenu(ctx);
+    await showSystemPromptMenu(owner, ctx);
     settingsListCalls[0].onChange("createPromptFile", "Create");
     expect(mkdirSpy).toHaveBeenCalled();
     expect(writeSpy).toHaveBeenCalled();
@@ -158,9 +158,12 @@ describe("showSystemPromptMenu", () => {
     vi.spyOn(fs, "writeFileSync").mockImplementation(() => {});
     const ctx = createMockCtx();
     const { showSystemPromptMenu } = await import("../../../src/ui/menu/menu-system-prompt.js");
-    await showSystemPromptMenu(ctx);
+    await showSystemPromptMenu(owner, ctx);
     settingsListCalls[0].onChange("createPromptFile", "Create");
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Failed to create prompt file"), "error");
     vi.restoreAllMocks();
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

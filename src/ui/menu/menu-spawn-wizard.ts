@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-spawn-wizard.ts — Spawn agent wizard and worktree picker.
  *
@@ -13,7 +14,7 @@ import { SettingsList, SelectList, type SettingItem } from "@earendil-works/pi-t
 import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "../../types.ts";
 import type { Theme } from "../types.ts";
-import { getAgentConfig, getAvailableTypes, discoverNewAgents } from "../../agents/agent-types.ts";
+
 import { findModelInRegistry } from "../../utils.ts";
 import { agentBulletPrefix } from "../format.ts";
 import {
@@ -87,9 +88,9 @@ function truncatePath(p: string): string {
  * Fetch worktrees via `git worktree list --porcelain`.
  * Returns null if git is unavailable or the command fails.
  */
-async function listWorktrees(cwd: string): Promise<WorktreeEntry[] | null> {
+async function listWorktrees(owner: ExtensionOwner, cwd: string): Promise<WorktreeEntry[] | null> {
   try {
-    const result = await getPiInstance().exec("git", ["worktree", "list", "--porcelain"], {
+    const result = await getPiInstance(owner).exec("git", ["worktree", "list", "--porcelain"], {
       cwd,
       timeout: WORKTREE_LIST_TIMEOUT_MS,
     });
@@ -104,9 +105,9 @@ async function listWorktrees(cwd: string): Promise<WorktreeEntry[] | null> {
  * Check whether a directory is inside a git repository.
  * Uses `git rev-parse --git-common-dir` — the same strategy as the worktree validator.
  */
-async function isInGitRepo(cwd: string): Promise<boolean> {
+async function isInGitRepo(owner: ExtensionOwner, cwd: string): Promise<boolean> {
   try {
-    const result = await getPiInstance().exec("git", ["rev-parse", "--git-common-dir"], {
+    const result = await getPiInstance(owner).exec("git", ["rev-parse", "--git-common-dir"], {
       cwd,
       timeout: WORKTREE_LIST_TIMEOUT_MS,
     });
@@ -165,11 +166,15 @@ function createThinkingLevelSubmenu(
  *   Step 2: prompt entry (Input)
  *   Step 3: options sub-menu with spawn (SettingsList with submenus)
  */
-export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOptions: string[]): Promise<void> {
+export async function showSpawnAgentMenu(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  modelOptions: string[],
+): Promise<void> {
   // ---- Step 1: Type selection ----
   let selectedType: string;
   {
-    const types = getAvailableTypes();
+    const types = owner.registry.getAvailableTypes();
     if (types.length === 0) {
       ctx.ui.notify("No agent types available", "error");
       return;
@@ -178,9 +183,9 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
     const result = await ctx.ui.custom<string | undefined>((_tui, theme, _kb, done) => {
       const items: SettingItem[] = types.map((t) => ({
         id: t,
-        label: `${agentBulletPrefix(t)}${t}`,
+        label: `${agentBulletPrefix(owner, t)}${t}`,
         currentValue: t,
-        description: getAgentConfig(t)?.description ?? "Agent type",
+        description: owner.registry.getAgentConfig(t)?.description ?? "Agent type",
         submenu: (_v: string, _subDone: (value?: string) => void) => {
           done(t);
           return undefined as any;
@@ -200,7 +205,7 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
     });
     if (result === undefined) return;
 
-    const config = getAgentConfig(result);
+    const config = owner.registry.getAgentConfig(result);
     if (!config) {
       ctx.ui.notify(`Unknown agent type: ${result}`, "error");
       return;
@@ -208,7 +213,7 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
     selectedType = result;
   }
 
-  const agentConfig = getAgentConfig(selectedType)!;
+  const agentConfig = owner.registry.getAgentConfig(selectedType)!;
 
   // ---- Step 2: Prompt entry ----
   let prompt: string;
@@ -222,12 +227,17 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
   }
 
   // ---- Step 3: Options sub-menu with spawn ----
-  const session = getSessionCtx();
+  const session = getSessionCtx(owner);
   const parentCwd = session?.cwd ?? "";
-  const inGitRepo = parentCwd ? await isInGitRepo(parentCwd) : false;
-  const worktrees = inGitRepo ? ((await listWorktrees(parentCwd)) ?? []) : [];
+  const inGitRepo = parentCwd ? await isInGitRepo(owner, parentCwd) : false;
+  const worktrees = inGitRepo ? ((await listWorktrees(owner, parentCwd)) ?? []) : [];
 
-  const store = getStore();
+  const store = getStore(owner);
+  // Keep the resources that belong to this open wizard. A session replacement
+  // may happen while the user is choosing options or discovery is awaiting.
+  const menuGeneration = owner.generation;
+  const menuSession = session;
+  const menuCoordinator = getCoordinator(owner);
   const parentModelId = session?.model ? `${session.model.provider}/${session.model.id}` : "";
   const effectiveModelStr = store.modelFor(selectedType, parentModelId, agentConfig);
 
@@ -375,19 +385,30 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
           }
 
           const doSpawn = async () => {
+            if (!menuCoordinator || !menuSession) {
+              ctx.ui.notify("Subagents session has not started", "error");
+              return;
+            }
+            if (owner.generation !== menuGeneration || getCoordinator(owner) !== menuCoordinator) {
+              ctx.ui.notify("Subagents session changed before spawn", "warning");
+              return;
+            }
             if (currentWorktreePath) {
-              await discoverNewAgents(`${currentWorktreePath}/.pi/agents`);
+              await owner.registry.discoverNewAgents(`${currentWorktreePath}/.pi/agents`);
+            }
+            if (owner.generation !== menuGeneration || getCoordinator(owner) !== menuCoordinator) {
+              ctx.ui.notify("Subagents session changed during agent discovery", "warning");
+              return;
             }
 
-            const widget = getWidget();
+            const widget = getWidget(owner);
             if (widget) {
               widget.setUICtx(ctx.ui as unknown as import("../agent-widget.ts").UICtx);
               widget.ensureTimer();
             }
 
-            const coordinator = getCoordinator()!;
             try {
-              await coordinator.spawn(getPiInstance(), session!, {
+              await menuCoordinator.spawn(getPiInstance(owner), menuSession, {
                 type: selectedType,
                 prompt: spawnPrompt,
                 description,
@@ -408,8 +429,8 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
                 runInBackground: background,
               });
 
-              if (!background) {
-                getWidget()?.update();
+              if (!background && owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator) {
+                getWidget(owner)?.update();
               }
             } catch (err) {
               ctx.ui.notify(`Spawn failed: ${err instanceof Error ? err.message : String(err)}`, "error");
@@ -432,7 +453,7 @@ export async function showSpawnAgentMenu(ctx: ExtensionCommandContext, modelOpti
         label: "Model",
         currentValue: displayModel,
         description: "Override the default model for this agent",
-        submenu: createModelSelectSubmenu({
+        submenu: createModelSelectSubmenu(owner, {
           modelOptions,
           showClear: false,
           projectOffered: store.projectTargetOffered,

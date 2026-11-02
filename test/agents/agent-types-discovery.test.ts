@@ -4,13 +4,6 @@
 
 import { describe, it, expect, beforeEach } from "vite-plus/test";
 import { makeAgentMd, tempDirWithFiles } from "../fixtures.js";
-import {
-  registerAgents,
-  setAgentScanDirs,
-  discoverNewAgents,
-  resolveType,
-  getAgentConfig,
-} from "../../src/agents/agent-types.js";
 
 /* ------------------------------------------------------------------ */
 /*  Tests                                                             */
@@ -19,9 +12,9 @@ import {
 describe("discoverNewAgents — worktree-local agent types", () => {
   beforeEach(() => {
     // Reset to clean state: just the default agents
-    registerAgents(new Map());
+    owner.registry.registerAgents(new Map());
     // Clear scan dirs so they don't pollute tests
-    setAgentScanDirs("", "");
+    owner.registry.setAgentScanDirs("", "");
   });
 
   it("discovers a worktree-local agent type when worktreeDir is set", async () => {
@@ -37,16 +30,16 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      expect(resolveType("feature-reviewer")).toEqual({ kind: "not-found" });
+      expect(owner.registry.resolveType("feature-reviewer")).toEqual({ kind: "not-found" });
 
-      const count = await discoverNewAgents(worktreeDir);
+      const count = await owner.registry.discoverNewAgents(worktreeDir);
       expect(count).toBeGreaterThanOrEqual(1);
 
-      expect(resolveType("feature-reviewer")).toEqual({ kind: "resolved", key: "feature-reviewer" });
-      expect(getAgentConfig("feature-reviewer")?.description).toBe("Reviews feature branches");
+      expect(owner.registry.resolveType("feature-reviewer")).toEqual({ kind: "resolved", key: "feature-reviewer" });
+      expect(owner.registry.getAgentConfig("feature-reviewer")?.description).toBe("Reviews feature branches");
     } finally {
       cleanupProject();
       cleanupWt();
@@ -61,11 +54,11 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents();
-      expect(resolveType("feature-reviewer")).toEqual({ kind: "not-found" });
+      await owner.registry.discoverNewAgents();
+      expect(owner.registry.resolveType("feature-reviewer")).toEqual({ kind: "not-found" });
     } finally {
       cleanupProject();
       cleanupWt();
@@ -80,16 +73,16 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
       // First discovery with worktree
-      await discoverNewAgents(worktreeDir);
-      expect(resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
+      await owner.registry.discoverNewAgents(worktreeDir);
+      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
 
       // Second discovery WITHOUT worktree — should still be in registry
-      const count = await discoverNewAgents();
-      expect(resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
+      const count = await owner.registry.discoverNewAgents();
+      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
       expect(count).toBe(0); // No new agents (already known)
     } finally {
       cleanupProject();
@@ -108,13 +101,13 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      const count = await discoverNewAgents(worktreeDir);
+      const count = await owner.registry.discoverNewAgents(worktreeDir);
 
-      expect(resolveType("project-agent")).toEqual({ kind: "resolved", key: "project-agent" });
-      expect(resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
+      expect(owner.registry.resolveType("project-agent")).toEqual({ kind: "resolved", key: "project-agent" });
+      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
       expect(count).toBeGreaterThanOrEqual(2);
     } finally {
       cleanupProject();
@@ -127,12 +120,12 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     const { dir: nonexistentDir, cleanup: cleanupNonexistent } = tempDirWithFiles([], "nonexistent-base");
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
       // Point to a directory that doesn't have .pi/agents/ — should not error
       const fakeWorktreeDir = nonexistentDir + "/.pi/agents";
-      const count = await discoverNewAgents(fakeWorktreeDir);
+      const count = await owner.registry.discoverNewAgents(fakeWorktreeDir);
       expect(count).toBe(0);
     } finally {
       cleanupProject();
@@ -153,11 +146,11 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents(worktreeDir);
-      const config = getAgentConfig("wt-agent");
+      await owner.registry.discoverNewAgents(worktreeDir);
+      const config = owner.registry.getAgentConfig("wt-agent");
       expect(config).toBeDefined();
       expect(config!.extensions).toEqual(["read", "bash"]);
       expect(config!.thinkingLevel).toBe("high");
@@ -176,11 +169,11 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents(worktreeDir);
-      const config = getAgentConfig("max-thinker");
+      await owner.registry.discoverNewAgents(worktreeDir);
+      const config = owner.registry.getAgentConfig("max-thinker");
       expect(config).toBeDefined();
       expect(config!.thinkingLevel).toBe("max");
     } finally {
@@ -197,12 +190,12 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      const count = await discoverNewAgents("");
+      const count = await owner.registry.discoverNewAgents("");
       expect(count).toBe(0);
-      expect(resolveType("wt-agent")).toEqual({ kind: "not-found" });
+      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "not-found" });
     } finally {
       cleanupProject();
       cleanupWt();
@@ -220,17 +213,17 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
       // First discovery — project agent gets added
-      await discoverNewAgents();
-      expect(getAgentConfig("shared")?.description).toBe("From project");
+      await owner.registry.discoverNewAgents();
+      expect(owner.registry.getAgentConfig("shared")?.description).toBe("From project");
 
       // Second discovery with worktree — should NOT override the already-registered agent
-      const count = await discoverNewAgents(worktreeDir);
+      const count = await owner.registry.discoverNewAgents(worktreeDir);
       expect(count).toBe(0); // "shared" is already known
-      expect(getAgentConfig("shared")?.description).toBe("From project");
+      expect(owner.registry.getAgentConfig("shared")?.description).toBe("From project");
     } finally {
       cleanupProject();
       cleanupWt();
@@ -245,11 +238,11 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents(worktreeDir);
-      expect(resolveType("feature-reviewer")).toEqual({ kind: "resolved", key: "Feature-Reviewer" });
+      await owner.registry.discoverNewAgents(worktreeDir);
+      expect(owner.registry.resolveType("feature-reviewer")).toEqual({ kind: "resolved", key: "Feature-Reviewer" });
     } finally {
       cleanupProject();
       cleanupWt();
@@ -265,11 +258,11 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents(worktreeDir);
-      expect(resolveType("EXPLORE")).toEqual({ kind: "ambiguous", candidates: ["Explore", "explore"] });
+      await owner.registry.discoverNewAgents(worktreeDir);
+      expect(owner.registry.resolveType("EXPLORE")).toEqual({ kind: "ambiguous", candidates: ["Explore", "explore"] });
     } finally {
       cleanupProject();
       cleanupWt();
@@ -279,8 +272,8 @@ describe("discoverNewAgents — worktree-local agent types", () => {
 
 describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
   beforeEach(() => {
-    registerAgents(new Map());
-    setAgentScanDirs("", "", "");
+    owner.registry.registerAgents(new Map());
+    owner.registry.setAgentScanDirs("", "", "");
   });
 
   it("discovers agents from .agents/agents/ directory", async () => {
@@ -296,16 +289,16 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir, sharedDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir, sharedDir);
+      owner.registry.registerAgents(new Map());
 
-      expect(resolveType("shared-agent")).toEqual({ kind: "not-found" });
+      expect(owner.registry.resolveType("shared-agent")).toEqual({ kind: "not-found" });
 
-      const count = await discoverNewAgents();
+      const count = await owner.registry.discoverNewAgents();
       expect(count).toBeGreaterThanOrEqual(1);
 
-      expect(resolveType("shared-agent")).toEqual({ kind: "resolved", key: "shared-agent" });
-      expect(getAgentConfig("shared-agent")?.description).toBe("Shared workspace agent");
+      expect(owner.registry.resolveType("shared-agent")).toEqual({ kind: "resolved", key: "shared-agent" });
+      expect(owner.registry.getAgentConfig("shared-agent")?.description).toBe("Shared workspace agent");
     } finally {
       cleanupProject();
       cleanupShared();
@@ -323,12 +316,12 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir, sharedDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir, sharedDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents();
+      await owner.registry.discoverNewAgents();
 
-      expect(getAgentConfig("clash")?.description).toBe("From project");
+      expect(owner.registry.getAgentConfig("clash")?.description).toBe("From project");
     } finally {
       cleanupProject();
       cleanupShared();
@@ -347,12 +340,12 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     );
 
     try {
-      setAgentScanDirs(userDir, projectDir, sharedDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs(userDir, projectDir, sharedDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents();
+      await owner.registry.discoverNewAgents();
 
-      expect(getAgentConfig("clash")?.description).toBe("From shared");
+      expect(owner.registry.getAgentConfig("clash")?.description).toBe("From shared");
     } finally {
       cleanupUser();
       cleanupProject();
@@ -368,12 +361,12 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir, sharedDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir, sharedDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents();
+      await owner.registry.discoverNewAgents();
 
-      expect(getAgentConfig("shared-agent")?.source).toBe("project");
+      expect(owner.registry.getAgentConfig("shared-agent")?.source).toBe("project");
     } finally {
       cleanupProject();
       cleanupShared();
@@ -384,10 +377,10 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     const { dir: projectDir, cleanup: cleanupProject } = tempDirWithFiles([], "project-agents");
 
     try {
-      setAgentScanDirs("", projectDir, "/tmp/nonexistent-shared-agents-dir");
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs("", projectDir, "/tmp/nonexistent-shared-agents-dir");
+      owner.registry.registerAgents(new Map());
 
-      const count = await discoverNewAgents();
+      const count = await owner.registry.discoverNewAgents();
       expect(count).toBe(0);
     } finally {
       cleanupProject();
@@ -424,12 +417,12 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     );
 
     try {
-      setAgentScanDirs(userDir, projectDir, sharedDir);
-      registerAgents(new Map());
+      owner.registry.setAgentScanDirs(userDir, projectDir, sharedDir);
+      owner.registry.registerAgents(new Map());
 
-      await discoverNewAgents();
+      await owner.registry.discoverNewAgents();
 
-      const config = getAgentConfig("layered")!;
+      const config = owner.registry.getAgentConfig("layered")!;
       expect(config.description).toBe("From project");
       expect(config.model).toBe("model/shared");
     } finally {
@@ -439,3 +432,6 @@ describe("discoverNewAgents — shared .agents/agents/ discovery", () => {
     }
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

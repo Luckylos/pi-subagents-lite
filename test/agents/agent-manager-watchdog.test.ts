@@ -26,12 +26,12 @@ describe("AgentManager", () => {
   describe("watchdog", () => {
     function getOnToolActivity() {
       const call = mockModules.mockRunAgent.mock.calls[mockModules.mockRunAgent.mock.calls.length - 1];
-      return call[3].onToolActivity;
+      return call[4].onToolActivity;
     }
 
     function getOnTextDelta() {
       const call = mockModules.mockRunAgent.mock.calls[mockModules.mockRunAgent.mock.calls.length - 1];
-      return call[3].onTextDelta;
+      return call[4].onTextDelta;
     }
 
     function spawnRunningAgent(): string {
@@ -52,7 +52,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.toolTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
 
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
@@ -74,7 +74,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.toolTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
 
@@ -93,7 +93,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.toolTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
 
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
@@ -113,7 +113,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.idleTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
 
         // Jump the clock so the next watchdog tick lands 46 minutes after spawn.
@@ -133,7 +133,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.idleTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
 
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
@@ -158,7 +158,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.idleTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
 
         for (let i = 0; i < 6; i++) {
@@ -178,7 +178,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.idleTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const fgDeferred = makeResolvablePromise();
         const bgDeferred = makeResolvablePromise();
         mockModules.mockRunAgent.mockReturnValueOnce(fgDeferred.promise).mockReturnValueOnce(bgDeferred.promise);
@@ -208,7 +208,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.idleTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete, { default: 1, models: { "test/model": 1 } });
+        manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
         const first = makeResolvablePromise();
         mockModules.mockRunAgent.mockReturnValue(first.promise);
         const id1 = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "first", {
@@ -233,7 +233,7 @@ describe("AgentManager", () => {
     it("does nothing when both checks are disabled (0)", () => {
       vi.useFakeTimers();
       try {
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
 
@@ -250,7 +250,7 @@ describe("AgentManager", () => {
       try {
         mockStoreState.toolTimeoutMinutes = 45;
         mockStoreState.idleTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
 
@@ -269,7 +269,7 @@ describe("AgentManager", () => {
       vi.useFakeTimers();
       try {
         mockStoreState.toolTimeoutMinutes = 45;
-        manager = new AgentManager(onComplete);
+        manager = new AgentManager(owner, onComplete);
         const deferred = makeResolvablePromise();
         mockModules.mockRunAgent.mockReturnValue(deferred.promise);
         const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
@@ -296,3 +296,6 @@ describe("AgentManager", () => {
     });
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -10,7 +10,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mockModules, selectDialogInstances, resetSelectDialogInstances, resetConfig } from "../../menu-mock-setup.js";
 import { createMockCtx } from "../../menu-test-helpers.js";
-import { getAgentConfig } from "../../../src/agents/agent-types.js";
+import { fakeCtx } from "../../fixtures.js";
+
 import { type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Component, SelectItem, SettingItem, SettingsListTheme, SelectListTheme } from "@earendil-works/pi-tui";
 import type { ThinkingLevel } from "../../../src/types.js";
@@ -140,7 +141,7 @@ function setupMocks() {
   inputInstances = [];
   selectListInstances = [];
   resetSelectDialogInstances();
-  vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+  vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
     if (name === "general-purpose")
       return {
         name: "general-purpose",
@@ -198,7 +199,7 @@ function createMockWizardCtx(stepResults: (string | undefined)[]) {
 const row = () => settingsListCalls[1].items.find((i) => i.id === "thinkingLevel")!;
 
 async function completeWizard(ctx: ReturnType<typeof createMockCtx>) {
-  await showSpawnAgentMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+  await showSpawnAgentMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
 }
 
 afterEach(() => resetConfig());
@@ -321,7 +322,7 @@ describe("showSpawnAgentMenu — description", () => {
 
 /** Agent config with no frontmatter thinking, so derivation starts at per-model. */
 function typeWithoutThinking(model = "anthropic/claude-sonnet-4-20250514") {
-  vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+  vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
     name === "general-purpose"
       ? {
           name: "general-purpose",
@@ -435,7 +436,7 @@ describe("showSpawnAgentMenu — thinking level row", () => {
   });
 
   it("offers only 'off' as a level for a non-reasoning model, then parent and pi default", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "general-purpose"
         ? {
             name: "general-purpose",
@@ -472,7 +473,7 @@ describe("showSpawnAgentMenu — thinking level row", () => {
   });
 
   it("re-derives on a model change while on pi default, clamped to the new model", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "general-purpose"
         ? {
             name: "general-purpose",
@@ -788,7 +789,7 @@ describe("showSpawnAgentMenu — max turns submenu", () => {
   });
 
   it("shows '(not set)' when no config and no agent config", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
         return {
           name: "general-purpose",
@@ -808,7 +809,7 @@ describe("showSpawnAgentMenu — max turns submenu", () => {
 
   it("pre-populates from config default when agent has no maxTurns", async () => {
     mockModules.mockConfig.agent.defaultMaxTurns = 50;
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
         return {
           name: "general-purpose",
@@ -882,7 +883,7 @@ describe("showSpawnAgentMenu — max tokens submenu", () => {
   });
 
   it("shows '(not set)' when no agent config", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
         return {
           name: "general-purpose",
@@ -992,19 +993,22 @@ describe("showSpawnAgentMenu — model", () => {
   });
 
   it("shows '(inherits parent)' when no model in precedence chain", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
         return { name: "general-purpose", description: "", extensions: true, skills: true, systemPrompt: "" };
       return undefined;
     });
     mockModules.mockConfig.agent = { default: null, forceBackground: false };
     const origModel = mockModules.mockSessionCtx.model;
+    const origSessionCtx = owner.sessionCtx;
+    owner.sessionCtx = { ...fakeCtx(), model: undefined };
     mockModules.mockSessionCtx.model = undefined;
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
     const item = settingsListCalls[1].items.find((i) => i.id === "model")!;
     expect(item.currentValue).toBe("(inherits parent)");
     mockModules.mockSessionCtx.model = origModel;
+    owner.sessionCtx = origSessionCtx;
   });
 });
 
@@ -1193,3 +1197,6 @@ describe("showSpawnAgentMenu — spawn action", () => {
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Spawn failed: boom"), "error");
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -27,7 +27,7 @@ describe("AgentManager", () => {
   describe("concurrency", () => {
     it("starts all agents when under per-model limit", () => {
       const config: ConcurrencyConfig = { default: 4, models: {} };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
       mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
 
       const ctx = fakeCtx();
@@ -57,7 +57,7 @@ describe("AgentManager", () => {
 
     it("queues agents when per-model limit is reached", () => {
       const config: ConcurrencyConfig = { default: 1, models: { "llamacpp/4b_small": 1 } };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -85,7 +85,7 @@ describe("AgentManager", () => {
 
     it("starts queued agent when running agent completes", async () => {
       const config: ConcurrencyConfig = { default: 1, models: { "llamacpp/4b_small": 1 } };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
@@ -121,7 +121,7 @@ describe("AgentManager", () => {
         default: 4,
         models: { "llamacpp/27b": 1, "llamacpp/4b": 4 },
       };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
@@ -162,7 +162,7 @@ describe("AgentManager", () => {
 
     it("applies default limit for unknown models", () => {
       const config: ConcurrencyConfig = { default: 2, models: {} };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred1 = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred1.promise);
@@ -200,7 +200,7 @@ describe("AgentManager", () => {
         providers: { llamacpp: 2 },
         models: {},
       };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
@@ -251,7 +251,7 @@ describe("AgentManager", () => {
         providers: { llamacpp: 2 },
         models: { "llamacpp/4b": 1 },
       };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -279,7 +279,7 @@ describe("AgentManager", () => {
 
     it("applies new limit when setConcurrency is called", () => {
       const config: ConcurrencyConfig = { default: 1, models: { "llamacpp/4b": 1 } };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -310,7 +310,7 @@ describe("AgentManager", () => {
 
     it("removes per-model slot when model entry is removed from config", () => {
       const config: ConcurrencyConfig = { default: 4, models: { "llamacpp/4b": 1 } };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -354,7 +354,7 @@ describe("AgentManager", () => {
 
     it("removes per-provider slot when provider entry is removed from config", () => {
       const config: ConcurrencyConfig = { default: 4, providers: { llamacpp: 1 }, models: {} };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -402,7 +402,7 @@ describe("AgentManager", () => {
         providers: { llamacpp: 2 },
         models: { "llamacpp/4b": 1, "claude/sonnet": 2 },
       };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -451,7 +451,7 @@ describe("AgentManager", () => {
 
     it("running agent under removed slot still settles without error", async () => {
       const config: ConcurrencyConfig = { default: 4, models: { "llamacpp/4b": 1 } };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
@@ -486,7 +486,7 @@ describe("AgentManager", () => {
     });
     it("queues foreground agent when limit is reached", async () => {
       const config: ConcurrencyConfig = { default: 1, models: { "llamacpp/4b": 1 } };
-      manager = new AgentManager(onComplete, config);
+      manager = new AgentManager(owner, onComplete, config);
 
       const deferred1 = makeResolvablePromise();
       const deferred2 = makeResolvablePromise();
@@ -518,3 +518,6 @@ describe("AgentManager", () => {
     });
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mockModules, resetConfig } from "../../menu-mock-setup.js";
 import { createMockCtx } from "../../menu-test-helpers.js";
-import { getAllTypes, getAvailableTypes, getAgentConfig } from "../../../src/agents/agent-types.js";
+
 import type { AgentConfig } from "../../../src/agents/types.js";
 import type { Component, SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
 import type { SettingsListWrapperOptions } from "../../../src/ui/menu/wrappers/settings-list.js";
@@ -108,21 +108,21 @@ describe("showDebugMenu — SelectList migration", () => {
     selectListCalls = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAllTypes).mockReturnValue([]);
-    vi.mocked(getAvailableTypes).mockReturnValue([]);
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue([]);
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValue([]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
   it("uses ctx.ui.custom (not ctx.ui.select)", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
 
   it("creates a SelectList with 2 items", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     expect(selectListCalls.length).toBe(1);
     expect(selectListCalls[0].items).toHaveLength(3);
     expect(selectListCalls[0].items[0].value).toBe("agent-types");
@@ -132,7 +132,7 @@ describe("showDebugMenu — SelectList migration", () => {
 
   it("wraps SelectList in SettingsListWrapper with title 'Debug'", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     expect(settingsListWrapperCalls.length).toBe(1);
     expect(settingsListWrapperCalls[0].options.title).toBe("Debug");
   });
@@ -149,9 +149,9 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
   });
 
   it("shows 'No agent types available' when getAllTypes returns empty", async () => {
-    vi.mocked(getAllTypes).mockReturnValue([]);
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue([]);
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     // Simulate selecting "agent-types"
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No agent types available"), "info");
@@ -160,14 +160,14 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
   });
 
   it("lists each agent type with its description", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["general-purpose", "Explore"]);
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["general-purpose", "Explore"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose") return { name, description: "General-purpose agent", systemPrompt: "" };
       if (name === "Explore") return { name, description: "Explore agent", systemPrompt: "" };
       return undefined;
     });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     // The notification text we show the user is the observable outcome.
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("general-purpose"), "info");
@@ -177,54 +177,54 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
   });
 
   it("marks hidden types with [HIDDEN]", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["secret-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["secret-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "secret-agent") return { name, description: "Hidden agent", hidden: true, systemPrompt: "" };
       return undefined;
     });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("[HIDDEN]"), "info");
   });
 
   it("shows model when config has one", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["test-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["test-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "test-agent",
       description: "Test agent",
       model: "claude-sonnet-4-20250514",
       systemPrompt: "",
     }));
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Model: claude-sonnet-4-20250514"), "info");
   });
 
   it("shows explicit registeredTools when present", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["tool-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["tool-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "tool-agent",
       description: "Agent with tools",
       registeredTools: ["file_read", "file_write"],
       systemPrompt: "",
     }));
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tools: file_read, file_write"), "info");
   });
 
   it("shows pi's resolved defaultTools when registeredTools is absent", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["default-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["default-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "default-agent",
       description: "Default agent",
       systemPrompt: "",
     }));
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tools: read, bash, edit, write"), "info");
     // The generic "all built-in tools" placeholder is gone.
@@ -233,14 +233,14 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
 
   it("reads defaultTools from a SettingsManager over the menu cwd and agent dir", async () => {
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => ["read", "bash", "grep"] });
-    vi.mocked(getAllTypes).mockReturnValue(["general-purpose"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["general-purpose"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "general-purpose",
       description: "General-purpose agent",
       systemPrompt: "",
     }));
     const ctx = { ...createMockCtx(), cwd: "/repo" };
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     // Same manager acquisition as the spawn path: SettingsManager over cwd + agent dir.
     expect(codingAgentMock.SettingsManager.create).toHaveBeenCalledWith("/repo", "/home/test/.pi/agent");
@@ -248,29 +248,29 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
   });
 
   it("shows '(none)' when the effective tool set is empty", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["tool-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["tool-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "tool-agent",
       description: "Agent with no tools",
       systemPrompt: "",
     }));
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => [] });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tools: (none)"), "info");
   });
 
   it("shows pi's fallback set when defaultTools is unconfigured and tool loading is implicit", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["silent-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["silent-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "silent-agent",
       description: "Agent with silent frontmatter",
       systemPrompt: "",
     }));
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => undefined });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     // The delegated child starts with pi's DEFAULT_TOOL_NAMES here, not "(none)".
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("read, bash, edit, write"), "info");
@@ -278,15 +278,15 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
 
   it("shows '(none)' for a silent agent when defaultTools is unconfigured and implicit loading is off", async () => {
     mockModules.mockConfig.agent.loadToolsImplicitly = false;
-    vi.mocked(getAllTypes).mockReturnValue(["silent-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() => ({
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["silent-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "silent-agent",
       description: "Agent with silent frontmatter",
       systemPrompt: "",
     }));
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => undefined });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     // Implicit OFF passes noTools: "all" — the child genuinely starts tool-less.
     // "(none)" is the display's empty-set marker: the only discriminator.
@@ -294,21 +294,21 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
   });
 
   it("skips types where getAgentConfig returns undefined", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["known", "unknown"]);
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["known", "unknown"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "known") return { name, description: "Known agent", systemPrompt: "" };
       return undefined;
     });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("known"), "info");
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("unknown"), "info");
   });
 
   it("shows source when present", async () => {
-    vi.mocked(getAllTypes).mockReturnValue(["ext-agent"]);
-    vi.mocked(getAgentConfig).mockImplementation(() =>
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["ext-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() =>
       asAgentConfig({
         name: "ext-agent",
         description: "Extension agent",
@@ -317,7 +317,7 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
       }),
     );
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Source: .pi/agents/ext-agent.md"), "info");
   });
@@ -335,8 +335,8 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
     codingAgentMock.SettingsManager.create.mockReturnValue({
       getDefaultTools: () => ["read", "bash", "edit", "write"],
     });
-    vi.mocked(getAvailableTypes).mockReturnValue(["general-purpose", "Explore"]);
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValue(["general-purpose", "Explore"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
         return {
           name,
@@ -359,14 +359,14 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
 
   it("sends briefing to LLM via sendUserMessage", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledTimes(1);
   });
 
   it("includes agent type headings in the briefing", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     // The briefing message sent to the LLM is the observable outcome.
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("General Purpose"));
@@ -375,7 +375,7 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
 
   it("includes tool and model info when present", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("**Tools:** file_read, file_write"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(
@@ -386,7 +386,7 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
 
   it("includes the parameters table with all required parameters", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("prompt"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("description"));
@@ -397,7 +397,7 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
   });
   it("always includes a Tools line, with pi's default set when registeredTools is absent", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("**Tools:** file_read, file_write"));
     // Explore has no explicit registeredTools: pi's defaultTools still renders.
@@ -407,21 +407,21 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
   it("shows '(none)' for an empty effective tool set in the briefing", async () => {
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => [] });
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("**Tools:** (none)"));
   });
 
   it("notifies the user after sending the briefing", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), "info");
   });
 
   it("includes worktree_path usage guidelines", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("worktree_path"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("any git repository"));
@@ -432,7 +432,7 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
 
   it("includes usage guidelines for background agents", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("run_in_background"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("do NOT poll"));
@@ -448,7 +448,7 @@ describe("showDebugMenu — restart last agents action (SelectList)", () => {
 
   it("has a restart-last-agents menu item as the third option", async () => {
     const ctx = createMockCtx();
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     expect(selectListCalls[0].items[2].value).toBe("restart-last-agents");
     expect(selectListCalls[0].items[2].label).toBe("Restart last agents");
   });
@@ -457,8 +457,11 @@ describe("showDebugMenu — restart last agents action (SelectList)", () => {
     const ctx = createMockCtx();
     // Mock sessionManager.getEntries to return empty
     ctx.sessionManager = { ...ctx.sessionManager, getEntries: vi.fn(() => []) };
-    await showDebugMenu(ctx);
+    await showDebugMenu(owner, ctx);
     await selectListCalls[0].onSelect!({ value: "restart-last-agents", label: "Restart last agents" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("No recent Agent tool calls found"), "info");
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

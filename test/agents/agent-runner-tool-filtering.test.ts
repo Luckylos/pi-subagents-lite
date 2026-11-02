@@ -34,7 +34,7 @@ describe("runAgent — tool filtering", () => {
       extensionsResult: {},
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", {
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
     });
 
@@ -63,7 +63,7 @@ describe("runAgent — tool filtering", () => {
       tools: ["read", "bash", "edit"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", {
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", {
       pi: fakePi,
     });
 
@@ -99,7 +99,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       excludeTools: ["write"],
     });
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -122,7 +122,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       excludeTools: ["write", "grep"],
     });
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -145,7 +145,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       excludeTools: ["write"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(session.getActiveTools()).toBeUndefined();
   });
@@ -163,7 +163,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       excludeTools: ["write"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(session.getActiveTools()).toEqual(["read", "bash"]);
   });
@@ -190,7 +190,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -224,7 +224,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     expect(session.getActiveTools()).toEqual(["read", "bash", "edit"]);
   });
@@ -250,7 +250,7 @@ describe("runAgent — excludeTools (blacklist mode)", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -284,7 +284,7 @@ describe("runAgent — extension name-based filtering", () => {
     // Don't pre-set loader extensions — the override should filter them
     mockModules.clearLoaderExtensions();
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     expect(loaderCall.noExtensions).toBe(false);
@@ -314,7 +314,7 @@ describe("runAgent — extension name-based filtering", () => {
       extensions: ["tavily/web_search"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     expect(typeof loaderCall.extensionsOverride).toBe("function");
@@ -344,7 +344,7 @@ describe("runAgent — extension name-based filtering", () => {
       extensions: ["tavily"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     const override = loaderCall.extensionsOverride!;
@@ -371,7 +371,7 @@ describe("runAgent — extension name-based filtering", () => {
       extensions: true,
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     expect(loaderCall.noExtensions).toBe(false);
@@ -387,7 +387,7 @@ describe("runAgent — extension name-based filtering", () => {
       extensions: false,
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     expect(loaderCall.noExtensions).toBe(true);
@@ -419,7 +419,7 @@ describe("runAgent — excludeExtensions (blacklist mode)", () => {
       excludeExtensions: ["quality-monitor"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     expect(loaderCall.noExtensions).toBe(false);
@@ -454,7 +454,7 @@ describe("runAgent — excludeExtensions (blacklist mode)", () => {
       excludeExtensions: ["quality-monitor", "confirm-edits"],
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     const override = loaderCall.extensionsOverride!;
@@ -487,7 +487,7 @@ describe("runAgent — excludeExtensions (blacklist mode)", () => {
       excludeExtensions: ["quality-monitor"], // ignored
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     const loaderCall = mockModules.getLoaderOpts();
     const override = loaderCall.extensionsOverride!;
@@ -547,7 +547,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -582,7 +582,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -620,7 +620,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts!.tools).toEqual(expect.arrayContaining(["read", "web_search", "web_extract"]));
     expect(sessionOpts!.tools).not.toContain("all");
@@ -654,7 +654,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       });
       mockModules.setLoaderExtensions([{ path: extensionPath, tools: new Map([["edit", {}]]) }]);
 
-      await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+      await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
       expect(session.getActiveTools()).toEqual(["read"]);
       expect(warnSpy).not.toHaveBeenCalled();
@@ -694,7 +694,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
         { path: secondEntry, tools: new Map([["write", {}]]) },
       ]);
 
-      await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+      await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
       expect(session.getActiveTools()).toEqual(["read", "edit", "write"]);
     } finally {
@@ -737,7 +737,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(sessionOpts!.tools).toEqual(expect.arrayContaining(["read", "web_search", "web_extract", "web_crawl"]));
     expect(sessionOpts!.tools).not.toContain("bash");
@@ -767,7 +767,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('tool "foobar" not found in any loaded extension'));
 
@@ -801,7 +801,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('extension "tavily" is loaded but none of its tools are in tools'),
@@ -835,7 +835,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining('extension "tavily" is not loaded, "tavily/*" will have no effect'),
@@ -867,7 +867,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(session.getActiveTools()).toBeUndefined();
   });
@@ -887,7 +887,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       tools: false,
     });
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(session.getActiveTools()).toEqual([]);
   });
@@ -929,7 +929,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -964,7 +964,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");
@@ -1001,7 +1001,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
       },
     ]);
 
-    await runAgent(fakeCtx(), "test-agent", "do something", { pi: fakePi });
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
 
     expect(warnSpy).not.toHaveBeenCalled();
 
@@ -1011,3 +1011,6 @@ describe("tools field — extension tool names and ext/all syntax", () => {
     expect(activeTools).not.toContain("Agent");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

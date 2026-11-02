@@ -92,8 +92,6 @@ const hoisted = vi.hoisted(() => ({
   clearLoaderExtensions: () => {
     _loaderGetExtensionsResult.extensions = [];
   },
-  mockEnterSubagentSpawn: vi.fn(),
-  mockExitSubagentSpawn: vi.fn(),
   mockDefaultThinking: undefined as import("../../src/types.js").ThinkingChoice | undefined,
 }));
 
@@ -132,8 +130,6 @@ export const mockModules = {
   clearLoaderOpts: hoisted.clearLoaderOpts,
   setLoaderExtensions: hoisted.setLoaderExtensions,
   clearLoaderExtensions: hoisted.clearLoaderExtensions,
-  mockEnterSubagentSpawn: hoisted.mockEnterSubagentSpawn,
-  mockExitSubagentSpawn: hoisted.mockExitSubagentSpawn,
   get mockDefaultThinking() {
     return hoisted.mockDefaultThinking;
   },
@@ -169,26 +165,32 @@ vi.mock("../../src/prompt/skill-loader.js", () => ({
   loadSkillMeta: mockModules.mockLoadSkillMeta,
 }));
 
-vi.mock("../../src/shell.js", () => ({
-  getStore: () => ({
-    agent: {
-      includeContextFiles: mockModules.mockIncludeContextFiles,
-      systemPromptMode: mockModules.mockSystemPromptMode,
-      graceTurns: 6,
-      forceBackground: false,
-      showCost: false,
-      defaultModel: null,
-      get loadToolsImplicitly() {
-        return mockModules.mockLoadToolsImplicitly;
-      },
-      get defaultThinking() {
-        return mockModules.mockDefaultThinking;
-      },
-    },
-  }),
-  enterSubagentSpawn: mockModules.mockEnterSubagentSpawn,
-  exitSubagentSpawn: mockModules.mockExitSubagentSpawn,
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: () => ({
+        agent: {
+          get includeContextFiles() {
+            return mockModules.mockIncludeContextFiles;
+          },
+          get systemPromptMode() {
+            return mockModules.mockSystemPromptMode;
+          },
+          graceTurns: 6,
+          forceBackground: false,
+          showCost: false,
+          defaultModel: null,
+          get loadToolsImplicitly() {
+            return mockModules.mockLoadToolsImplicitly;
+          },
+          get defaultThinking() {
+            return mockModules.mockDefaultThinking;
+          },
+        },
+      }),
+    }))(),
+  ),
+);
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: mockModules.mockCreateAgentSession,

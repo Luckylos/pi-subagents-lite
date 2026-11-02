@@ -82,7 +82,7 @@ describe("showModelSettingsMenu with bad config values", () => {
   it("opens without throw when the default is an object (missed-check backstop)", async () => {
     (mockModules.mockConfig.agent as Record<string, unknown>).default = { model: "x" };
     const ctx = createMockCtx();
-    await expect(showModelSettingsMenu(ctx, ["openai/gpt-4o"])).resolves.toBeUndefined();
+    await expect(showModelSettingsMenu(owner, ctx, ["openai/gpt-4o"])).resolves.toBeUndefined();
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     expect(item).toBeDefined();
   });
@@ -90,6 +90,9 @@ describe("showModelSettingsMenu with bad config values", () => {
   it("opens without throw when a per-type override is an object", async () => {
     (mockModules.mockConfig.agent as Record<string, unknown>).Explore = { model: "x" };
     const ctx = createMockCtx();
-    await expect(showModelSettingsMenu(ctx, ["openai/gpt-4o"])).resolves.toBeUndefined();
+    await expect(showModelSettingsMenu(owner, ctx, ["openai/gpt-4o"])).resolves.toBeUndefined();
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

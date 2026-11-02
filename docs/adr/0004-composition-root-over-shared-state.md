@@ -1,5 +1,9 @@
 # Composition root over module-level shared state
 
+> The process-singleton assumption in this historical decision is superseded by
+> [ADR-0012](0012-instance-owned-extension-state.md). Closure-based composition
+> remains; each extension factory invocation now owns its composition root.
+
 Shared runtime state (config, session overrides, the activity store, the manager,
 widget, pi instance, and session context) lives on a single composition-root
 **shell** object that PI's fixed-signature callbacks capture by closure, rather

@@ -22,7 +22,7 @@ function mount(
   getLiveView: (id: string) => LiveView | undefined = () => undefined,
   configureWidget?: (widget: AgentWidget) => void,
 ) {
-  const widget = new AgentWidget(makeMockManager(agents), getLiveView);
+  const widget = new AgentWidget(owner, makeMockManager(agents), getLiveView);
   configureWidget?.(widget);
   const theme = makeMockTheme();
   let component: WidgetComponent | undefined;
@@ -445,3 +445,6 @@ describe("navigation after transient widget errors", () => {
     expect(host.widget.navSelect()).toBe(second);
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

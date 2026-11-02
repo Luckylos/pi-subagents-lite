@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../../shell.ts";
 /**
  * menu-widget-settings.ts — Widget settings menu concern.
  *
@@ -257,8 +258,8 @@ function buildOnChange(
   };
 }
 
-export async function showWidgetSettingsMenu(ctx: ExtensionCommandContext): Promise<void> {
-  const store = getStore();
+export async function showWidgetSettingsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+  const store = getStore(owner);
   let rebuild: ((items: SettingItem[]) => void) | undefined;
 
   await ctx.ui.custom((_tui, theme, _kb, done) => {

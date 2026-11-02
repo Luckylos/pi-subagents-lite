@@ -9,14 +9,15 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { isInsideSubagentSpawn } from "./shell.ts";
+import { createExtensionOwner } from "./shell.ts";
+import { isChildExtensionLoad } from "./child-load-context.ts";
 import { registerTools } from "./registration.ts";
 import { setupEventListeners } from "./events.ts";
 
 export default function (pi: ExtensionAPI) {
-  // Subagents re-load this extension under their own pi/runtime. Stay inert
-  // so we never clobber the parent-owned shell (the completion nudge relies on it).
-  if (isInsideSubagentSpawn()) return;
-  registerTools(pi);
-  setupEventListeners(pi);
+  // Child resource loaders mark only their own factory-loading calls.
+  if (isChildExtensionLoad()) return;
+  const owner = createExtensionOwner(pi);
+  registerTools(pi, owner);
+  setupEventListeners(pi, owner);
 }

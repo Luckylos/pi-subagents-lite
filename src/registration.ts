@@ -1,6 +1,7 @@
+import type { ExtensionOwner } from "./shell.ts";
 import { Type, type TSchema } from "typebox";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { formatAgentTypeDescriptions, getVisibleAgentInfos } from "./agents/agent-types.ts";
+import { formatAgentTypeDescriptions } from "./agents/agent-types.ts";
 import { executeAgentTool, executeMessageAgentTool, executeStopAgentTool } from "./agents/tool-execution.ts";
 import { executeAgentStatusTool } from "./agents/agent-status.ts";
 import {
@@ -23,9 +24,9 @@ const CONSTRAINED_SAMPLING = { type: "json_schema", strict: "prefer" } as const;
  * Register (or re-register) the Agent tool with current agent types.
  * Call again from session_start after user/project agents load.
  */
-export function registerAgentTool(pi: ExtensionAPI): void {
-  const settings = getStore().agent;
-  const visible = getVisibleAgentInfos();
+export function registerAgentTool(pi: ExtensionAPI, owner: ExtensionOwner): void {
+  const settings = owner.store?.agent ?? { agentToolStrictMode: false, exposeDescriptions: false };
+  const visible = owner.registry.getVisibleAgentInfos();
   const types = visible.map((info) => info.name);
   const useConstrained = settings.agentToolStrictMode;
 
@@ -67,14 +68,14 @@ export function registerAgentTool(pi: ExtensionAPI): void {
     label: "Agent",
     description: ".",
     parameters: params,
-    execute: executeAgentTool,
+    execute: executeAgentTool.bind(null, owner),
     ...(useConstrained ? { constrainedSampling: CONSTRAINED_SAMPLING } : {}),
 
     renderCall: (
       args: Record<string, unknown>,
       theme: any,
       context?: { state?: Record<string, unknown>; toolCallId?: string },
-    ) => renderAgentToolCall(args, theme, context),
+    ) => renderAgentToolCall(owner, args, theme, context),
 
     renderResult: (
       result: { content: Array<{ type: string; text?: string }>; details?: Record<string, unknown> },
@@ -88,11 +89,11 @@ export function registerAgentTool(pi: ExtensionAPI): void {
       },
     ) => {
       const isError = context?.isError ?? false;
-      const store = getStore();
+      const store = getStore(owner);
       const agentId = result.details?.agentId as string | undefined;
       // Register invalidate callback so onComplete can trigger a re-render
       if (agentId && context?.invalidate) {
-        registerAgentInvalidation(agentId, context.invalidate);
+        registerAgentInvalidation(owner, agentId, context.invalidate);
         // Store agentId and background flag in context state so call renderer can access it on re-render
         if (context.state) {
           context.state.agentId = agentId;
@@ -114,15 +115,15 @@ export function registerAgentTool(pi: ExtensionAPI): void {
 
 // --- Tool/Command/Message registration ---
 
-export function registerTools(pi: ExtensionAPI): void {
-  registerAgentTool(pi);
+export function registerTools(pi: ExtensionAPI, owner: ExtensionOwner): void {
+  registerAgentTool(pi, owner);
 
   const stopAgentTool = {
     name: "StopAgent",
     label: "StopAgent",
     description: ".",
     parameters: Type.Object({ agent_id: Type.String() }, { additionalProperties: false }),
-    execute: executeStopAgentTool,
+    execute: executeStopAgentTool.bind(null, owner),
     constrainedSampling: CONSTRAINED_SAMPLING,
     renderResult: renderStatusLine,
   };
@@ -133,7 +134,7 @@ export function registerTools(pi: ExtensionAPI): void {
     label: "MessageAgent",
     description: ".",
     parameters: Type.Object({ agent_id: Type.String(), message: Type.String() }, { additionalProperties: false }),
-    execute: executeMessageAgentTool,
+    execute: executeMessageAgentTool.bind(null, owner),
     constrainedSampling: CONSTRAINED_SAMPLING,
     renderResult: renderStatusLine,
   };
@@ -144,14 +145,15 @@ export function registerTools(pi: ExtensionAPI): void {
     label: "AgentStatus",
     description: ".",
     parameters: Type.Object({}, { additionalProperties: false }),
-    execute: executeAgentStatusTool,
+    execute: executeAgentStatusTool.bind(null, owner),
   };
   pi.registerTool(agentStatusTool);
 
   // Message renderer — subagent-result (background agent completion)
   pi.registerMessageRenderer("subagent-result", (message, options, theme) => {
-    const store = getStore();
+    const store = getStore(owner);
     return renderSubagentResult(
+      owner,
       message as { content?: string; details?: Record<string, unknown> },
       options as { expanded?: boolean },
       theme,
@@ -172,7 +174,7 @@ export function registerTools(pi: ExtensionAPI): void {
       const modelOptions = scoped?.length
         ? scoped.map((s) => `${s.model.provider}/${s.model.id}`)
         : ctx.modelRegistry.getAvailable().map((m) => `${m.provider}/${m.id}`);
-      await showAgentsMainMenu(ctx, modelOptions);
+      await showAgentsMainMenu(owner, ctx, modelOptions);
     },
   });
 }

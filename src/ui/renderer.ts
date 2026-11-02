@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * renderer.ts — Rendering helpers for the Agent tool and subagent-result messages.
  *
@@ -20,11 +21,12 @@ import { getManager } from "../shell.ts";
 
 /** Format agent display name with optional model/thinking level: "Agent (mimo-v2.5-pro · high)" or "Agent". */
 export function agentNameLabel(
+  owner: ExtensionOwner,
   d: Record<string, unknown>,
   theme: Theme,
   modelDisplayStyle: "id" | "name" = "id",
 ): string {
-  const typeName = getDisplayName((d.type as string) || "");
+  const typeName = getDisplayName(owner, (d.type as string) || "");
   const tag = modelTag(d, theme, modelDisplayStyle);
   return tag ? `${theme.bold(typeName)} ${theme.fg("dim", tag)}` : theme.bold(typeName);
 }
@@ -59,33 +61,31 @@ export function buildStatsLine(d: Record<string, unknown>, theme: Theme, showCos
 
 // --- Agent invalidation map ---
 
-/** Per-session map: agentId → invalidate callback. Wired in registration.ts, triggered by onComplete in events.ts. */
-const agentInvalidations = new Map<string, () => void>();
-
 /** Register a row's invalidate function for an agent. Called when rendering a background agent row. */
-export function registerAgentInvalidation(agentId: string, invalidate: () => void): void {
-  agentInvalidations.set(agentId, invalidate);
+export function registerAgentInvalidation(owner: ExtensionOwner, agentId: string, invalidate: () => void): void {
+  owner.rendererInvalidations.set(agentId, invalidate);
 }
 
 /** Trigger re-render of a completed/errored agent's tool row. Called by onComplete callback. */
-export function invalidateAgentRow(agentId: string): void {
-  agentInvalidations.get(agentId)?.();
+export function invalidateAgentRow(owner: ExtensionOwner, agentId: string): void {
+  owner.rendererInvalidations.get(agentId)?.();
 }
 
 /** Clear all invalidation registrations. Called on session_shutdown. */
-export function cleanupInvalidations(): void {
-  agentInvalidations.clear();
+export function cleanupInvalidations(owner: ExtensionOwner): void {
+  owner.rendererInvalidations.clear();
 }
 
 // --- Agent tool renderers ---
 
 /** Render the Agent tool call line (e.g., "▸ Agent (model)"). */
 export function renderAgentToolCall(
+  owner: ExtensionOwner,
   args: Record<string, unknown>,
   theme: Theme,
   context?: { state?: Record<string, unknown>; toolCallId?: string },
 ): Text {
-  const typeName = getDisplayName((args.agent as string) || "");
+  const typeName = getDisplayName(owner, (args.agent as string) || "");
   const label = typeName || "Agent";
 
   // Background agents: show live status from manager, fallback to queued state
@@ -101,7 +101,7 @@ export function renderAgentToolCall(
       // Find agent by toolCallId from context
       const toolCallId = context?.toolCallId as string | undefined;
       if (toolCallId) {
-        const manager = getManager();
+        const manager = getManager(owner);
         if (manager) {
           const record = manager.listAgents().find((r) => r.display.toolCallId === toolCallId);
           if (record) {
@@ -114,9 +114,9 @@ export function renderAgentToolCall(
         }
       }
     }
-    const liveRecord = agentId ? getManager()?.getRecord(agentId) : undefined;
+    const liveRecord = agentId ? getManager(owner)?.getRecord(agentId) : undefined;
     const status = liveRecord?.lifecycle.status ?? "queued";
-    icon = statusIcon(status, theme, (args.agent as string) || undefined);
+    icon = statusIcon(owner, status, theme, (args.agent as string) || undefined);
     let text = `${icon} ${theme.fg("accent", theme.bold(label))}`;
 
     const modelOverride = args._modelOverride as string | undefined;
@@ -132,7 +132,7 @@ export function renderAgentToolCall(
       // Find agent by toolCallId from context
       const toolCallId = context?.toolCallId as string | undefined;
       if (toolCallId) {
-        const manager = getManager();
+        const manager = getManager(owner);
         if (manager) {
           const record = manager.listAgents().find((r) => r.display.toolCallId === toolCallId);
           if (record) {
@@ -144,9 +144,9 @@ export function renderAgentToolCall(
         }
       }
     }
-    const liveRecord = agentId ? getManager()?.getRecord(agentId) : undefined;
+    const liveRecord = agentId ? getManager(owner)?.getRecord(agentId) : undefined;
     const status = liveRecord?.lifecycle.status;
-    icon = statusIcon(status, theme, (args.agent as string) || undefined);
+    icon = statusIcon(owner, status, theme, (args.agent as string) || undefined);
   }
 
   // Build the call line text
@@ -215,6 +215,7 @@ export function renderStatusLine(
 
 /** Render a subagent-result message injected after background agent completion. */
 export function renderSubagentResult(
+  owner: ExtensionOwner,
   message: { content?: string; details?: Record<string, unknown> },
   options: { expanded?: boolean },
   theme: Theme,
@@ -233,9 +234,9 @@ export function renderSubagentResult(
   inner.addChild(new Spacer(1));
 
   if (d && d.turnCount != null) {
-    const icon = statusIcon(d.status as string, theme, (d.type as string) || undefined);
+    const icon = statusIcon(owner, d.status as string, theme, (d.type as string) || undefined);
 
-    const namePart = agentNameLabel(d, theme, modelDisplayStyle);
+    const namePart = agentNameLabel(owner, d, theme, modelDisplayStyle);
     const statsLine = buildStatsLine(d, theme, showCost);
     const description = typeof d.description === "string" ? d.description : "";
     let headerLine = `${icon} ${namePart}·${statsLine}\n  ${theme.fg("text", description)}`;
@@ -261,7 +262,7 @@ export function renderSubagentResult(
       );
     }
   } else {
-    inner.addChild(new Text(buildFallbackResultLine(d, theme, modelDisplayStyle), 0, 0));
+    inner.addChild(new Text(buildFallbackResultLine(owner, d, theme, modelDisplayStyle), 0, 0));
   }
 
   const box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -275,14 +276,15 @@ export function renderSubagentResult(
 }
 
 function buildFallbackResultLine(
+  owner: ExtensionOwner,
   d: Record<string, unknown> | undefined,
   theme: Theme,
   modelDisplayStyle: "id" | "name" = "id",
 ): string {
-  const icon = statusIcon("completed", theme, (d?.type as string) || undefined);
+  const icon = statusIcon(owner, "completed", theme, (d?.type as string) || undefined);
   let line = icon;
   if (d?.type) {
-    line += ` ${agentNameLabel(d, theme, modelDisplayStyle)}`;
+    line += ` ${agentNameLabel(owner, d, theme, modelDisplayStyle)}`;
   }
   const desc = typeof d?.description === "string" ? d.description : "";
   if (desc) line += `\n  ${theme.fg("text", desc)}`;

@@ -21,7 +21,7 @@ describe("AgentManager id resolution", () => {
     mockModules.mockContinueAgentSession.mockReset();
     mockModules.mockRunAgent.mockReturnValue(makeResolvablePromise().promise);
     onComplete = vi.fn<OnAgentComplete>();
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
   });
 
   afterEach(() => {
@@ -78,3 +78,6 @@ describe("AgentManager id resolution", () => {
     expect(manager.getRecord(shortId(id))).toBeUndefined();
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

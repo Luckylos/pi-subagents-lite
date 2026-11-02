@@ -33,9 +33,9 @@ describe("runAgent — abort during setup", () => {
       return { code: 0, stdout: "true" };
     });
 
-    await expect(runAgent(fakeCtx(), "test-agent", "task", { pi: fakePi, signal: controller.signal })).rejects.toThrow(
-      /aborted during setup/,
-    );
+    await expect(
+      runAgent(owner, fakeCtx(), "test-agent", "task", { pi: fakePi, signal: controller.signal }),
+    ).rejects.toThrow(/aborted during setup/);
 
     expect(mockModules.mockCreateAgentSession).not.toHaveBeenCalled();
   });
@@ -47,9 +47,9 @@ describe("runAgent — abort during setup", () => {
       return { session, extensionsResult: {} };
     });
 
-    await expect(runAgent(fakeCtx(), "test-agent", "task", { pi: fakePi, signal: controller.signal })).rejects.toThrow(
-      /aborted during setup/,
-    );
+    await expect(
+      runAgent(owner, fakeCtx(), "test-agent", "task", { pi: fakePi, signal: controller.signal }),
+    ).rejects.toThrow(/aborted during setup/);
 
     expect(session.abort).toHaveBeenCalled();
     expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
@@ -59,16 +59,19 @@ describe("runAgent — abort during setup", () => {
   it("disposes the created session when setup fails after creation", async () => {
     session.bindExtensions.mockRejectedValue(new Error("bind failed"));
 
-    await expect(runAgent(fakeCtx(), "test-agent", "task", { pi: fakePi })).rejects.toThrow("bind failed");
+    await expect(runAgent(owner, fakeCtx(), "test-agent", "task", { pi: fakePi })).rejects.toThrow("bind failed");
 
     expect(session.dispose).toHaveBeenCalledTimes(1);
     expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
   });
 
   it("runs normally when no signal is given", async () => {
-    const result = await runAgent(fakeCtx(), "test-agent", "task", { pi: fakePi });
+    const result = await runAgent(owner, fakeCtx(), "test-agent", "task", { pi: fakePi });
 
     expect(result.responseText).toBeDefined();
     expect(session.dispose).not.toHaveBeenCalled();
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

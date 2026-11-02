@@ -148,7 +148,7 @@ function setup(): { stream: FakeStream; render: () => string } {
     return () => {};
   });
   const session = asAgentSession({ messages, subscribe: mockSubscribe });
-  const viewer = new ConversationViewer(makeTui(), session as never, makeRecord(session), noopTheme, vi.fn());
+  const viewer = new ConversationViewer(owner, makeTui(), session as never, makeRecord(session), noopTheme, vi.fn());
   return { stream, render: () => viewer.render(80).join("\n") };
 }
 
@@ -294,3 +294,6 @@ describe("ConversationViewer streaming", () => {
 function count(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

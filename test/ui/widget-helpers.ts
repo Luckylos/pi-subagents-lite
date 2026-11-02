@@ -15,6 +15,9 @@ import type { AgentWidget, UICtx } from "../../src/ui/agent-widget.js";
 import type { AgentInvocation } from "../../src/agents/types.js";
 import { asAgentSession } from "../pi-boundaries.js";
 
+// Widget suites construct an explicit owner alongside their manager/UI fixtures.
+export { createTestOwner } from "../owner-fixtures.js";
+
 /** The minimal TUI shape the widget render path reads. */
 export interface MockTUI {
   terminal: { columns: number };

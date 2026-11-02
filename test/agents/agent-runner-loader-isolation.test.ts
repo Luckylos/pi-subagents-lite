@@ -30,7 +30,7 @@ describe("runAgent — the child's resource loader", () => {
       exec: vi.fn(async () => ({ code: 0, stdout: "true", stderr: "" })),
     });
 
-    await runAgent(fakeCtx(), "test-agent", "task", { pi });
+    await runAgent(owner, fakeCtx(), "test-agent", "task", { pi });
 
     const loaderOpts = mockModules.getLoaderOpts();
     // Anti-vacuity: the child loader was constructed, and this bus is the one the run used.
@@ -40,3 +40,6 @@ describe("runAgent — the child's resource loader", () => {
     expect(Object.values(loaderOpts!)).not.toContain(pi);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

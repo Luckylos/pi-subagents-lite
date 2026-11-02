@@ -39,6 +39,23 @@ export function memIO(
         project: state.project ? structuredClone(state.project) : null,
         projectStatus: state.projectStatus,
       }),
+      updateLayer: (target, mutate) => {
+        const latest = target === "global" ? structuredClone(state.global) : structuredClone(state.project ?? {});
+        mutate(latest);
+        if (target === "global") {
+          state.global = structuredClone(latest);
+          saves.push({ layer: "global", config: structuredClone(latest) });
+        } else {
+          state.project = structuredClone(latest);
+          state.projectStatus = "loaded";
+          saves.push({ layer: "project", config: structuredClone(latest) });
+        }
+        return {
+          global: structuredClone(state.global),
+          project: state.project ? structuredClone(state.project) : null,
+          projectStatus: state.projectStatus,
+        };
+      },
       saveGlobal: (config) => {
         state.global = structuredClone(config);
         saves.push({ layer: "global", config: structuredClone(config) });
@@ -59,6 +76,7 @@ export function memIO(
 export function minimalIO(): ConfigIO {
   return {
     load: () => ({ global: {}, project: null, projectStatus: "untrusted" }),
+    updateLayer: () => ({ global: {}, project: null, projectStatus: "untrusted" }),
     saveGlobal: () => {},
     saveProject: () => {},
   };

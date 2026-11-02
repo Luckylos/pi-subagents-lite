@@ -29,7 +29,7 @@ async function openMenu() {
       },
     },
   });
-  await showRunningAgentsMenu(ctx);
+  await showRunningAgentsMenu(owner, ctx);
   if (!component) throw new Error("Running agents menu did not open");
   const menu = component;
   return {
@@ -100,3 +100,6 @@ describe("running agents keyboard navigation", () => {
     expect(menu.closed).toHaveBeenCalledOnce();
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

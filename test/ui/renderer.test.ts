@@ -39,21 +39,25 @@ vi.mock("@earendil-works/pi-tui", () => ({
   visibleWidth: (text: string) => text.length,
 }));
 
-vi.mock("../../src/shell.js", () => ({
-  getManager: vi.fn(() => null),
-  getStore: vi.fn(() => ({
-    agent: {
-      showAgentColors: true,
-      outputTranscript: false,
-      outputThinkingBufferSize: 0,
-      showCompletionCards: true,
-      agentStatusLimit: 0,
-      modelDisplayStyle: "name" as const,
-      modelThinkingPlacement: "header" as const,
-      statusBarFormat: "full" as const,
-    },
-  })),
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getManager: vi.fn(() => null),
+      getStore: vi.fn(() => ({
+        agent: {
+          showAgentColors: true,
+          outputTranscript: false,
+          outputThinkingBufferSize: 0,
+          showCompletionCards: true,
+          agentStatusLimit: 0,
+          modelDisplayStyle: "name" as const,
+          modelThinkingPlacement: "header" as const,
+          statusBarFormat: "full" as const,
+        },
+      })),
+    }))(),
+  ),
+);
 
 vi.mock("../../src/ui/format.js", async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import("../../src/ui/format.js");
@@ -61,7 +65,10 @@ vi.mock("../../src/ui/format.js", async (importOriginal) => {
     ...actual,
     buildStatsParts: vi.fn(() => ["5 uses", "3 turns"]),
     formatMs: vi.fn(() => "1m0s"),
-    getDisplayName: vi.fn((type: string) => type.charAt(0).toUpperCase() + type.slice(1)),
+    getDisplayName: vi.fn(
+      (_owner: import("../../src/shell.js").ExtensionOwner, type: string) =>
+        type.charAt(0).toUpperCase() + type.slice(1),
+    ),
     buildModelThinkingTag: vi.fn((m: string | undefined, t: string | undefined) => {
       const p = [m, t].filter(Boolean);
       return p.length ? `(${p.join(" • ")})` : "";
@@ -105,7 +112,7 @@ describe("renderSubagentResult — completion visibility", () => {
   });
 
   it("renders by default", () => {
-    const result = renderSubagentResult({ content: "Result" }, { expanded: false }, noopTheme, SHOW_COST);
+    const result = renderSubagentResult(owner, { content: "Result" }, { expanded: false }, noopTheme, SHOW_COST);
 
     expect(result.children).not.toHaveLength(0);
   });
@@ -113,7 +120,7 @@ describe("renderSubagentResult — completion visibility", () => {
   it.each([{ expanded: false }, { expanded: true }, {}])(
     "returns an empty component when hiding is enabled (%j)",
     (options) => {
-      const result = renderSubagentResult({ content: "Result" }, options, noopTheme, SHOW_COST, "id", true);
+      const result = renderSubagentResult(owner, { content: "Result" }, options, noopTheme, SHOW_COST, "id", true);
 
       expect(result.children).toHaveLength(0);
       expect(textInstances).toHaveLength(0);
@@ -138,7 +145,7 @@ describe("renderSubagentResult — worktree path display", () => {
       },
     };
 
-    renderSubagentResult(message, { expanded: false }, noopTheme, SHOW_COST);
+    renderSubagentResult(owner, message, { expanded: false }, noopTheme, SHOW_COST);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("worktree: /wt/feature");
@@ -154,7 +161,7 @@ describe("renderSubagentResult — worktree path display", () => {
       },
     };
 
-    renderSubagentResult(message, { expanded: false }, noopTheme, SHOW_COST);
+    renderSubagentResult(owner, message, { expanded: false }, noopTheme, SHOW_COST);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("worktree: /wt/feature/packages/web");
@@ -171,7 +178,7 @@ describe("renderSubagentResult — worktree path display", () => {
       },
     };
 
-    renderSubagentResult(message, { expanded: false }, noopTheme, SHOW_COST);
+    renderSubagentResult(owner, message, { expanded: false }, noopTheme, SHOW_COST);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).not.toContain("worktree:");
@@ -194,6 +201,7 @@ describe("renderSubagentResult — status icon", () => {
     ["unknown-status", "▸"],
   ])("shows %s icon for status %s", (status, icon) => {
     renderSubagentResult(
+      owner,
       {
         content: "Agent output",
         details: { type: "builder", description: "Build something", turnCount: 5, status },
@@ -299,7 +307,7 @@ describe("renderAgentToolResult — error icon", () => {
 describe("renderAgentToolResult — background agent status indicators", () => {
   beforeEach(() => {
     textInstances.length = 0;
-    cleanupInvalidations();
+    cleanupInvalidations(owner);
   });
 
   const backgroundResult = {
@@ -431,31 +439,31 @@ describe("renderAgentToolResult — background agent status indicators", () => {
 
 describe("agent invalidation map", () => {
   beforeEach(() => {
-    cleanupInvalidations();
+    cleanupInvalidations(owner);
   });
 
   it("registerAgentInvalidation stores and invalidateAgentRow calls the function", () => {
     const fn = vi.fn();
-    registerAgentInvalidation("agent-1", fn);
-    invalidateAgentRow("agent-1");
+    registerAgentInvalidation(owner, "agent-1", fn);
+    invalidateAgentRow(owner, "agent-1");
     expect(fn).toHaveBeenCalledOnce();
   });
 
   it("invalidateAgentRow is a no-op for unknown agent ids", () => {
     const fn = vi.fn();
-    registerAgentInvalidation("agent-1", fn);
-    invalidateAgentRow("agent-unknown");
+    registerAgentInvalidation(owner, "agent-1", fn);
+    invalidateAgentRow(owner, "agent-unknown");
     expect(fn).not.toHaveBeenCalled();
   });
 
   it("cleanupInvalidations clears all entries", () => {
     const fn1 = vi.fn();
     const fn2 = vi.fn();
-    registerAgentInvalidation("agent-1", fn1);
-    registerAgentInvalidation("agent-2", fn2);
-    cleanupInvalidations();
-    invalidateAgentRow("agent-1");
-    invalidateAgentRow("agent-2");
+    registerAgentInvalidation(owner, "agent-1", fn1);
+    registerAgentInvalidation(owner, "agent-2", fn2);
+    cleanupInvalidations(owner);
+    invalidateAgentRow(owner, "agent-1");
+    invalidateAgentRow(owner, "agent-2");
     expect(fn1).not.toHaveBeenCalled();
     expect(fn2).not.toHaveBeenCalled();
   });
@@ -463,9 +471,9 @@ describe("agent invalidation map", () => {
   it("registerAgentInvalidation overwrites previous entry for same agent", () => {
     const fn1 = vi.fn();
     const fn2 = vi.fn();
-    registerAgentInvalidation("agent-1", fn1);
-    registerAgentInvalidation("agent-1", fn2);
-    invalidateAgentRow("agent-1");
+    registerAgentInvalidation(owner, "agent-1", fn1);
+    registerAgentInvalidation(owner, "agent-1", fn2);
+    invalidateAgentRow(owner, "agent-1");
     expect(fn1).not.toHaveBeenCalled();
     expect(fn2).toHaveBeenCalledOnce();
   });
@@ -481,7 +489,7 @@ describe("renderAgentToolCall — background agent icon", () => {
   });
 
   it("shows ▸ icon for foreground agents", () => {
-    renderAgentToolCall({ agent: "builder" }, noopTheme);
+    renderAgentToolCall(owner, { agent: "builder" }, noopTheme);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("▸");
@@ -489,7 +497,7 @@ describe("renderAgentToolCall — background agent icon", () => {
   });
 
   it("shows ◆ icon for background agents (queued state)", () => {
-    renderAgentToolCall({ agent: "builder", run_in_background: true }, noopTheme);
+    renderAgentToolCall(owner, { agent: "builder", run_in_background: true }, noopTheme);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("◆");
@@ -498,16 +506,19 @@ describe("renderAgentToolCall — background agent icon", () => {
   });
 
   it("shows ▸ icon when run_in_background is false", () => {
-    renderAgentToolCall({ agent: "builder", run_in_background: false }, noopTheme);
+    renderAgentToolCall(owner, { agent: "builder", run_in_background: false }, noopTheme);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("▸");
   });
 
   it("shows model override when present", () => {
-    renderAgentToolCall({ agent: "builder", _modelOverride: "claude-3" }, noopTheme);
+    renderAgentToolCall(owner, { agent: "builder", _modelOverride: "claude-3" }, noopTheme);
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("(claude-3)");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

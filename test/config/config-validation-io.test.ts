@@ -165,6 +165,7 @@ describe("load-time validation — runs and menus", () => {
       const loaded = createConfigIO().load();
       const store = new ConfigStore({
         load: () => ({ global: loaded.global, project: null, projectStatus: "untrusted" }),
+        updateLayer: () => ({ global: loaded.global, project: null, projectStatus: "untrusted" }),
         saveGlobal: () => {},
         saveProject: () => {},
       });
@@ -181,6 +182,7 @@ describe("load-time validation — runs and menus", () => {
       const loaded = createConfigIO().load();
       const store = new ConfigStore({
         load: () => ({ global: loaded.global, project: null, projectStatus: "untrusted" }),
+        updateLayer: () => ({ global: loaded.global, project: null, projectStatus: "untrusted" }),
         saveGlobal: () => {},
         saveProject: () => {},
       });

@@ -372,9 +372,10 @@ export class ConfigStore {
       },
       setForceBackground: (enabled: boolean) => this.setAgentLayerEntry("forceBackground", enabled, "global"),
       setShowCost: (enabled: boolean): void => {
-        this.globalAgent().showCost = enabled;
-        this.sessionShowCost = undefined;
-        this.commitGlobal();
+        this.updatePersistedLayer("global", (layer) => {
+          layer.agent ??= {};
+          layer.agent.showCost = enabled;
+        });
         this.widget?.setShowCost(enabled);
         this.syncWidgetStatsVisibility();
       },
@@ -436,11 +437,13 @@ export class ConfigStore {
       },
       setShowCompletionCards: (enabled: boolean) => this.setAgentLayerEntry("showCompletionCards", enabled, "global"),
       setMaxLines: (lines: number): void => {
-        this.globalAgent().widgetMaxLines = lines;
-        if (this.globalAgent().widgetMaxLinesCompact === undefined) {
-          this.globalAgent().widgetMaxLinesCompact = Math.floor(lines / 2);
-        }
-        this.commitGlobal();
+        this.updatePersistedLayer("global", (layer) => {
+          layer.agent ??= {};
+          layer.agent.widgetMaxLines = lines;
+          if (layer.agent.widgetMaxLinesCompact === undefined) {
+            layer.agent.widgetMaxLinesCompact = Math.floor(lines / 2);
+          }
+        });
         this.syncWidgetSettings();
       },
       setMaxLinesCompact: (lines: number): void => {
@@ -596,31 +599,21 @@ export class ConfigStore {
 
   // ── Private helpers ────────────────────────────────────────────
 
-  /**
-   * The raw layer a persisted mutation targets. The project layer is created
-   * empty on first access in a trusted project without a file (the first write
-   * creates the file); when the project target is unavailable (untrusted or
-   * malformed) the mutation is refused with a warning.
-   */
-  private layerFor(target: "global" | "project"): RawConfig | null {
-    if (target === "global") return this.globalRaw;
-    if (this.projectRaw) return this.projectRaw;
-    if (this.projectStatus === "absent") {
-      this.projectRaw = {};
-      return this.projectRaw;
-    }
-    console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
-    return null;
-  }
-
-  /** Write an agent key at a persisted layer; undefined deletes it. */
+  /** Write an agent key against a freshly read persisted layer; undefined deletes it. */
   private setAgentLayerEntry(key: string, value: unknown, target: "global" | "project"): void {
-    const layer = this.layerFor(target);
-    if (!layer) return;
-    layer.agent ??= {};
-    if (value === undefined) delete layer.agent[key];
-    else layer.agent[key] = value;
-    this.commitLayer(target, layer);
+    if (target === "project" && !this.projectTargetOffered) {
+      console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
+      return;
+    }
+    this.updatePersistedLayer(
+      target,
+      (layer) => {
+        layer.agent ??= {};
+        if (value === undefined) delete layer.agent[key];
+        else layer.agent[key] = value;
+      },
+      { createIfMissing: target === "project" },
+    );
   }
 
   /** Write a model key (default or per-type) at the target layer; session writes are in-memory. */
@@ -639,27 +632,31 @@ export class ConfigStore {
       this.applyConcurrency();
       return;
     }
-    const layer = this.layerFor(target);
-    if (!layer) return;
-    layer.concurrency ??= {};
-    write(layer.concurrency);
-    this.commitLayer(target, layer);
+    if (target === "project" && !this.projectTargetOffered) {
+      console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
+      return;
+    }
+    this.updatePersistedLayer(
+      target,
+      (layer) => {
+        layer.concurrency ??= {};
+        write(layer.concurrency!);
+      },
+      { createIfMissing: target === "project" },
+    );
     this.applyConcurrency();
   }
 
-  private globalAgent(): Record<string, unknown> {
-    this.globalRaw.agent ??= {};
-    return this.globalRaw.agent;
-  }
-
-  private commitGlobal(): void {
-    this.io.saveGlobal(this.globalRaw);
-    this.rebuildEffective();
-  }
-
-  private commitLayer(target: "global" | "project", layer: RawConfig): void {
-    if (target === "global") this.io.saveGlobal(layer);
-    else this.io.saveProject(layer);
+  /** Apply a persisted mutation to the latest target file and adopt the returned layers. */
+  private updatePersistedLayer(
+    target: "global" | "project",
+    mutate: (layer: RawConfig) => void,
+    options?: { createIfMissing?: boolean },
+  ): void {
+    const loaded = this.io.updateLayer(target, mutate, options);
+    this.globalRaw = loaded.global;
+    this.projectRaw = loaded.project;
+    this.projectStatus = loaded.projectStatus;
     this.rebuildEffective();
   }
 
@@ -674,10 +671,9 @@ export class ConfigStore {
     }
   }
   /**
-   * Clear the same model/concurrency key set at one target: session
-   * (in-memory), a persisted layer (saved), or every layer (global saved
-   * first, then project when offered; effective config rebuilt).
-   * `after` runs after any branch.
+   * Clear the same model/concurrency key set at one target. Persisted writes
+   * always mutate a fresh target layer; an all-layer failure reports whether
+   * the first layer was already committed.
    */
   private clearAtTarget(
     target: ConfigTarget | "all",
@@ -692,29 +688,26 @@ export class ConfigStore {
     }
     if (target === "all") {
       sessionClear();
-      layerClear(this.globalRaw);
-      this.io.saveGlobal(this.globalRaw);
-      this.withProjectLayer(layerClear);
-      this.rebuildEffective();
+      this.updatePersistedLayer("global", layerClear);
+      if (this.projectRaw) {
+        try {
+          this.updatePersistedLayer("project", layerClear, { createIfMissing: false });
+        } catch (err) {
+          throw new Error(`Global config was cleared but project config failed: ${String(err)}`, { cause: err });
+        }
+      }
       after?.();
       return;
     }
-    const layer = this.layerFor(target);
-    if (!layer) return;
-    layerClear(layer);
-    this.commitLayer(target, layer);
+    if (target === "project" && !this.projectTargetOffered) {
+      if (this.projectStatus !== "absent") {
+        console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
+      }
+      return;
+    }
+    if (target === "project" && !this.projectRaw && this.projectStatus === "absent") return;
+    this.updatePersistedLayer(target, layerClear, { createIfMissing: false });
     after?.();
-  }
-
-  /**
-   * Run a write against an existing project layer, persisting it after.
-   * Skips when no project file exists: a clear must never create one (sets
-   * create the layer via layerFor).
-   */
-  private withProjectLayer(write: (layer: RawConfig) => void): void {
-    if (!this.projectRaw) return;
-    write(this.projectRaw);
-    this.io.saveProject(this.projectRaw);
   }
 
   private removeConcurrencyEntry(

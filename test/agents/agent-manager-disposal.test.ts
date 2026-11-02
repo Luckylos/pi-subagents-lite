@@ -63,7 +63,7 @@ describe("AgentManager session disposal", () => {
   }
 
   it("clear() then dispose(): teardown in order, the session disposed exactly once", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const id = spawnForeground("task");
     await manager.getRecord(id)!.execution.promise;
@@ -79,7 +79,7 @@ describe("AgentManager session disposal", () => {
   });
 
   it("disposes a run's session that settles after its record vanished (cleared mid-setup)", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(deferred.promise);
     const controller = new AbortController();
@@ -100,7 +100,7 @@ describe("AgentManager session disposal", () => {
   });
 
   it("dispose() awaits in-flight settlements and their session teardowns before returning", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(deferred.promise);
     const _id = spawnForeground("task");
@@ -114,7 +114,7 @@ describe("AgentManager session disposal", () => {
   });
 
   it("dispose() drains session teardowns before returning", async () => {
-    manager = new AgentManager(onComplete);
+    manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const id = spawnForeground("task");
     await manager.getRecord(id)!.execution.promise;
@@ -126,3 +126,6 @@ describe("AgentManager session disposal", () => {
     expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

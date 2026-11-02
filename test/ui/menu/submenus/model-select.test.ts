@@ -134,7 +134,7 @@ describe("createModelSelectSubmenu", () => {
   };
 
   it("returns a function that creates a SettingsList picker with target rows", () => {
-    const factory = createModelSelectSubmenu({ ...baseOptions });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions });
     expect(typeof factory).toBe("function");
 
     factory("(inherits parent)", vi.fn());
@@ -148,7 +148,7 @@ describe("createModelSelectSubmenu", () => {
   });
 
   it("describes each level's persistence", () => {
-    const factory = createModelSelectSubmenu({ ...baseOptions, projectOffered: true });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, projectOffered: true });
     factory("(inherits parent)", vi.fn());
     const items = settingsListCalls[0].items;
     expect(items.map((i) => i.description)).toEqual([
@@ -159,14 +159,14 @@ describe("createModelSelectSubmenu", () => {
   });
 
   it("offers the project target when the project layer is available", () => {
-    const factory = createModelSelectSubmenu({ ...baseOptions, projectOffered: true });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, projectOffered: true });
     factory("(inherits parent)", vi.fn());
     const items = settingsListCalls[0].items;
     expect(items.map((i) => i.id)).toEqual(["session", "global", "project"]);
   });
 
   it("shows Clear option when showClear is true", () => {
-    const factory = createModelSelectSubmenu({ ...baseOptions, showClear: true });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, showClear: true });
     factory("openai/gpt-4o", vi.fn());
     const items = settingsListCalls[0].items;
     expect(items).toHaveLength(3);
@@ -176,7 +176,7 @@ describe("createModelSelectSubmenu", () => {
   it("nested clear picker calls onClear with the picked target", () => {
     const onClear = vi.fn();
     const done = vi.fn();
-    const factory = createModelSelectSubmenu({ ...baseOptions, showClear: true, onClear });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, showClear: true, onClear });
     factory("openai/gpt-4o", done);
     settingsListCalls[0].activate("clear");
 
@@ -190,7 +190,7 @@ describe("createModelSelectSubmenu", () => {
   });
 
   it("with availableLevels, the nested clear picker offers only the listed levels", () => {
-    const factory = createModelSelectSubmenu({
+    const factory = createModelSelectSubmenu(owner, {
       ...baseOptions,
       showClear: true,
       projectOffered: true,
@@ -206,7 +206,7 @@ describe("createModelSelectSubmenu", () => {
   });
 
   it("with availableLevels, offers 'All levels' only when at least two levels have the setting", () => {
-    const factory = createModelSelectSubmenu({
+    const factory = createModelSelectSubmenu(owner, {
       ...baseOptions,
       showClear: true,
       projectOffered: true,
@@ -219,7 +219,7 @@ describe("createModelSelectSubmenu", () => {
   });
 
   it("describes the clear picker levels as removals", () => {
-    const factory = createModelSelectSubmenu({ ...baseOptions, showClear: true, projectOffered: true });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, showClear: true, projectOffered: true });
     factory("openai/gpt-4o", vi.fn());
     // The mode list keeps the set wording; the nested clear picker switches
     // to "Removes from...".
@@ -240,7 +240,7 @@ describe("createModelSelectSubmenu", () => {
   });
 
   it("without availableLevels, the nested clear picker keeps the structural level list", () => {
-    const factory = createModelSelectSubmenu({ ...baseOptions, showClear: true, projectOffered: true });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, showClear: true, projectOffered: true });
     factory("openai/gpt-4o", vi.fn());
     settingsListCalls[0].activate("clear");
     const targetList = settingsListCalls[1];
@@ -250,7 +250,7 @@ describe("createModelSelectSubmenu", () => {
   it("transitions to model selection when session is selected", () => {
     const onSet = vi.fn();
     const done = vi.fn();
-    const factory = createModelSelectSubmenu({ ...baseOptions, onSet });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, onSet });
     const component = factory("(inherits parent)", done);
     settingsListCalls[0].activate("session");
     // onSet not called yet (model selection step pending)
@@ -267,7 +267,7 @@ describe("createModelSelectSubmenu", () => {
   it("transitions to model selection when global is selected", () => {
     const onSet = vi.fn();
     const done = vi.fn();
-    const factory = createModelSelectSubmenu({ ...baseOptions, onSet });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, onSet });
     const component = factory("(inherits parent)", done);
     settingsListCalls[0].activate("global");
     expect(onSet).not.toHaveBeenCalled();
@@ -279,10 +279,13 @@ describe("createModelSelectSubmenu", () => {
   it("calls done without onSet on cancel from mode selection", () => {
     const onSet = vi.fn();
     const done = vi.fn();
-    const factory = createModelSelectSubmenu({ ...baseOptions, onSet });
+    const factory = createModelSelectSubmenu(owner, { ...baseOptions, onSet });
     factory("(inherits parent)", done);
     settingsListCalls[0].onCancel();
     expect(onSet).not.toHaveBeenCalled();
     expect(done).toHaveBeenCalledWith();
   });
 });
+
+import { createTestOwner } from "../../../owner-fixtures.js";
+const owner = await createTestOwner();

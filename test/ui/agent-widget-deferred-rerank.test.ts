@@ -138,7 +138,7 @@ describe("deferred re-rank freeze window", () => {
     vi.setSystemTime(new Date("2025-01-01T00:00:00.000Z"));
     agents = [makeFinishedAgent("f0"), makeRunningAgent("r1"), makeQueuedAgent("q2")];
     manager = makeMockManager(() => agents);
-    widget = new AgentWidget(manager, () => undefined);
+    widget = new AgentWidget(owner, manager, () => undefined);
   });
 
   afterEach(() => {
@@ -280,3 +280,6 @@ describe("deferred re-rank freeze window", () => {
     expect(lines[0]).not.toMatch(/\d+\/\d+/);
   });
 });
+
+import { createTestOwner } from "./widget-helpers.js";
+const owner = await createTestOwner();

@@ -92,11 +92,9 @@ export interface ShellMockFns {
   store?: MockShellStore;
   coordinator?: Partial<SpawnCoordinator>;
   widget?: AgentWidget;
-  /** Spawn guard state for isInsideSubagentSpawn/enter/exit. */
-  spawnGuard?: { depth: number };
 }
 
-/** Mutable mock state; setters update what the getters return. */
+/** Dependency projections used to construct distinct owner fixtures. */
 interface ShellMockState {
   manager: Partial<AgentManager> | null;
   pi: Partial<ExtensionAPI>;
@@ -104,7 +102,6 @@ interface ShellMockState {
   store: MockShellStore;
   coordinator: Partial<SpawnCoordinator> | null;
   widget: AgentWidget | null | undefined;
-  spawnGuard: { depth: number };
 }
 
 /**
@@ -145,7 +142,6 @@ export function shellMock(fns: ShellMockFns = {}) {
       } satisfies MockShellStore),
     coordinator: fns.coordinator ?? { spawn: vi.fn() },
     widget: fns.widget ?? undefined,
-    spawnGuard: fns.spawnGuard ?? { depth: 0 },
   };
 
   return {
@@ -155,28 +151,6 @@ export function shellMock(fns: ShellMockFns = {}) {
     getStore: () => state.store,
     getCoordinator: () => state.coordinator,
     getWidget: () => state.widget,
-    setPiInstance: (pi: Partial<ExtensionAPI>) => {
-      state.pi = pi;
-    },
-    setSessionCtx: (ctx: Partial<ExtensionContext>) => {
-      state.sessionCtx = ctx;
-    },
-    setManager: (m: Partial<AgentManager> | null) => {
-      state.manager = m;
-    },
-    setWidget: (w: AgentWidget | null) => {
-      state.widget = w;
-    },
-    setCoordinator: (c: Partial<SpawnCoordinator> | null) => {
-      state.coordinator = c;
-    },
-    isInsideSubagentSpawn: () => state.spawnGuard.depth > 0,
-    enterSubagentSpawn: () => {
-      state.spawnGuard.depth++;
-    },
-    exitSubagentSpawn: () => {
-      state.spawnGuard.depth--;
-    },
   };
 }
 

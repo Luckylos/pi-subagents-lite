@@ -7,7 +7,7 @@ import { AgentManager } from "../../src/agents/agent-manager.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { AgentOutputLog } from "../../src/agents/output-file.js";
-import { getAgentConfig } from "../../src/agents/agent-types.js";
+
 import type { AgentConfig } from "../../src/agents/types.js";
 
 // Mock modules
@@ -44,9 +44,13 @@ const mockStore = {
   },
 };
 
-vi.mock("../../src/shell.js", () => ({
-  getStore: vi.fn(() => mockStore),
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: vi.fn(() => mockStore),
+    }))(),
+  ),
+);
 
 describe("outputTranscript setting", () => {
   let manager: AgentManager;
@@ -58,9 +62,9 @@ describe("outputTranscript setting", () => {
     mockStore.agent.outputTranscript = true;
 
     // Reset getAgentConfig mock to return undefined by default (no agent-level override)
-    vi.mocked(getAgentConfig).mockReturnValue(undefined);
+    vi.mocked(owner.registry.getAgentConfig).mockReturnValue(undefined);
 
-    manager = new AgentManager(undefined, undefined, undefined);
+    manager = new AgentManager(owner, undefined, undefined, undefined);
 
     mockPi = {} as ExtensionAPI;
     mockCtx = { ui: { notify: vi.fn() } } as unknown as ExtensionContext;
@@ -97,7 +101,7 @@ describe("outputTranscript setting", () => {
 
   describe("agent-level output_transcript override", () => {
     it("should not create output log when frontmatter output_transcript is false, even if global is true", () => {
-      vi.mocked(getAgentConfig).mockReturnValue({ outputTranscript: false } as AgentConfig);
+      vi.mocked(owner.registry.getAgentConfig).mockReturnValue({ outputTranscript: false } as AgentConfig);
       mockStore.agent.outputTranscript = true;
 
       const id = manager.spawn(mockPi, mockCtx, "test-agent", "test prompt", { description: "test" });
@@ -107,7 +111,7 @@ describe("outputTranscript setting", () => {
     });
 
     it("should create output log when frontmatter output_transcript is true, even if global is false", () => {
-      vi.mocked(getAgentConfig).mockReturnValue({ outputTranscript: true } as AgentConfig);
+      vi.mocked(owner.registry.getAgentConfig).mockReturnValue({ outputTranscript: true } as AgentConfig);
       mockStore.agent.outputTranscript = false;
 
       const id = manager.spawn(mockPi, mockCtx, "test-agent", "test prompt", { description: "test" });
@@ -117,7 +121,7 @@ describe("outputTranscript setting", () => {
     });
 
     it("should use global setting when agent frontmatter does not specify output_transcript", () => {
-      vi.mocked(getAgentConfig).mockReturnValue({} as AgentConfig);
+      vi.mocked(owner.registry.getAgentConfig).mockReturnValue({} as AgentConfig);
       mockStore.agent.outputTranscript = false;
 
       const id = manager.spawn(mockPi, mockCtx, "test-agent", "test prompt", { description: "test" });
@@ -126,3 +130,6 @@ describe("outputTranscript setting", () => {
     });
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * spawn-target.ts — The spawn target a `worktree_path` resolves to.
  *
@@ -32,7 +33,11 @@ export type SpawnTarget =
  * anything that is not a non-blank string counts as omitted — the convention
  * the live path established, enforced here so both entry points share it.
  */
-export async function computeSpawnTarget(ctx: ExtensionContext, rawWorktreePath: unknown): Promise<SpawnTarget> {
+export async function computeSpawnTarget(
+  owner: ExtensionOwner,
+  ctx: ExtensionContext,
+  rawWorktreePath: unknown,
+): Promise<SpawnTarget> {
   // Non-strings and empty/whitespace → omitted: nothing to validate, nothing
   // to gate.
   if (typeof rawWorktreePath !== "string" || rawWorktreePath.trim() === "") {
@@ -40,8 +45,8 @@ export async function computeSpawnTarget(ctx: ExtensionContext, rawWorktreePath:
   }
   const warnings: string[] = [];
   try {
-    const parentCwd = getSessionCtx()?.cwd ?? ctx.cwd;
-    const validation = await validateWorktreePath(getPiInstance(), rawWorktreePath, parentCwd, (msg) =>
+    const parentCwd = getSessionCtx(owner)?.cwd ?? ctx.cwd;
+    const validation = await validateWorktreePath(getPiInstance(owner), rawWorktreePath, parentCwd, (msg) =>
       warnings.push(msg),
     );
     if (!validation.ok) {

@@ -3,14 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "vite-plus/test";
-import {
-  registerAgents,
-  getAvailableTypes,
-  getAgentConfig,
-  setAgentScanDirs,
-  discoverNewAgents,
-  getConfig,
-} from "../../src/agents/agent-types.js";
+
 import type { AgentConfig } from "../../src/agents/types.js";
 import { makeAgentMd, tempDirWithFiles } from "../fixtures.js";
 
@@ -20,20 +13,20 @@ import { makeAgentMd, tempDirWithFiles } from "../fixtures.js";
 
 describe("registerAgents — disableDefaultAgents", () => {
   beforeEach(() => {
-    registerAgents(new Map());
-    setAgentScanDirs("", "");
+    owner.registry.registerAgents(new Map());
+    owner.registry.setAgentScanDirs("", "");
   });
 
   it("includes DEFAULT_AGENTS by default (disableDefaultAgents=false)", () => {
-    registerAgents(new Map());
-    const types = getAvailableTypes();
+    owner.registry.registerAgents(new Map());
+    const types = owner.registry.getAvailableTypes();
     expect(types).toContain("general-purpose");
     expect(types).toContain("Explore");
   });
 
   it("skips DEFAULT_AGENTS when disableDefaultAgents is true", () => {
-    registerAgents(new Map(), { disableDefaultAgents: true });
-    const types = getAvailableTypes();
+    owner.registry.registerAgents(new Map(), { disableDefaultAgents: true });
+    const types = owner.registry.getAvailableTypes();
     expect(types).not.toContain("general-purpose");
     expect(types).not.toContain("Explore");
   });
@@ -45,8 +38,8 @@ describe("registerAgents — disableDefaultAgents", () => {
       description: "Custom agent",
       systemPrompt: "test",
     });
-    registerAgents(userAgents, { disableDefaultAgents: true });
-    const types = getAvailableTypes();
+    owner.registry.registerAgents(userAgents, { disableDefaultAgents: true });
+    const types = owner.registry.getAvailableTypes();
     expect(types).toContain("my-agent");
     expect(types).not.toContain("general-purpose");
   });
@@ -58,15 +51,15 @@ describe("registerAgents — disableDefaultAgents", () => {
       description: "My custom general-purpose agent",
       systemPrompt: "custom prompt",
     });
-    registerAgents(userAgents, { disableDefaultAgents: true });
-    const config = getAgentConfig("general-purpose");
+    owner.registry.registerAgents(userAgents, { disableDefaultAgents: true });
+    const config = owner.registry.getAgentConfig("general-purpose");
     expect(config).toBeDefined();
     expect(config!.description).toBe("My custom general-purpose agent");
   });
 
   it("returns empty types when defaults disabled and no user agents", () => {
-    registerAgents(new Map(), { disableDefaultAgents: true });
-    expect(getAvailableTypes()).toEqual([]);
+    owner.registry.registerAgents(new Map(), { disableDefaultAgents: true });
+    expect(owner.registry.getAvailableTypes()).toEqual([]);
   });
 });
 
@@ -76,8 +69,8 @@ describe("registerAgents — disableDefaultAgents", () => {
 
 describe("discoverNewAgents — disableDefaultAgents", () => {
   beforeEach(() => {
-    registerAgents(new Map());
-    setAgentScanDirs("", "");
+    owner.registry.registerAgents(new Map());
+    owner.registry.setAgentScanDirs("", "");
   });
 
   it("skips defaults when discovering with disableDefaultAgents", async () => {
@@ -87,12 +80,12 @@ describe("discoverNewAgents — disableDefaultAgents", () => {
     );
 
     try {
-      setAgentScanDirs("", projectDir);
-      registerAgents(new Map(), { disableDefaultAgents: true });
+      owner.registry.setAgentScanDirs("", projectDir);
+      owner.registry.registerAgents(new Map(), { disableDefaultAgents: true });
 
-      await discoverNewAgents(undefined, { disableDefaultAgents: true });
+      await owner.registry.discoverNewAgents(undefined, { disableDefaultAgents: true });
 
-      const types = getAvailableTypes();
+      const types = owner.registry.getAvailableTypes();
       expect(types).toContain("custom");
       expect(types).not.toContain("general-purpose");
       expect(types).not.toContain("Explore");
@@ -108,15 +101,18 @@ describe("discoverNewAgents — disableDefaultAgents", () => {
 
 describe("getConfig — fallback when defaults disabled", () => {
   beforeEach(() => {
-    registerAgents(new Map());
-    setAgentScanDirs("", "");
+    owner.registry.registerAgents(new Map());
+    owner.registry.setAgentScanDirs("", "");
   });
 
   it("falls back to generic config when defaults disabled and general-purpose missing", () => {
-    registerAgents(new Map(), { disableDefaultAgents: true });
-    const config = getConfig("some-unknown-type");
+    owner.registry.registerAgents(new Map(), { disableDefaultAgents: true });
+    const config = owner.registry.getConfig("some-unknown-type");
     // Should fall through to the absolute fallback (generic config)
     expect(config.displayName).toBe("Agent");
     expect(config.description).toBe("General-purpose agent for complex, multi-step tasks");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -10,7 +10,7 @@ import { mockModules, resetConfig, selectDialogInstances } from "../../menu-mock
 import { createMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
 import { ConfigStore } from "../../../src/config/config-store.js";
 import { memIO } from "../../config/config-store-helpers.js";
-import { getAgentConfig, getAllTypes } from "../../../src/agents/agent-types.js";
+
 import { SEPARATOR_ID } from "../../../src/ui/menu/helpers.js";
 import type { SettingsListWrapperOptions } from "../../../src/ui/menu/wrappers/settings-list.js";
 import type { Component, SelectItem, SettingItem, SettingsListTheme } from "@earendil-works/pi-tui";
@@ -149,19 +149,19 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
     selectListInstances = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
   it("uses ctx.ui.custom (not ctx.ui.select/runMenuLoop)", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
 
   it("creates a SettingsList with global default model item", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(settingsListCalls.length).toBe(1);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("defaultModel");
@@ -170,14 +170,14 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
   it("shows the global default untagged when only the global file has the key", async () => {
     mockModules.mockConfig.agent.default = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     expect(item.currentValue).toBe("openai/gpt-4o");
   });
 
   it("shows '(inherits parent)' without a tag when no default is set", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     expect(item.currentValue).toBe("(inherits parent)");
   });
@@ -185,7 +185,7 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
   it("tags a project-sourced default with [project]", async () => {
     mockModules.mockProjectConfig.agent.default = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     expect(item.currentValue).toContain("openai/gpt-4o");
     expect(item.currentValue).toContain("[project]");
@@ -194,7 +194,7 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
   it("tags a session default with [session]", async () => {
     mockModules.mockSessionOverrides.default = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     expect(item.currentValue).toContain("[session]");
   });
@@ -204,7 +204,7 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
     mockModules.mockProjectConfig.agent.default = "p/default";
     mockModules.mockSessionOverrides.default = "s/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     expect(item.currentValue).toBe("s/default [session]");
   });
@@ -217,13 +217,13 @@ describe("showModelSettingsMenu — cost display removed", () => {
     selectListInstances = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
   it("does NOT include cost display toggle", async () => {
     mockModules.mockConfig.agent.showCost = true;
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).not.toContain("showCost");
     expect(ids).not.toContain("costDisplay");
@@ -237,7 +237,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     selectListInstances = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "Explore") return { name: "Explore", description: "", model: "openai/gpt-4o", systemPrompt: "" };
       if (name === "general-purpose")
         return {
@@ -248,13 +248,13 @@ describe("showModelSettingsMenu — per-type overrides", () => {
         };
       return undefined;
     });
-    vi.mocked(getAllTypes).mockReturnValue(["general-purpose", "Explore"]);
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["general-purpose", "Explore"]);
   });
 
   it("shows overridden types as items", async () => {
     mockModules.mockConfig.agent["Explore"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("type:Explore");
   });
@@ -262,14 +262,14 @@ describe("showModelSettingsMenu — per-type overrides", () => {
   it("shows session override indicator", async () => {
     mockModules.mockSessionOverrides["Explore"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     expect(item.currentValue).toBe("off (pi default) [session]");
   });
   it("tags a project-sourced per-type value with [project]", async () => {
     mockModules.mockProjectConfig.agent["Explore"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const items = settingsListCalls[0].items;
     const item = items.find((i) => i.id === "type:Explore")!;
     expect(item.currentValue).toBe("off (pi default) [project]");
@@ -286,7 +286,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     mockModules.mockProjectConfig.agent["Explore"] = "openai/gpt-4o";
     mockModules.mockSessionOverrides.default = "s/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     expect(item).toBeDefined();
     expect(item.currentValue).toBe("medium (pi default) [session]");
@@ -299,7 +299,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     mockModules.mockConfig.agent["Explore"] = "openai/gpt-4o";
     mockModules.mockSessionOverrides.default = "s/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const items = settingsListCalls[0].items;
     const item = items.find((i) => i.id === "type:Explore")!;
     expect(item).toBeDefined();
@@ -314,7 +314,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     mockModules.mockSessionOverrides.default = "s/default";
     mockModules.mockSessionOverrides["Explore"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const items = settingsListCalls[0].items;
     const exploreRow = items.find((i) => i.id === "type:Explore")!;
     // Explore resolves to its session per-type override (gpt-4o, known →
@@ -325,7 +325,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
 
   it("shows 'Override another type...' when non-overridden types exist", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("overrideType");
   });
@@ -334,7 +334,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     mockModules.mockProjectTargetOffered = true;
     mockModules.mockConfig.agent["Explore"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     const done = vi.fn();
     const proxy = item.submenu!("", done);
@@ -356,7 +356,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
   it("offers no project entry when the project target is not offered", async () => {
     mockModules.mockConfig.agent["Explore"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -367,7 +367,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
   it("clears a per-type override at the global level via the nested picker", async () => {
     mockModules.mockConfig.agent["Explore"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -387,7 +387,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     mockModules.mockProjectTargetOffered = true;
     mockModules.mockProjectConfig.agent["Explore"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -406,7 +406,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     mockModules.mockConfig.agent["Explore"] = "anthropic/claude-sonnet-4-20250514";
     mockModules.mockSessionOverrides["Explore"] = "s/explore";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -432,7 +432,7 @@ describe("showModelSettingsMenu — model groups", () => {
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
     piSettingsMock.getPiDefaultThinkingLevel.mockReturnValue(undefined);
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => {
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "scout")
         return {
           name: "scout",
@@ -445,7 +445,7 @@ describe("showModelSettingsMenu — model groups", () => {
       if (name === "plain") return { name: "plain", description: "", systemPrompt: "" };
       return undefined;
     });
-    vi.mocked(getAllTypes).mockReturnValue(["scout", "worker", "plain"]);
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["scout", "worker", "plain"]);
   });
 
   const items = () => settingsListCalls[0].items;
@@ -454,7 +454,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent["scout"] = "anthropic/claude-sonnet-4-20250514";
     mockModules.mockConfig.agent["worker"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     expect(groupHeaders().map((h) => h.label)).toEqual(["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
   });
 
@@ -462,7 +462,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent["scout"] = "anthropic/claude-sonnet-4-20250514";
     mockModules.mockConfig.agent["worker"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const list = items();
     const scoutHeaderIdx = groupHeaderIndex("anthropic/claude-sonnet-4-20250514");
     const scoutIdx = rowIndex("type:scout");
@@ -484,7 +484,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent["scout"] = "anthropic/claude-sonnet-4-20250514";
     mockModules.mockConfig.agent["worker"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     // scout: frontmatter thinking high, reasoning model → unclamped.
     expect(row("type:scout")?.label).toBe("scout");
     expect(row("type:scout")?.currentValue).toBe("high (frontmatter)");
@@ -498,7 +498,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent["scout"] = "anthropic/claude-sonnet-4-20250514";
     mockModules.mockConfig.agent["worker"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const scoutLabel = row("type:scout")?.label as string;
     const workerLabel = row("type:worker")?.label as string;
     // agentBulletPrefix returns "" in mock setup, but the label should still contain the type name
@@ -512,7 +512,7 @@ describe("showModelSettingsMenu — model groups", () => {
 
   it("never lists frontmatter-only types even when their model differs from the effective default", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     // scout (opus) and worker (gpt-4o) carry frontmatter models but no
     // per-type override; plain inherits. None of them gets a row.
     expect(groupHeaders()).toEqual([]);
@@ -522,9 +522,13 @@ describe("showModelSettingsMenu — model groups", () => {
   });
 
   it("renders no model groups when every type resolves to the effective default", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) => ({ name, description: "", systemPrompt: "" }));
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => ({
+      name,
+      description: "",
+      systemPrompt: "",
+    }));
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     expect(groupHeaders()).toEqual([]);
     const ids = items().map((i) => i.id);
     expect(ids).toContain("defaultModel");
@@ -540,13 +544,13 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockProjectConfig.agent["worker"] = "openai/gpt-4o";
     mockModules.mockConfig.agent["worker"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     expect(row("type:worker")?.currentValue).toBe("off (pi default) [project]");
 
     // global-only override → untagged (the global layer is the default source).
     delete mockModules.mockProjectConfig.agent["worker"];
     mockModules.mockConfig.agent["worker"] = "openai/gpt-4o";
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     expect(settingsListCalls[1].items.find((i) => i.id === "type:worker")?.currentValue).toBe("off (pi default)");
   });
 
@@ -554,7 +558,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent.default = "openai/gpt-4o";
     mockModules.mockConfig.agent["plain"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     // Only the default model's group renders: the frontmatter-only types are
     // never listed regardless of their resolved model.
     expect(groupHeaders().map((h) => h.label)).toEqual(["openai/gpt-4o"]);
@@ -569,19 +573,19 @@ describe("showModelSettingsMenu — model groups", () => {
   it("tags a session per-type override with [session] and clamps its thinking", async () => {
     mockModules.mockSessionOverrides["scout"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     // scout's frontmatter thinking (high) clamps to off on the non-reasoning model.
     expect(row("type:scout")?.currentValue).toBe("off (frontmatter) [session]");
   });
 
   it("annotates an agent file holding `parent` as parent, not frontmatter", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "plain" ? { name, description: "", systemPrompt: "", thinkingLevel: "parent" } : undefined,
     );
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
     ctx.thinkingLevel = "minimal";
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("minimal (parent) [session]");
   });
 
@@ -590,13 +594,13 @@ describe("showModelSettingsMenu — model groups", () => {
     // resolves `parent` against the context pi hands it. The row must explain the
     // level the run uses, so it reads the same context the runtime does.
     mockModules.mockSessionCtx.thinkingLevel = "high" as ThinkingLevel;
-    vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "plain" ? { name, description: "", systemPrompt: "", thinkingLevel: "parent" } : undefined,
     );
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
     ctx.thinkingLevel = "minimal";
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("minimal (parent) [session]");
   });
 
@@ -604,7 +608,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent.defaultThinking = "low";
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("low (subagent default) [session]");
   });
 
@@ -612,7 +616,7 @@ describe("showModelSettingsMenu — model groups", () => {
     piSettingsMock.getPiDefaultThinkingLevel.mockReturnValue("low");
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("low (pi default) [session]");
   });
 
@@ -620,7 +624,7 @@ describe("showModelSettingsMenu — model groups", () => {
     piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("high (pi per-model) [session]");
   });
 
@@ -628,18 +632,18 @@ describe("showModelSettingsMenu — model groups", () => {
     piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "openai/gpt-4o": "max" });
     mockModules.mockSessionOverrides["worker"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     expect(row("type:worker")?.currentValue).toBe("off (pi per-model) [session]");
   });
 
   it("frontmatter thinking beats the per-model level in the menu", async () => {
     piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
-    vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "plain" ? { name, description: "", systemPrompt: "", thinkingLevel: "low" as const } : undefined,
     );
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("low (frontmatter) [session]");
   });
 
@@ -648,7 +652,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent.defaultThinking = "max";
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("low (pi per-model) [session]");
   });
 
@@ -657,7 +661,7 @@ describe("showModelSettingsMenu — model groups", () => {
     mockModules.mockConfig.agent.defaultThinking = "low";
     mockModules.mockSessionOverrides["plain"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);
     expect(row("type:plain")?.currentValue).toBe("low (subagent default) [session]");
   });
 
@@ -665,7 +669,7 @@ describe("showModelSettingsMenu — model groups", () => {
     // Old frontmatterHint setup: config override shadows a frontmatter model.
     mockModules.mockConfig.agent["scout"] = "openai/gpt-4o";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     for (const item of items()) {
       expect(`${item.label} ${item.currentValue}`).not.toContain("→");
     }
@@ -673,7 +677,7 @@ describe("showModelSettingsMenu — model groups", () => {
   it("lists an empty-string per-type override with a clear path to its carrying level", async () => {
     mockModules.mockConfig.agent["scout"] = "";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const scout = row("type:scout")!;
     expect(scout).toBeDefined();
     const done = vi.fn();
@@ -685,21 +689,21 @@ describe("showModelSettingsMenu — model groups", () => {
   });
 
   it("groups an unknown resolved model by its raw id without clamping", async () => {
-    vi.mocked(getAgentConfig).mockImplementation((name: string) =>
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "scout"
         ? { name, description: "", systemPrompt: "", thinkingLevel: "high" }
         : { name, description: "", systemPrompt: "" },
     );
     mockModules.mockConfig.agent["scout"] = "custom/unknown-1";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     expect(groupHeaders().map((h) => h.label)).toContain("custom/unknown-1");
     expect(row("type:scout")?.currentValue).toBe("high (frontmatter)");
   });
 
   it("keeps frontmatter types overridable via 'Override another type...'", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = row("overrideType")!;
     expect(item).toBeDefined();
     item.submenu!("", vi.fn());
@@ -710,7 +714,7 @@ describe("showModelSettingsMenu — model groups", () => {
   it("re-groups a row under the new model with [session] tag after a session override", async () => {
     mockModules.mockConfig.agent["scout"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const scout = row("type:scout")!;
     expect(scout).toBeDefined();
     const done = vi.fn();
@@ -724,7 +728,7 @@ describe("showModelSettingsMenu — model groups", () => {
 
     // Reopen: scout sits under the new model's group with the [session] tag.
     settingsListCalls = [];
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const reopened = settingsListCalls[0].items;
     const scoutRow = reopened.find((i) => i.id === "type:scout")!;
     expect(scoutRow.currentValue).toBe("off (frontmatter) [session]");
@@ -748,7 +752,7 @@ describe("showModelSettingsMenu — model groups", () => {
         }),
       },
     });
-    await showModelSettingsMenu(ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     // Rows: `level (source)` then one space and the model-layer tag; no reserved
     // padding, so the tag stays inside the width SettingsList truncates values at.
     const rows = items().filter((i) => i.id?.startsWith("type:"));
@@ -778,20 +782,20 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     selectListInstances = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
-    vi.mocked(getAllTypes).mockReturnValue(["general-purpose", "Explore"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["general-purpose", "Explore"]);
   });
 
   it("shows 'Clear all model overrides...' item", async () => {
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).toContain("clearAll");
   });
   it("hides the clear-all entry when no level has model settings", async () => {
     delete mockModules.mockConfig.agent.default;
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     expect(ids).not.toContain("clearAll");
   });
@@ -800,7 +804,7 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     delete mockModules.mockConfig.agent.default;
     mockModules.mockSessionOverrides.default = "s/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "clearAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -812,7 +816,7 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     mockModules.mockSessionOverrides.default = "s/default";
     mockModules.mockConfig.agent.default = "g/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "clearAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -824,11 +828,11 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     delete mockModules.mockConfig.agent.default;
     mockModules.mockProjectConfig.agent["Explore"] = "p/explore";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     expect(settingsListCalls[0].items.map((i) => i.id)).not.toContain("clearAll");
 
     mockModules.mockProjectTargetOffered = true;
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[1].items.find((i) => i.id === "clearAll")!;
     item.submenu!("", vi.fn());
     const targetList = settingsListCalls[settingsListCalls.length - 1];
@@ -839,7 +843,7 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     mockModules.mockConfig.agent["Explore"] = "openai/gpt-4o";
     mockModules.mockConfig.agent.default = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "clearAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -861,7 +865,7 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     mockModules.mockProjectConfig.agent["Explore"] = "openai/gpt-4o";
     mockModules.mockConfig.agent["Explore"] = "anthropic/claude-sonnet-4-20250514";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "clearAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -880,7 +884,7 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
     mockModules.mockConfig.agent["Explore"] = "g/explore";
     mockModules.mockProjectConfig.agent["Explore"] = "p/explore";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "clearAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -897,7 +901,7 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
   it("clear-all at session resets session overrides", async () => {
     mockModules.mockSessionOverrides["Explore"] = "s/explore";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, []);
+    await showModelSettingsMenu(owner, ctx, []);
     const item = settingsListCalls[0].items.find((i) => i.id === "clearAll")!;
     const done = vi.fn();
     item.submenu!("", done);
@@ -917,7 +921,7 @@ describe("showModelSettingsMenu — default row clear availability", () => {
     selectListInstances = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
   /** Open the Global default row's submenu, pick "Clear...", return the nested level picker. */
@@ -934,7 +938,7 @@ describe("showModelSettingsMenu — default row clear availability", () => {
     delete mockModules.mockConfig.agent.default;
     mockModules.mockSessionOverrides.default = "s/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["openai/gpt-4o"]);
     expect(openDefaultClear().items.map((i) => i.id)).toEqual(["session"]);
   });
 
@@ -942,7 +946,7 @@ describe("showModelSettingsMenu — default row clear availability", () => {
     mockModules.mockSessionOverrides.default = "s/default";
     mockModules.mockConfig.agent.default = "g/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["openai/gpt-4o"]);
     expect(openDefaultClear().items.map((i) => i.id)).toEqual(["session", "global", "all"]);
   });
 
@@ -952,7 +956,7 @@ describe("showModelSettingsMenu — default row clear availability", () => {
     mockModules.mockProjectConfig.agent.default = "p/default";
     mockModules.mockSessionOverrides.default = "s/default";
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["openai/gpt-4o"]);
+    await showModelSettingsMenu(owner, ctx, ["openai/gpt-4o"]);
     expect(openDefaultClear().items.map((i) => i.id)).toEqual(["session", "project", "all"]);
   });
 });
@@ -964,7 +968,7 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     selectListInstances = [];
     settingsListWrapperCalls = [];
     vi.clearAllMocks();
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
   // Regression: the picker returns the literal "(inherits parent)" string (never
@@ -973,9 +977,9 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
   // ConfigStore so the mock-store mirror cannot hide the bug.
   it("at the global target deletes the global key and modelFor falls through to parent", async () => {
     const store = new ConfigStore(memIO({ global: { agent: { default: "g/default" } }, projectStatus: "loaded" }).io);
-    mockModules.mockStoreOverride = store;
+    const storeOwner = { ...owner, store };
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["openai/gpt-4o"]);
+    await showModelSettingsMenu(storeOwner, ctx, ["openai/gpt-4o"]);
 
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     const done = vi.fn();
@@ -997,9 +1001,9 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
         projectStatus: "loaded",
       }).io,
     );
-    mockModules.mockStoreOverride = store;
+    const storeOwner = { ...owner, store };
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["openai/gpt-4o"]);
+    await showModelSettingsMenu(storeOwner, ctx, ["openai/gpt-4o"]);
 
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     const done = vi.fn();
@@ -1016,9 +1020,9 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
   it("at the session target clears the session override and the config value applies again", async () => {
     const store = new ConfigStore(memIO({ global: { agent: { default: "g/default" } }, projectStatus: "loaded" }).io);
     store.mutate.session.setOverride("default", "s/default");
-    mockModules.mockStoreOverride = store;
+    const storeOwner = { ...owner, store };
     const ctx = createMockCtx();
-    await showModelSettingsMenu(ctx, ["openai/gpt-4o"]);
+    await showModelSettingsMenu(storeOwner, ctx, ["openai/gpt-4o"]);
 
     const item = settingsListCalls[0].items.find((i) => i.id === "defaultModel")!;
     const done = vi.fn();
@@ -1031,3 +1035,6 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("inherits parent"), "info");
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

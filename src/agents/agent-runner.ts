@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * Core execution engine: creates sessions, runs agents, collects results.
  *
@@ -18,7 +19,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { getAgentConfig, getConfig, resolveSessionToolOptions, resolveVisibleTools } from "./agent-types.ts";
+import { resolveSessionToolOptions, resolveVisibleTools } from "./agent-types.ts";
 import { extractText } from "../prompt/context.ts";
 import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 import type { AgentUsage } from "./usage.ts";
@@ -28,7 +29,8 @@ import { buildAgentPrompt, type PromptExtras } from "../prompt/prompts.ts";
 import { preloadSkills, loadSkillMeta } from "../prompt/skill-loader.ts";
 import { type EnvInfo, type RunCallbacks, type RunTunables, SHORT_ID_LENGTH } from "../types.ts";
 import type { SubagentType, SystemPromptMode } from "./types.ts";
-import { getStore, enterSubagentSpawn, exitSubagentSpawn } from "../shell.ts";
+import { getStore } from "../shell.ts";
+import { withChildExtensionLoad } from "../child-load-context.ts";
 import { BUILTIN_EXTENSION_FACTORIES } from "./builtin-extensions.ts";
 import { disposeChildSession } from "./session-teardown.ts";
 import { announceChildSessionBound, announceChildSessionCreated } from "./child-announcements.ts";
@@ -330,15 +332,16 @@ export function resolveEffectiveSystemPromptMode(
 }
 
 function resolveSystemPromptSources(
+  owner: ExtensionOwner,
   ctx: ExtensionContext,
   cwd: string,
   notify: (msg: string) => void,
-  agentConfig: ReturnType<typeof getAgentConfig>,
+  agentConfig: ReturnType<ExtensionOwner["registry"]["getAgentConfig"]>,
 ): {
   mode: SystemPromptMode;
   extras: Pick<PromptExtras, "parentSystemPrompt" | "customSystemPrompt" | "contextFiles">;
 } {
-  const store = getStore();
+  const store = getStore(owner);
   // Per-agent frontmatter overrides win; unset fields follow the global config.
   const mode = resolveEffectiveSystemPromptMode(store.agent.systemPromptMode, agentConfig?.includeSystemPrompt);
   const includeContextFiles = agentConfig?.includeContextFiles ?? store.agent.includeContextFiles;
@@ -382,8 +385,8 @@ function resolveSystemPromptSources(
 
 function buildPrompt(
   type: SubagentType,
-  agentConfig: ReturnType<typeof getAgentConfig>,
-  config: ReturnType<typeof getConfig>,
+  agentConfig: ReturnType<ExtensionOwner["registry"]["getAgentConfig"]>,
+  config: ReturnType<ExtensionOwner["registry"]["getConfig"]>,
   cwd: string,
   env: EnvInfo,
   systemPromptMode: SystemPromptMode = "replace",
@@ -474,8 +477,8 @@ export function buildExtOverride(
 }
 
 function createResourceLoader(
-  config: ReturnType<typeof getConfig>,
-  agentConfig: ReturnType<typeof getAgentConfig>,
+  config: ReturnType<ExtensionOwner["registry"]["getConfig"]>,
+  agentConfig: ReturnType<ExtensionOwner["registry"]["getAgentConfig"]>,
   cwd: string,
   systemPrompt: string,
   settingsManager: SettingsManager,
@@ -502,6 +505,16 @@ function createResourceLoader(
     extensionsOverride: buildExtOverride(extensions, agentConfig?.excludeExtensions, notify),
   };
   const loader = new DefaultResourceLoader(loaderOpts);
+
+  // Mark only actual SDK resource loading. Parent announcements, bind callbacks
+  // and the child prompt stay outside this async context.
+  const reload = loader.reload.bind(loader);
+  loader.reload = (options) => withChildExtensionLoad(true, () => reload(options));
+  const loadProjectTrustExtensions = loader.loadProjectTrustExtensions?.bind(loader);
+  if (loadProjectTrustExtensions) {
+    loader.loadProjectTrustExtensions = () => withChildExtensionLoad(true, loadProjectTrustExtensions);
+  }
+
   return {
     loader,
     reloadAndMap: async () => {
@@ -524,7 +537,7 @@ function hasOpenAIResponsesOutputLimit(payload: unknown): boolean {
 interface SessionSetup {
   ctx: ExtensionContext;
   options: RunOptions;
-  agentConfig: ReturnType<typeof getAgentConfig>;
+  agentConfig: ReturnType<ExtensionOwner["registry"]["getAgentConfig"]>;
   type: SubagentType;
   cwd: string;
   loader: DefaultResourceLoader;
@@ -532,7 +545,7 @@ interface SessionSetup {
   settingsManager: SettingsManager;
 }
 
-async function initSession(setup: SessionSetup): Promise<AgentSession> {
+async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<AgentSession> {
   const { ctx, options, agentConfig, cwd, loader, extToolMap, settingsManager } = setup;
   const model = options.model ?? findModelInRegistry(agentConfig?.model, ctx.modelRegistry, ctx.model);
   // Per-model comes from the same trust-gated instance the session is created
@@ -544,7 +557,7 @@ async function initSession(setup: SessionSetup): Promise<AgentSession> {
     explicit: options.thinkingLevel,
     frontmatter: agentConfig?.thinkingLevel,
     perModel: perModelLevel,
-    defaultThinking: getStore().agent.defaultThinking,
+    defaultThinking: getStore(owner).agent.defaultThinking,
     parentLevel: ctx.thinkingLevel,
   });
   const agentDir = getAgentDir();
@@ -560,7 +573,7 @@ async function initSession(setup: SessionSetup): Promise<AgentSession> {
       registeredTools: agentConfig?.registeredTools,
       tools: agentConfig?.tools,
       extToolMap,
-      loadToolsImplicitly: getStore().agent.loadToolsImplicitly,
+      loadToolsImplicitly: getStore(owner).agent.loadToolsImplicitly,
     }),
     resourceLoader: loader,
   };
@@ -599,8 +612,12 @@ async function initSession(setup: SessionSetup): Promise<AgentSession> {
   return session;
 }
 
-async function createAndConfigureSession(setup: SessionSetup, notify: (msg: string) => void): Promise<AgentSession> {
-  const session = await initSession(setup);
+async function createAndConfigureSession(
+  owner: ExtensionOwner,
+  setup: SessionSetup,
+  notify: (msg: string) => void,
+): Promise<AgentSession> {
+  const session = await initSession(owner, setup);
   const { agentConfig, ctx, options, type, extToolMap } = setup;
   const baseName = agentConfig?.name ?? type;
   session.setSessionName(options.agentId ? `${baseName}#${options.agentId.slice(0, SHORT_ID_LENGTH)}` : baseName);
@@ -731,28 +748,23 @@ export async function continueAgentSession(
 // ── main entry ─────────────────────────────────────────────────────
 
 export async function runAgent(
+  owner: ExtensionOwner,
   ctx: ExtensionContext,
   type: SubagentType,
   prompt: string,
   options: RunOptions,
 ): Promise<RunResult> {
-  // Bracket the whole subagent lifecycle so the extension factory can detect
-  // it's being re-loaded inside a subagent and avoid clobbering the parent shell.
-  enterSubagentSpawn();
-  try {
-    return await runAgentImpl(ctx, type, prompt, options);
-  } finally {
-    exitSubagentSpawn();
-  }
+  return runAgentImpl(owner, ctx, type, prompt, options);
 }
 
 async function runAgentImpl(
+  owner: ExtensionOwner,
   ctx: ExtensionContext,
   type: SubagentType,
   prompt: string,
   options: RunOptions,
 ): Promise<RunResult> {
-  const { session, warnings, agentConfig } = await createChildSession(ctx, type, options);
+  const { session, warnings, agentConfig } = await createChildSession(owner, ctx, type, options);
   const result = await runSessionPrompt(session, prompt, {
     ...options,
     maxTurns: options.maxTurns ?? agentConfig?.maxTurns,
@@ -775,80 +787,86 @@ function flushWarnings(ctx: ExtensionContext, warnings: string[]): void {
 /**
  * The full child-session setup, prompt-free: settings, tool resolution, the
  * resource loader with pi's built-in factories, session creation, extension
- * binding, and tool visibility. Brackets itself with enterSubagentSpawn so
- * bindExtensions keeps the parent-owned subagents extension inert even when
- * called outside runAgent (nesting under its bracket is fine). The contract
+ * binding, and tool visibility. The child loader marks only its own SDK loading
+ * calls, so parent announcements and bind callbacks remain unmarked. The contract
  * suite drives this directly against the real SDK; runAgentImpl adds only the
  * prompt and warning flush. Returns the buffered warnings (flush after the
  * run's tool_result lands) and the agent config (for maxTurns).
  */
 export async function createChildSession(
+  owner: ExtensionOwner,
   ctx: ExtensionContext,
   type: SubagentType,
   options: RunOptions,
-): Promise<{ session: AgentSession; warnings: string[]; agentConfig: ReturnType<typeof getAgentConfig> }> {
-  enterSubagentSpawn();
-  try {
-    const store = getStore();
-    const effectiveCwd = options.cwd ?? ctx.cwd;
+): Promise<{
+  session: AgentSession;
+  warnings: string[];
+  agentConfig: ReturnType<ExtensionOwner["registry"]["getAgentConfig"]>;
+}> {
+  const store = getStore(owner);
+  const effectiveCwd = options.cwd ?? ctx.cwd;
 
-    // One SettingsManager for the whole spawn: its trust state gates both the
-    // resource loader (project extensions/skills/prompts/themes/system prompt
-    // files) and the session context (ctx.isProjectTrusted). pi reads
-    // defaultTools and the extension selection from this same instance.
-    const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir(), {
-      projectTrusted: options.projectTrusted !== false,
-    });
+  // One SettingsManager for the whole spawn: its trust state gates both the
+  // resource loader (project extensions/skills/prompts/themes/system prompt
+  // files) and the session context (ctx.isProjectTrusted). pi reads
+  // defaultTools and the extension selection from this same instance.
+  const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir(), {
+    projectTrusted: options.projectTrusted !== false,
+  });
 
-    const config = getConfig(type, store.agent.loadSkillsImplicitly, store.agent.loadExtensionsImplicitly);
-    const agentConfig = getAgentConfig(type);
+  const config = owner.registry.getConfig(type, store.agent.loadSkillsImplicitly, store.agent.loadExtensionsImplicitly);
+  const agentConfig = owner.registry.getAgentConfig(type);
 
-    // Buffer warnings during setup to avoid inserting custom_message entries
-    // between tool_use and tool_result in the session tree (causes Anthropic 400).
-    // Flushed after runTurnLoop completes.
-    const warnings: string[] = [];
-    const bufferNotify = (msg: string) => {
-      warnings.push(msg);
-    };
-    if (agentConfig?.excludeTools && Array.isArray(agentConfig.tools)) {
-      bufferNotify(`agent "${type}": both tools and exclude_tools set — tools (whitelist) wins`);
-    }
-    if (agentConfig?.excludeExtensions && Array.isArray(agentConfig.extensions)) {
-      bufferNotify(`agent "${type}": both extensions and exclude_extensions set — extensions (whitelist) wins`);
-    }
-
-    const env = await detectEnv(options.pi, effectiveCwd);
-
-    // The parent interrupt can land mid-setup; every await below re-checks so a
-    // stopped spawn either skips session creation or tears the session down.
-    const throwIfAborted = (stage: string): void => {
-      if (options.signal?.aborted) throw new Error(`agent "${type}": aborted during setup (${stage})`);
-    };
-    throwIfAborted("before resource load");
-
-    const { mode, extras: promptExtras } = resolveSystemPromptSources(ctx, effectiveCwd, bufferNotify, agentConfig);
-
-    const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
-    const { loader, reloadAndMap } = createResourceLoader(
-      config,
-      agentConfig,
-      effectiveCwd,
-      systemPrompt,
-      settingsManager,
-      bufferNotify,
-    );
-    const { extToolMap } = await reloadAndMap();
-    throwIfAborted("before session creation");
-    const session = await createAndConfigureSession(
-      { ctx, options, agentConfig, type, cwd: effectiveCwd, loader, extToolMap, settingsManager },
-      bufferNotify,
-    );
-    if (options.signal?.aborted) {
-      await disposeChildSession(session);
-      throwIfAborted("after session creation");
-    }
-    return { session, warnings, agentConfig };
-  } finally {
-    exitSubagentSpawn();
+  // Buffer warnings during setup to avoid inserting custom_message entries
+  // between tool_use and tool_result in the session tree (causes Anthropic 400).
+  // Flushed after runTurnLoop completes.
+  const warnings: string[] = [];
+  const bufferNotify = (msg: string) => {
+    warnings.push(msg);
+  };
+  if (agentConfig?.excludeTools && Array.isArray(agentConfig.tools)) {
+    bufferNotify(`agent "${type}": both tools and exclude_tools set — tools (whitelist) wins`);
   }
+  if (agentConfig?.excludeExtensions && Array.isArray(agentConfig.extensions)) {
+    bufferNotify(`agent "${type}": both extensions and exclude_extensions set — extensions (whitelist) wins`);
+  }
+
+  const env = await detectEnv(options.pi, effectiveCwd);
+
+  // The parent interrupt can land mid-setup; every await below re-checks so a
+  // stopped spawn either skips session creation or tears the session down.
+  const throwIfAborted = (stage: string): void => {
+    if (options.signal?.aborted) throw new Error(`agent "${type}": aborted during setup (${stage})`);
+  };
+  throwIfAborted("before resource load");
+
+  const { mode, extras: promptExtras } = resolveSystemPromptSources(
+    owner,
+    ctx,
+    effectiveCwd,
+    bufferNotify,
+    agentConfig,
+  );
+
+  const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
+  const { loader, reloadAndMap } = createResourceLoader(
+    config,
+    agentConfig,
+    effectiveCwd,
+    systemPrompt,
+    settingsManager,
+    bufferNotify,
+  );
+  const { extToolMap } = await reloadAndMap();
+  throwIfAborted("before session creation");
+  const session = await createAndConfigureSession(
+    owner,
+    { ctx, options, agentConfig, type, cwd: effectiveCwd, loader, extToolMap, settingsManager },
+    bufferNotify,
+  );
+  if (options.signal?.aborted) {
+    await disposeChildSession(session);
+    throwIfAborted("after session creation");
+  }
+  return { session, warnings, agentConfig };
 }

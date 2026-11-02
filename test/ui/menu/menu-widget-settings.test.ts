@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test"
 import type { Component, SettingItem, SettingsListTheme } from "@earendil-works/pi-tui";
 import { mockModules, resetConfig } from "../../menu-mock-setup.js";
 import { createMockCtx } from "../../menu-test-helpers.js";
-import { getAgentConfig } from "../../../src/agents/agent-types.js";
+
 import type { SettingsListWrapperOptions } from "../../../src/ui/menu/wrappers/settings-list.js";
 
 // Capture constructor calls
@@ -111,19 +111,19 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
     setupMockConfig();
     vi.clearAllMocks();
     resetState();
-    vi.mocked(getAgentConfig).mockImplementation(() => undefined);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
   it("uses ctx.ui.custom (not ctx.ui.select)", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     expect(ctx.ui.custom).toHaveBeenCalled();
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
 
   it("creates a SettingsList with setting items and section headers", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     expect(settingsListCalls.length).toBe(1);
     const items = settingsListCalls[0].items;
     // Has multiple items
@@ -135,7 +135,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
 
   it("has section headers for Layout, Display, Stats", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const items = settingsListCalls[0].items;
     const ids = items.map((i) => i.id);
     // Has separator/header rows
@@ -149,14 +149,14 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
 
   it("wraps in SettingsListWrapper with title 'Widget'", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     expect(wrapperCalls).toContainEqual({ title: "Widget" });
   });
 
   it("compact item shows correct value", async () => {
     mockModules.mockConfig.agent.widgetCompact = false;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const item = settingsListCalls[0].items.find((i) => i.id === "compact")!;
     expect(item.currentValue).toBe("OFF");
   });
@@ -164,14 +164,14 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
   it("compact onChange toggles store", async () => {
     mockModules.mockConfig.agent.widgetCompact = false;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     settingsListCalls[0].onChange("compact", "ON");
     expect(mockModules.mockConfig.agent.widgetCompact).toBe(true);
   });
 
   it("maxLines has submenu function", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const item = settingsListCalls[0].items.find((i) => i.id === "maxLines")!;
     expect(item.currentValue).toBe("12");
     expect(typeof item.submenu).toBe("function");
@@ -180,7 +180,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
   it("showModel onChange toggles store", async () => {
     mockModules.mockConfig.agent.widgetShowModel = true;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     settingsListCalls[0].onChange("showModel", "OFF");
     expect(mockModules.mockConfig.agent.widgetShowModel).toBe(false);
   });
@@ -188,7 +188,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
   it("modelDisplayStyle onChange toggles between id/name", async () => {
     mockModules.mockConfig.agent.modelDisplayStyle = "id";
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     settingsListCalls[0].onChange("modelDisplayStyle", "Name");
     expect(mockModules.mockConfig.agent.modelDisplayStyle).toBe("name");
   });
@@ -196,7 +196,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
   it("showThinking onChange toggles store", async () => {
     mockModules.mockConfig.agent.widgetShowThinking = true;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     settingsListCalls[0].onChange("showThinking", "OFF");
     expect(mockModules.mockConfig.agent.widgetShowThinking).toBe(false);
   });
@@ -204,7 +204,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
   it("navHint onChange toggles store", async () => {
     mockModules.mockConfig.agent.widgetNavHint = true;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     settingsListCalls[0].onChange("navHint", "OFF");
     expect(mockModules.mockConfig.agent.widgetNavHint).toBe(false);
   });
@@ -212,21 +212,21 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
   it("shortcut onChange toggles store (now in Display section)", async () => {
     mockModules.mockConfig.agent.widgetShortcut = false;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     settingsListCalls[0].onChange("shortcut", "ON");
     expect(mockModules.mockConfig.agent.widgetShortcut).toBe(true);
   });
 
   it("finishedRetention has submenu (now in Display section)", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const item = settingsListCalls[0].items.find((i) => i.id === "finishedRetention")!;
     expect(typeof item.submenu).toBe("function");
   });
 
   it("stat toggles update store", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const onChange = settingsListCalls[0].onChange;
 
     onChange("showTools", "OFF");
@@ -241,7 +241,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
     mockModules.mockConfig.agent.showTools = true;
     mockModules.mockConfig.agent.showCost = false;
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const items = settingsListCalls[0].items;
     expect(items.find((i) => i.id === "showTools")!.currentValue).toBe("ON");
     expect(items.find((i) => i.id === "showCost")!.currentValue).toBe("OFF");
@@ -249,7 +249,7 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
 
   it("has expected setting items", async () => {
     const ctx = createMockCtx();
-    await showWidgetSettingsMenu(ctx);
+    await showWidgetSettingsMenu(owner, ctx);
     const ids = settingsListCalls[0].items.map((i) => i.id);
     // Layout items
     expect(ids).toContain("compact");
@@ -273,3 +273,6 @@ describe("showWidgetSettingsMenu — flat SettingsList", () => {
     expect(ids).toContain("showTime");
   });
 });
+
+import { createTestOwner } from "../../owner-fixtures.js";
+const owner = await createTestOwner();

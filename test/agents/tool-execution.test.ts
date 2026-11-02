@@ -73,58 +73,62 @@ vi.mock("../../src/utils.js", () => ({
   parseThinkingChoice: vi.fn(() => undefined),
 }));
 
-vi.mock("../../src/shell.js", () => ({
-  getStore: () => ({
-    get agent() {
-      return { graceTurns: 5, forceBackground: mockStoreState.forceBackground };
-    },
-    modelFor(type: string, parentModelId: string, agentConfig?: { model?: string }) {
-      // Simplified model resolution for testing
-      if (agentConfig?.model) return agentConfig.model;
-      return parentModelId;
-    },
-  }),
-  getPiInstance: () => ({ sendMessage: vi.fn(), exec: vi.fn() }),
-  getSessionCtx: () => ({ cwd: "/home/test/project" }),
-  getManager: () => ({
-    spawn: mockSpawn,
-    getRecord: mockGetRecord,
-    listAgents: vi.fn(() => []),
-    getTotalAgentCost: vi.fn(() => 0),
-    abort: vi.fn(() => false),
-  }),
-  getWidget: () => ({
-    ensureTimer: vi.fn(),
-    update: vi.fn(),
-  }),
-  getCoordinator: () => ({
-    spawn: vi.fn(async (pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent) => {
-      // Delegate to the mocked manager.spawn
-      const id = mockSpawn(pi, ctx, intent.type, intent.prompt, {
-        description: intent.description,
-        model: intent.model,
-        maxTurns: intent.maxTurns,
-        thinkingLevel: intent.thinkingLevel,
-        modelKey: intent.modelKey,
-        graceTurns: intent.graceTurns,
-        worktreePath: intent.worktreePath,
-        worktreeLabel: intent.worktreeLabel,
-        projectTrusted: intent.projectTrusted,
-        isBackground: intent.runInBackground,
-        signal: intent.signal,
-      });
-      const record = mockGetRecord(id);
-      if (!intent.runInBackground && record?.execution?.promise) {
-        await record.execution.promise;
-      }
-      return { agentId: id, record };
-    }),
-    isBackground: vi.fn(() => false),
-    scheduleNudge: vi.fn(),
-    onAgentComplete: vi.fn(),
-    dispose: vi.fn(),
-  }),
-}));
+vi.mock("../../src/shell.js", async () =>
+  (await import("../owner-fixtures.js")).ownerShellMock(
+    await (() => ({
+      getStore: () => ({
+        get agent() {
+          return { graceTurns: 5, forceBackground: mockStoreState.forceBackground };
+        },
+        modelFor(type: string, parentModelId: string, agentConfig?: { model?: string }) {
+          // Simplified model resolution for testing
+          if (agentConfig?.model) return agentConfig.model;
+          return parentModelId;
+        },
+      }),
+      getPiInstance: () => ({ sendMessage: vi.fn(), exec: vi.fn() }),
+      getSessionCtx: () => ({ cwd: "/home/test/project" }),
+      getManager: () => ({
+        spawn: mockSpawn,
+        getRecord: mockGetRecord,
+        listAgents: vi.fn(() => []),
+        getTotalAgentCost: vi.fn(() => 0),
+        abort: vi.fn(() => false),
+      }),
+      getWidget: () => ({
+        ensureTimer: vi.fn(),
+        update: vi.fn(),
+      }),
+      getCoordinator: () => ({
+        spawn: vi.fn(async (pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent) => {
+          // Delegate to the mocked manager.spawn
+          const id = mockSpawn(pi, ctx, intent.type, intent.prompt, {
+            description: intent.description,
+            model: intent.model,
+            maxTurns: intent.maxTurns,
+            thinkingLevel: intent.thinkingLevel,
+            modelKey: intent.modelKey,
+            graceTurns: intent.graceTurns,
+            worktreePath: intent.worktreePath,
+            worktreeLabel: intent.worktreeLabel,
+            projectTrusted: intent.projectTrusted,
+            isBackground: intent.runInBackground,
+            signal: intent.signal,
+          });
+          const record = mockGetRecord(id);
+          if (!intent.runInBackground && record?.execution?.promise) {
+            await record.execution.promise;
+          }
+          return { agentId: id, record };
+        }),
+        isBackground: vi.fn(() => false),
+        scheduleNudge: vi.fn(),
+        onAgentComplete: vi.fn(),
+        dispose: vi.fn(),
+      }),
+    }))(),
+  ),
+);
 
 vi.mock("../../src/agents/usage.js", () => ({
   addUsage: vi.fn(),
@@ -180,7 +184,7 @@ describe("executeAgentTool — worktree_path validation", () => {
       label: "feature",
     });
 
-    await executeAgentTool("tc-1", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-1", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx);
 
     expect(mockValidateWorktreePath).toHaveBeenCalledTimes(1);
     expect(mockValidateWorktreePath).toHaveBeenCalledWith(
@@ -198,7 +202,7 @@ describe("executeAgentTool — worktree_path validation", () => {
     });
 
     await expect(
-      executeAgentTool("tc-2", makeParams({ worktree_path: "/etc" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-2", makeParams({ worktree_path: "/etc" }), undefined, undefined, ctx),
     ).rejects.toThrow("not inside a git repository");
     expect(mockSpawn).not.toHaveBeenCalled();
   });
@@ -214,7 +218,7 @@ describe("executeAgentTool — worktree_path validation", () => {
 
     ctx = asExtensionContext({ ...fakeCtx(), ui: { notify: vi.fn() } });
     await expect(
-      executeAgentTool("tc-warn", makeParams({ worktree_path: "/etc" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-warn", makeParams({ worktree_path: "/etc" }), undefined, undefined, ctx),
     ).rejects.toThrow("worktree_path validation failed");
 
     expect(ctx.ui.notify).toHaveBeenCalledTimes(1);
@@ -225,7 +229,7 @@ describe("executeAgentTool — worktree_path validation", () => {
   });
 
   it("does not call the validator when worktree_path is omitted", async () => {
-    await executeAgentTool("tc-3", makeParams(), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-3", makeParams(), undefined, undefined, ctx);
 
     expect(mockValidateWorktreePath).not.toHaveBeenCalled();
     expect(mockSpawn).toHaveBeenCalled();
@@ -239,7 +243,7 @@ describe("executeAgentTool — worktree_path validation", () => {
       label: "feature",
     });
 
-    await executeAgentTool("tc-4", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-4", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx);
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const spawnCall = mockSpawn.mock.calls[0];
@@ -259,7 +263,7 @@ describe("executeAgentTool — worktree_path validation", () => {
       mockValidateWorktreePath.mockResolvedValue({ ok: false, error });
 
       await expect(
-        executeAgentTool("tc-err", makeParams({ worktree_path: "/some/path" }), undefined, undefined, ctx),
+        executeAgentTool(owner, "tc-err", makeParams({ worktree_path: "/some/path" }), undefined, undefined, ctx),
       ).rejects.toThrow(match);
     }
   });
@@ -287,6 +291,7 @@ describe("executeAgentTool — worktree_path validation", () => {
     });
 
     const result = await executeAgentTool(
+      owner,
       "tc-ok",
       makeParams({ worktree_path: "/wt/feature" }),
       undefined,
@@ -302,7 +307,7 @@ describe("executeAgentTool — worktree_path validation", () => {
     mockValidateWorktreePath.mockRejectedValue(new Error("Unexpected filesystem error"));
 
     await expect(
-      executeAgentTool("tc-crash", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-crash", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx),
     ).rejects.toThrow("Unexpected filesystem error");
   });
 });
@@ -336,6 +341,7 @@ describe("executeAgentTool — worktree_path with background spawn", () => {
     });
 
     const result = await executeAgentTool(
+      owner,
       "tc-bg",
       makeParams({ worktree_path: "/wt/feature", run_in_background: true }),
       undefined,
@@ -355,6 +361,7 @@ describe("executeAgentTool — worktree_path with background spawn", () => {
 
     await expect(
       executeAgentTool(
+        owner,
         "tc-bg-err",
         makeParams({ worktree_path: "/nonexistent", run_in_background: true }),
         undefined,
@@ -405,6 +412,7 @@ describe("executeAgentTool — worktree_path discovery integration", () => {
     mockResolveType.mockReturnValueOnce({ kind: "resolved", key: "feature-reviewer" }); // after discovery — found
 
     await executeAgentTool(
+      owner,
       "tc-disc",
       makeParams({ agent: "feature-reviewer", worktree_path: "/wt/feature" }),
       undefined,
@@ -421,7 +429,14 @@ describe("executeAgentTool — worktree_path discovery integration", () => {
     mockResolveType.mockReturnValueOnce({ kind: "not-found" }); // first call — not found
     mockResolveType.mockReturnValueOnce({ kind: "resolved", key: "feature-reviewer" }); // after discovery — found
 
-    await executeAgentTool("tc-disc-no-wt", makeParams({ agent: "feature-reviewer" }), undefined, undefined, ctx);
+    await executeAgentTool(
+      owner,
+      "tc-disc-no-wt",
+      makeParams({ agent: "feature-reviewer" }),
+      undefined,
+      undefined,
+      ctx,
+    );
 
     expect(mockDiscoverNewAgents).toHaveBeenCalledTimes(1);
     expect(mockDiscoverNewAgents).toHaveBeenCalledWith(undefined);
@@ -455,7 +470,7 @@ describe("executeAgentTool — case-insensitive type resolution", () => {
   it("spawns with the canonical registered name for a case-insensitive match", async () => {
     mockResolveType.mockReturnValueOnce({ kind: "resolved", key: "Explore" });
 
-    const result = await executeAgentTool("tc-ci", makeParams({ agent: "EXPLORE" }), undefined, undefined, ctx);
+    const result = await executeAgentTool(owner, "tc-ci", makeParams({ agent: "EXPLORE" }), undefined, undefined, ctx);
 
     expect(result.isError).toBeUndefined();
     expect(mockSpawn).toHaveBeenCalledTimes(1);
@@ -466,7 +481,7 @@ describe("executeAgentTool — case-insensitive type resolution", () => {
     mockResolveType.mockReturnValueOnce({ kind: "ambiguous", candidates: ["Explore", "explore"] });
 
     await expect(
-      executeAgentTool("tc-amb", makeParams({ agent: "EXPLORE" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-amb", makeParams({ agent: "EXPLORE" }), undefined, undefined, ctx),
     ).rejects.toThrow(/Ambiguous agent type: EXPLORE.*Explore.*explore/s);
     expect(mockSpawn).not.toHaveBeenCalled();
   });
@@ -475,7 +490,7 @@ describe("executeAgentTool — case-insensitive type resolution", () => {
     mockResolveType.mockReturnValueOnce({ kind: "ambiguous", candidates: ["Explore", "explore"] });
 
     await expect(
-      executeAgentTool("tc-amb-2", makeParams({ agent: "EXPLORE" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-amb-2", makeParams({ agent: "EXPLORE" }), undefined, undefined, ctx),
     ).rejects.toThrow("Ambiguous agent type");
     expect(mockDiscoverNewAgents).not.toHaveBeenCalled();
   });
@@ -492,6 +507,7 @@ describe("executeAgentTool — case-insensitive type resolution", () => {
     mockResolveType.mockReturnValueOnce({ kind: "resolved", key: "Wt-Agent" });
 
     await executeAgentTool(
+      owner,
       "tc-wt-ci",
       makeParams({ agent: "wt-agent", worktree_path: "/wt/feature" }),
       undefined,
@@ -510,7 +526,7 @@ describe("executeAgentTool — case-insensitive type resolution", () => {
     mockDiscoverNewAgents.mockResolvedValue(0);
 
     await expect(
-      executeAgentTool("tc-unknown", makeParams({ agent: "nope" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-unknown", makeParams({ agent: "nope" }), undefined, undefined, ctx),
     ).rejects.toThrow("Unknown agent type: nope");
     expect(mockSpawn).not.toHaveBeenCalled();
   });
@@ -549,7 +565,7 @@ describe("executeAgentTool — cross-repo trust gate", () => {
 
   it("passes the validator's sameRepo flag to the trust resolver", async () => {
     crossRepoValidation(false);
-    await executeAgentTool("tc-tr-1", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-tr-1", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
 
     expect(mockResolveSubagentTrust).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -566,7 +582,7 @@ describe("executeAgentTool — cross-repo trust gate", () => {
     mockResolveType.mockReturnValueOnce({ kind: "not-found" });
     mockResolveType.mockReturnValueOnce({ kind: "resolved", key: "general-purpose" });
 
-    await executeAgentTool("tc-tr-2", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-tr-2", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const spawnOptions = mockSpawn.mock.calls[0][4];
@@ -582,7 +598,7 @@ describe("executeAgentTool — cross-repo trust gate", () => {
     mockResolveType.mockReturnValueOnce({ kind: "not-found" });
     mockResolveType.mockReturnValueOnce({ kind: "resolved", key: "general-purpose" });
 
-    await executeAgentTool("tc-tr-3", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-tr-3", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
 
     expect(ctx.ui.notify).not.toHaveBeenCalled();
     const spawnOptions = mockSpawn.mock.calls[0][4];
@@ -592,7 +608,7 @@ describe("executeAgentTool — cross-repo trust gate", () => {
 
   it("passes sameRepo: true and spawns with projectTrusted: true when the resolver returns true", async () => {
     crossRepoValidation(true);
-    await executeAgentTool("tc-tr-4", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-tr-4", makeParams({ worktree_path: "/wt/feature" }), undefined, undefined, ctx);
 
     expect(mockResolveSubagentTrust).toHaveBeenCalledWith(expect.objectContaining({ sameRepo: true }));
     const spawnOptions = mockSpawn.mock.calls[0][4];
@@ -604,7 +620,7 @@ describe("executeAgentTool — cross-repo trust gate", () => {
     crossRepoValidation(false);
     mockResolveSubagentTrust.mockReturnValue(true);
 
-    await executeAgentTool("tc-tr-5", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
+    await executeAgentTool(owner, "tc-tr-5", makeParams({ worktree_path: "/repo-b" }), undefined, undefined, ctx);
 
     const spawnOptions = mockSpawn.mock.calls[0][4];
     expect(spawnOptions.projectTrusted).toBe(true);
@@ -636,7 +652,7 @@ describe("executeAgentTool — foreground error result", () => {
     });
 
     await expect(
-      executeAgentTool("tc-err", makeParams({ agent: "feature-reviewer" }), undefined, undefined, ctx),
+      executeAgentTool(owner, "tc-err", makeParams({ agent: "feature-reviewer" }), undefined, undefined, ctx),
     ).rejects.toThrow(/feature-reviewer.*anthropic\/claude-sonnet-4.*model failed to load/);
   });
 });
@@ -777,7 +793,7 @@ describe("executeAgentTool — parent signal forwarding", () => {
 
   it("forwards the execute signal to a foreground spawn", async () => {
     const controller = new AbortController();
-    await executeAgentTool("tc-sig", makeParams(), controller.signal, undefined, ctx);
+    await executeAgentTool(owner, "tc-sig", makeParams(), controller.signal, undefined, ctx);
 
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const spawnOptions = mockSpawn.mock.calls[0][4];
@@ -786,7 +802,14 @@ describe("executeAgentTool — parent signal forwarding", () => {
 
   it("does not forward the signal to an explicit run_in_background spawn", async () => {
     const controller = new AbortController();
-    await executeAgentTool("tc-bg-sig", makeParams({ run_in_background: true }), controller.signal, undefined, ctx);
+    await executeAgentTool(
+      owner,
+      "tc-bg-sig",
+      makeParams({ run_in_background: true }),
+      controller.signal,
+      undefined,
+      ctx,
+    );
 
     const spawnOptions = mockSpawn.mock.calls[0][4];
     expect(spawnOptions.isBackground).toBe(true);
@@ -796,7 +819,7 @@ describe("executeAgentTool — parent signal forwarding", () => {
   it("does not forward the signal when forceBackground is enabled", async () => {
     mockStoreState.forceBackground = true;
     const controller = new AbortController();
-    await executeAgentTool("tc-fg-sig", makeParams(), controller.signal, undefined, ctx);
+    await executeAgentTool(owner, "tc-fg-sig", makeParams(), controller.signal, undefined, ctx);
 
     const spawnOptions = mockSpawn.mock.calls[0][4];
     expect(spawnOptions.isBackground).toBe(true);
@@ -831,7 +854,7 @@ describe("executeAgentTool — queued foreground spawn", () => {
     mockGetRecord.mockReturnValue(record);
 
     let toolSettled = false;
-    const toolResult = executeAgentTool("tc-queued", makeParams(), undefined, undefined, ctx);
+    const toolResult = executeAgentTool(owner, "tc-queued", makeParams(), undefined, undefined, ctx);
     void toolResult.then(() => {
       toolSettled = true;
     });
@@ -852,3 +875,6 @@ describe("executeAgentTool — queued foreground spawn", () => {
     expect(result.content[0].text).not.toBe("");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

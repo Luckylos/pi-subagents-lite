@@ -41,7 +41,7 @@ function sessionOpts(): Record<string, unknown> {
 }
 
 async function runWithSpawnModel(thinkingLevel?: ThinkingLevel, parentLevel?: ThinkingLevel) {
-  return runAgent(fakeCtx({ thinkingLevel: parentLevel }), "test-agent", "do something", {
+  return runAgent(owner, fakeCtx({ thinkingLevel: parentLevel }), "test-agent", "do something", {
     pi: fakePi,
     model: SPAWN_MODEL,
     thinkingLevel,
@@ -174,3 +174,6 @@ describe("runAgent — the `parent` value", () => {
     expect(sessionOpts()).not.toHaveProperty("thinkingLevel");
   });
 });
+
+import { createTestOwner } from "../owner-fixtures.js";
+const owner = await createTestOwner();

@@ -1,3 +1,4 @@
+import type { ExtensionOwner } from "../shell.ts";
 /**
  * agent-status.ts — AgentStatus tool implementation.
  *
@@ -57,13 +58,14 @@ export function formatAgentStatusList(agents: AgentRecord[], limit: number): str
 
 /** List active agents plus at most `limit` settled agents, with a summary line when settled are hidden. */
 export async function executeAgentStatusTool(
+  owner: ExtensionOwner,
   _toolCallId: string,
   _params: Record<string, unknown>,
   _signal: AbortSignal | undefined,
   _onUpdate: ((update: any) => void) | undefined,
   _ctx: ExtensionContext,
 ): Promise<any> {
-  const manager = getManager()!;
+  const manager = getManager(owner)!;
   const agents = manager.listAgents();
 
   const nudge = "Don't poll — you'll receive notifications when agents complete.";
@@ -74,7 +76,7 @@ export async function executeAgentStatusTool(
     };
   }
 
-  const listText = formatAgentStatusList(agents, getStore().agent.agentStatusLimit);
+  const listText = formatAgentStatusList(agents, getStore(owner).agent.agentStatusLimit);
   return {
     content: [{ type: "text", text: `${listText}\n\n${nudge}` }],
   };
