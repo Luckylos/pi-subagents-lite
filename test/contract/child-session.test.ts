@@ -709,5 +709,66 @@ describe("contract: child session announced on the parent's event bus", () => {
   });
 });
 
+describe("contract: spawn-bound MessageParent obeys frontmatter tool gating", () => {
+  const messageParent = () => createParentMessageTool({ deliver: () => true, runKey: () => 0 });
+
+  async function childWith(name: string, frontmatter: Record<string, unknown> | null) {
+    const type = frontmatter ? `contract-mp-${name}` : "general-purpose";
+    if (frontmatter) {
+      owner.registry.registerAgents(
+        new Map([[type, { name: type, description: "", systemPrompt: "", ...frontmatter }]]),
+      );
+    }
+    const workspace = makeWorkspace(`mp-${name}`);
+    const { session } = await createChildSession(owner, parentCtx(workspace.project), type, {
+      pi: stubPi(),
+      cwd: workspace.project,
+      customTools: [messageParent()],
+    });
+    return session;
+  }
+
+  async function expectGate(session: AgentSession, present: boolean) {
+    try {
+      for (const names of [registryOf(session), activeOf(session)]) {
+        if (present) expect(names).toContain("MessageParent");
+        else expect(names).not.toContain("MessageParent");
+        for (const own of ["Agent", "MessageAgent", "StopAgent", "AgentStatus"]) expect(names).not.toContain(own);
+      }
+    } finally {
+      await disposeChildSession(session);
+    }
+  }
+
+  it("is present for silent frontmatter with implicit tool loading ON", async () => {
+    await expectGate(await childWith("silent", null), true);
+  });
+
+  it("is absent for silent frontmatter with implicit tool loading OFF", async () => {
+    contractStore.agent.loadToolsImplicitly = false;
+    try {
+      await expectGate(await childWith("implicit-off", null), false);
+    } finally {
+      contractStore.agent.loadToolsImplicitly = true;
+    }
+  });
+
+  it("is absent for tools: false and for an explicit list without it", async () => {
+    await expectGate(await childWith("false", { tools: false }), false);
+    await expectGate(await childWith("list", { tools: ["read"] }), false);
+  });
+
+  it("is present for an explicit list naming it, and for tools: true", async () => {
+    await expectGate(await childWith("named", { tools: ["read", "MessageParent"] }), true);
+    await expectGate(await childWith("true", { tools: true }), true);
+  });
+
+  it("is absent for a registeredTools list without it, present when listed", async () => {
+    await expectGate(await childWith("registered", { registeredTools: ["read"] }), false);
+    await expectGate(await childWith("registered-named", { registeredTools: ["read", "MessageParent"] }), true);
+  });
+});
+
+import { createParentMessageTool } from "../../src/agents/parent-message.js";
 import { createTestOwner } from "../owner-fixtures.js";
 const owner = await createTestOwner();

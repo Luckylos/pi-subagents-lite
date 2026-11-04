@@ -211,6 +211,20 @@ export function renderStatusLine(
   return new Text(`${icon} ${text}`, 0, 0);
 }
 
+// --- Message renderer — subagent-message ---
+
+/** Render a Parent message a background agent sent mid-run (ADR-0013). Always shown in full. */
+export function renderSubagentMessage(message: { content?: string }, theme: Theme): Container {
+  const text = (message.content as string)?.trim() || "";
+  const inner = new Container();
+  inner.addChild(new Text(theme.fg("customMessageLabel", "Subagent Message"), 0, 0));
+  if (text) {
+    inner.addChild(new Spacer(1));
+    inner.addChild(new Text(text, 0, 0));
+  }
+  return inner;
+}
+
 // --- Message renderer — subagent-result ---
 
 /** Render a subagent-result message injected after background agent completion. */

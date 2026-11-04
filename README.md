@@ -44,6 +44,8 @@ The `/agents` menu covers active and settled agents (view, steer or continue, st
 - `MessageAgent` gives an existing agent more input by ID: a running one picks it up at its next turn boundary; a settled one continues with its own context if its session is live and a model concurrency slot is available.
 - `AgentStatus` lists every running and queued agent, plus a configurable number of recently settled agents (default: twice the default concurrency). It tells the LLM not to poll for updates.
 
+Background agents also get one tool of their own, `MessageParent`. With it they can send the parent session a short message mid-run, such as a blocking question or a finding that changes the plan. The agent keeps working, and the parent can answer with `MessageAgent`. An idle parent is woken. Each run can send at most 5 messages. An explicit frontmatter `tools` or `registeredTools` list must name `MessageParent`. Turn it off under Agent behavior > Parent messages.
+
 Foreground agents keep the `Agent` tool call open until they finish and are stopped by the parent's interrupt. Background agents return immediately and do not inherit that interrupt, but can still be steered or stopped through the UI or tools.
 
 ### Steering and continuation

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Background subagents get a `MessageParent` tool for one-way messages to the parent session mid-run (a blocking question or a plan-changing finding). Delivery works like a completion notification and wakes an idle parent. It is capped at 5 messages per run, and the subagent is told when a message was not delivered. Foreground agents never get it. Explicit frontmatter `tools` and `registeredTools` lists must name it. Turn it off with `/agents` > Settings > Agent behavior > Parent messages (`agent.parentMessages`). See ADR-0013.
+
 ### Fixed
 
 - Background subagent completion notifications retain the parent session's bound API when the SDK reloads the extension factory with an uninitialized runtime. The next `session_start` takes ownership before asynchronous setup.

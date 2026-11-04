@@ -69,6 +69,16 @@ describe("AgentManager", () => {
       expect(manager.getTotalAgentCost()).toBe(0.05);
     });
 
+    it("forwards spawn-bound custom tools to the run", () => {
+      manager = new AgentManager(owner, onComplete);
+      mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
+      const tool = { name: "MessageParent" } as never;
+
+      manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", { description: "t", customTools: [tool] });
+
+      expect(mockModules.mockRunAgent.mock.calls.at(-1)![4].customTools).toEqual([tool]);
+    });
+
     it("accumulates cost from multiple agents", async () => {
       manager = new AgentManager(owner, onComplete);
       mockModules.mockRunAgent.mockResolvedValueOnce(mockRunResult());

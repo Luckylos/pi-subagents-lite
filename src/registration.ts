@@ -8,6 +8,7 @@ import {
   renderAgentToolCall,
   renderAgentToolResult,
   renderStatusLine,
+  renderSubagentMessage,
   renderSubagentResult,
   registerAgentInvalidation,
 } from "./ui/renderer.ts";
@@ -162,6 +163,11 @@ export function registerTools(pi: ExtensionAPI, owner: ExtensionOwner): void {
       !store.agent.showCompletionCards,
     );
   });
+
+  // Message renderer — subagent-message (Parent message sent mid-run, ADR-0013)
+  pi.registerMessageRenderer("subagent-message", (message, _options, theme) =>
+    renderSubagentMessage(message as { content?: string }, theme),
+  );
 
   pi.registerCommand("agents", {
     description: "Manage subagents: agent briefing, model settings, concurrency, running agents, agent types",

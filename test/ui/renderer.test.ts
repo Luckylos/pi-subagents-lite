@@ -81,6 +81,7 @@ vi.mock("../../src/ui/format.js", async (importOriginal) => {
 
 // Import after mocks are set up
 import {
+  renderSubagentMessage,
   renderSubagentResult,
   renderAgentToolCall,
   renderAgentToolResult,
@@ -105,6 +106,22 @@ const SHOW_COST = false;
 /* ------------------------------------------------------------------ */
 /*  Tests                                                             */
 /* ------------------------------------------------------------------ */
+
+describe("renderSubagentMessage", () => {
+  beforeEach(() => {
+    textInstances.length = 0;
+  });
+
+  it("shows a label and the full message text", () => {
+    renderSubagentMessage({ content: '  [Subagent "x" abc message]\n\nneed creds  ' }, noopTheme);
+    expect(textInstances.map((t) => t.text)).toEqual(["Subagent Message", '[Subagent "x" abc message]\n\nneed creds']);
+  });
+
+  it("shows only the label for empty content", () => {
+    renderSubagentMessage({}, noopTheme);
+    expect(textInstances.map((t) => t.text)).toEqual(["Subagent Message"]);
+  });
+});
 
 describe("renderSubagentResult — completion visibility", () => {
   beforeEach(() => {

@@ -147,6 +147,17 @@ describe("showSpawnOptionsMenu — force background", () => {
     expect(mockModules.mockConfig.agent.forceBackground).toBe(true);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), "info");
   });
+
+  it("shows and toggles parent messages", async () => {
+    mockModules.mockConfig.agent.parentMessages = true;
+    const ctx = createMockCtx();
+    await showSpawnOptionsMenu(owner, ctx);
+    const item = settingsListCalls[0].items.find((i) => i.id === "parentMessages")!;
+    expect(item.currentValue).toBe("ON");
+    settingsListCalls[0].onChange("parentMessages", "OFF");
+    expect(mockModules.mockConfig.agent.parentMessages).toBe(false);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Parent messages set to OFF", "info");
+  });
 });
 
 describe("showSpawnOptionsMenu — grace turns", () => {

@@ -8,6 +8,7 @@ import type { AgentManager, SpawnOptions } from "../agents/agent-manager.ts";
 import { type SpawnIntent } from "./spawn-preparation.ts";
 export type { SpawnIntent } from "./spawn-preparation.ts";
 import { buildAgentDetails, formatResultContent } from "../agents/tool-execution.ts";
+import { createParentMessageTool } from "../agents/parent-message.ts";
 
 /**
  * spawn-coordinator.ts — Spawn-and-track coordination for subagents.
@@ -65,8 +66,8 @@ export class SpawnCoordinator {
     const liveViewCallbacks = this.createLiveViewCallbacks(liveView);
 
     // SpawnConfig fields pass through unchanged; only the intent-only fields
-    // (type/prompt/runInBackground/signal) are forwarded explicitly.
-    const { type, prompt, runInBackground, signal, ...config } = intent;
+    // (type/prompt/runInBackground/signal/parentMessages) are handled explicitly.
+    const { type, prompt, runInBackground, signal, parentMessages, ...config } = intent;
     const spawnOptions: SpawnOptions = {
       ...config,
       isBackground: runInBackground,
@@ -74,7 +75,20 @@ export class SpawnCoordinator {
       ...liveViewCallbacks,
     };
 
+    // MessageParent is bound at session creation, before the id exists, so its
+    // closures read the id once spawn returns (ADR-0013: background only).
+    let spawnedId: string | undefined;
+    if (runInBackground && parentMessages) {
+      spawnOptions.customTools = [
+        createParentMessageTool({
+          deliver: (text) => spawnedId !== undefined && this.deliverParentMessage(spawnedId, text),
+          runKey: () => (spawnedId ? (this.manager.getRecord(spawnedId)?.execution.settlementCount ?? 0) : 0),
+        }),
+      ];
+    }
+
     const agentId = this.manager.spawn(pi, ctx, type, prompt, spawnOptions);
+    spawnedId = agentId;
     const record = this.manager.getRecord(agentId)!;
     // Spawn-time state rides on the record so it survives settlement: the
     // live view is re-fed by continuations, and the ctx keeps the UI-notify
@@ -174,6 +188,33 @@ export class SpawnCoordinator {
         view.responseText = fullText;
       },
     };
+  }
+
+  /**
+   * Deliver a Parent message to the session a Nudge would reach. Immediate, not
+   * batched, so it precedes that run's Nudge. Returns false instead of falling
+   * back to a UI toast so the Subagent learns it was not delivered.
+   */
+  deliverParentMessage(agentId: string, text: string): boolean {
+    if (this.disposed) return false;
+    const record = this.manager.getRecord(agentId);
+    if (!record) return false;
+
+    try {
+      const parentIdle = getSessionCtx(this.owner)?.isIdle?.() ?? true;
+      getPiInstance(this.owner).sendMessage(
+        {
+          customType: "subagent-message",
+          content: `[Subagent "${record.display.type}" ${record.id.slice(0, SHORT_ID_LENGTH)} message]\n\n${text}`,
+          display: true,
+          details: { agentId: record.id, type: record.display.type, description: record.display.description },
+        },
+        { deliverAs: parentIdle ? "followUp" : "steer", triggerTurn: true },
+      );
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private emitIndividualNudge(agentId: string): void {

@@ -35,7 +35,7 @@ const {
   mockDiscoverNewAgents: vi.fn(),
   mockResolveSubagentTrust: vi.fn(),
   mockResolveType: vi.fn<(type: string) => TypeResolution>((type) => ({ kind: "resolved", key: type })),
-  mockStoreState: { forceBackground: false },
+  mockStoreState: { forceBackground: false, parentMessages: true },
 }));
 
 vi.mock("../../src/spawn/worktree-validator.js", () => ({
@@ -78,7 +78,11 @@ vi.mock("../../src/shell.js", async () =>
     await (() => ({
       getStore: () => ({
         get agent() {
-          return { graceTurns: 5, forceBackground: mockStoreState.forceBackground };
+          return {
+            graceTurns: 5,
+            forceBackground: mockStoreState.forceBackground,
+            parentMessages: mockStoreState.parentMessages,
+          };
         },
         modelFor(type: string, parentModelId: string, agentConfig?: { model?: string }) {
           // Simplified model resolution for testing
@@ -114,6 +118,8 @@ vi.mock("../../src/shell.js", async () =>
             projectTrusted: intent.projectTrusted,
             isBackground: intent.runInBackground,
             signal: intent.signal,
+            // Not a SpawnOptions field: surfaces the intent flag the real coordinator consumes.
+            parentMessages: intent.parentMessages,
           });
           const record = mockGetRecord(id);
           if (!intent.runInBackground && record?.execution?.promise) {
@@ -798,6 +804,20 @@ describe("executeAgentTool — parent signal forwarding", () => {
     expect(mockSpawn).toHaveBeenCalledTimes(1);
     const spawnOptions = mockSpawn.mock.calls[0][4];
     expect(spawnOptions.signal).toBe(controller.signal);
+  });
+
+  it("passes the parent-messages setting to the coordinator's spawn intent", async () => {
+    const flag = (call: number) => mockSpawn.mock.calls[call][4].parentMessages;
+    try {
+      await executeAgentTool(owner, "tc-mp-1", makeParams({ run_in_background: true }), undefined, undefined, ctx);
+      mockStoreState.parentMessages = false;
+      await executeAgentTool(owner, "tc-mp-2", makeParams({ run_in_background: true }), undefined, undefined, ctx);
+
+      expect(flag(0)).toBe(true);
+      expect(flag(1)).toBe(false);
+    } finally {
+      mockStoreState.parentMessages = true;
+    }
   });
 
   it("does not forward the signal to an explicit run_in_background spawn", async () => {

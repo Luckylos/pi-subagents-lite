@@ -110,6 +110,10 @@ _Avoid_: Short id (as a second kind of id), agent key
 The main session agent's tool for sending input to a **Subagent** it already spawned: a running agent receives it at its next turn boundary, a **Settled** agent with a live session restarts. Same seam as the **ConversationViewer overlay**'s steer/continue. Runs child-ward; the opposite direction is a **Nudge**.
 _Avoid_: SteerAgent, agent messaging tool, follow-up
 
+**Parent message**:
+A one-way message a running **Subagent** sends mid-run to the session a **Nudge** would reach, through its `MessageParent` tool. The Subagent keeps working and never waits for a reply; the parent answers, if at all, with **MessageAgent**. Unlike a **Nudge** it carries no result and is not tied to settlement.
+_Avoid_: Callback, report, upward steer
+
 **Watchdog**:
 Time-based stuck-agent detection that stops a running agent when a single tool call exceeds the tool timeout, or when the agent produces no activity (tool events or streamed response text) for longer than the idle timeout. Both thresholds are configurable in minutes; a watchdog stop is recorded with a reason distinct from a user stop.
 _Avoid_: Timeout killer, stuck-agent detector
@@ -141,8 +145,8 @@ _Avoid_: Timeout killer, stuck-agent detector
 - A running **Subagent** takes a **MessageAgent** message even before its session exists (buffered for the session's start); a **Subagent** that is not running takes one only through a live session
 - A **MessageAgent** message lands after the current turn's tool calls finish, never mid-tool-call, and is dropped if the run settles before that boundary
 - **MessageAgent** continues any **Settled** **Subagent** with a live session, including one a human stopped: the model can restart a deliberately stopped agent
-- Only the main session agent holds **MessageAgent**, `StopAgent` and `AgentStatus`; a **Subagent** never does, so cross-**Subagent** messaging and stopping are unreachable
-- A **Nudge** carries a **Subagent** result parent-ward; **MessageAgent** carries input the other way
+- Only the main session agent holds **MessageAgent**, `StopAgent` and `AgentStatus`; a **Subagent** never does, so cross-**Subagent** messaging and stopping are unreachable. A background **Subagent**'s only parent-ward tool is `MessageParent`, which names no recipient
+- A **Nudge** carries a **Subagent** result parent-ward; **MessageAgent** carries input the other way; a **Parent message** carries mid-run news parent-ward without a result
 
 ### Navigation
 

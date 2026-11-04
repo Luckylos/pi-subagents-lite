@@ -138,6 +138,8 @@ export interface ResolvedAgentSettings {
   readonly idleTimeoutMinutes: number;
   /** Whether to stream the agent transcript to the output file. Default: false. */
   readonly outputTranscript: boolean;
+  /** Whether background agents get the MessageParent tool (ADR-0013). Default: true. */
+  readonly parentMessages: boolean;
   /** Whether agent colors (spinner, status icons, picker bullets) are enabled. Default: true. */
   readonly showAgentColors: boolean;
 }
@@ -238,6 +240,7 @@ export class ConfigStore {
       toolTimeoutMinutes: a.toolTimeoutMinutes ?? DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
       idleTimeoutMinutes: a.idleTimeoutMinutes ?? DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
       outputTranscript: a.outputTranscript === true,
+      parentMessages: a.parentMessages !== false,
       showAgentColors: a.showAgentColors !== false,
     };
   }
@@ -381,6 +384,7 @@ export class ConfigStore {
       setToolTimeoutMinutes: (n: number) => this.setAgentLayerEntry("toolTimeoutMinutes", Math.max(0, n), "global"),
       setIdleTimeoutMinutes: (n: number) => this.setAgentLayerEntry("idleTimeoutMinutes", Math.max(0, n), "global"),
       setOutputTranscript: (enabled: boolean) => this.setAgentLayerEntry("outputTranscript", enabled, "global"),
+      setParentMessages: (enabled: boolean) => this.setAgentLayerEntry("parentMessages", enabled, "global"),
       setSystemPromptMode: (mode: SystemPromptMode) => this.setAgentLayerEntry("systemPromptMode", mode, "global"),
       setIncludeContextFiles: (enabled: boolean) => this.setAgentLayerEntry("includeContextFiles", enabled, "global"),
       setDefaultThinking: (level: ThinkingChoice | undefined, target: "global" | "project" = "global"): void => {

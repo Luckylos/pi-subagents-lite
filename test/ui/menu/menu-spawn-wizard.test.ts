@@ -977,6 +977,19 @@ describe("showSpawnAgentMenu — background toggle", () => {
     const item = settingsListCalls[1].items.find((i) => i.id === "background")!;
     expect(item.currentValue).toBe("ON");
   });
+
+  it("passes the parent-messages setting to the spawn intent", async () => {
+    mockModules.mockConfig.agent.parentMessages = false;
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    expect(await spawnOptions()).toMatchObject({ parentMessages: false });
+  });
+
+  it("passes parent messages ON by default", async () => {
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    expect(await spawnOptions()).toMatchObject({ parentMessages: true });
+  });
 });
 
 describe("showSpawnAgentMenu — model", () => {

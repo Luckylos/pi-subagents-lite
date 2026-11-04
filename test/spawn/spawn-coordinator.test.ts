@@ -27,7 +27,8 @@ vi.mock("../../src/utils.js", () => ({
 }));
 
 // Hoist mock pi so shell mock can return it
-const { mockPi, mockGetPiInstance } = vi.hoisted(() => ({
+const { mockPi, mockGetPiInstance, parentState } = vi.hoisted(() => ({
+  parentState: { idle: true },
   mockPi: {
     sendMessage: vi.fn(),
     sendUserMessage: vi.fn(),
@@ -46,7 +47,7 @@ vi.mock("../../src/shell.js", async () =>
   (await import("../owner-fixtures.js")).ownerShellMock(
     await (() => ({
       getPiInstance: () => mockGetPiInstance(),
-      getSessionCtx: () => ({ isIdle: () => true }),
+      getSessionCtx: () => ({ isIdle: () => parentState.idle }),
       getWidget: () => null,
     }))(),
   ),
@@ -933,6 +934,115 @@ describe("SpawnCoordinator", () => {
       expect(content).toContain("before the agent started");
       expect(content).not.toContain("output is partial");
     });
+  });
+});
+
+describe("SpawnCoordinator parent messages", () => {
+  let SpawnCoordinator: typeof import("../../src/spawn/spawn-coordinator.js").SpawnCoordinator;
+  let manager: ReturnType<typeof makeMockManager>;
+  let ctx: ExtensionContext;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    manager = makeMockManager();
+    ctx = makeMockCtx();
+    mockPi.sendMessage.mockReset();
+    mockGetPiInstance.mockReturnValue(mockPiApi);
+    parentState.idle = true;
+    owner = await createTestOwner();
+    SpawnCoordinator = (await import("../../src/spawn/spawn-coordinator.js")).SpawnCoordinator;
+  });
+
+  async function spawnWith(
+    coordinator: InstanceType<typeof SpawnCoordinator>,
+    runInBackground: boolean,
+    parentMessages?: boolean,
+  ) {
+    const result = await coordinator.spawn(mockPiApi, ctx, {
+      type: "builder",
+      prompt: "work",
+      description: "Investigate",
+      graceTurns: 6,
+      runInBackground,
+      ...(parentMessages === undefined ? {} : { parentMessages }),
+    });
+    const options = manager.getSpawnCalls().at(-1)!.options;
+    return { ...result, options };
+  }
+
+  const toolOf = (options: SpawnOptions) => options.customTools?.find((t) => t.name === "MessageParent");
+  const send = (options: SpawnOptions, message: string) =>
+    toolOf(options)!.execute("call", { message }, undefined, undefined, undefined as never);
+
+  it("binds MessageParent only for a background spawn with parent messages on", async () => {
+    const coordinator = new SpawnCoordinator(owner, manager);
+    expect(toolOf((await spawnWith(coordinator, true, true)).options)).toBeDefined();
+    expect((await spawnWith(coordinator, false, true)).options.customTools).toBeUndefined();
+    expect((await spawnWith(coordinator, true, false)).options.customTools).toBeUndefined();
+    expect((await spawnWith(coordinator, true)).options.customTools).toBeUndefined();
+    expect("parentMessages" in (await spawnWith(coordinator, true, true)).options).toBe(false);
+  });
+
+  it("delivers immediately to an idle parent as a triggering follow-up", async () => {
+    const coordinator = new SpawnCoordinator(owner, manager);
+    const { agentId, options } = await spawnWith(coordinator, true, true);
+
+    await send(options, " blocked on credentials ");
+
+    expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(mockPi.sendMessage).toHaveBeenCalledWith(
+      {
+        customType: "subagent-message",
+        content: `[Subagent "builder" ${agentId.slice(0, 8)} message]\n\nblocked on credentials`,
+        display: true,
+        details: { agentId, type: "builder", description: "Investigate" },
+      },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
+  });
+
+  it("steers a running parent", async () => {
+    const coordinator = new SpawnCoordinator(owner, manager);
+    const { options } = await spawnWith(coordinator, true, true);
+    parentState.idle = false;
+
+    await send(options, "heads up");
+
+    expect(mockPi.sendMessage.mock.calls[0][1]).toEqual({ deliverAs: "steer", triggerTurn: true });
+  });
+
+  it("reports not delivered after dispose, for a removed record, or when sending throws", async () => {
+    const notify = vi.fn();
+    ctx = asExtensionContext({ cwd: "/test", model: undefined, modelRegistry: {}, ui: { notify } });
+
+    const disposed = new SpawnCoordinator(owner, manager);
+    const a = await spawnWith(disposed, true, true);
+    disposed.dispose();
+    await expect(send(a.options, "x")).rejects.toThrow("Not delivered");
+
+    const live = new SpawnCoordinator(owner, manager);
+    const b = await spawnWith(live, true, true);
+    mockPi.sendMessage.mockImplementation(() => {
+      throw new Error("boom");
+    });
+    await expect(send(b.options, "x")).rejects.toThrow("Not delivered");
+    expect(notify).not.toHaveBeenCalled();
+
+    mockPi.sendMessage.mockReset();
+    await manager.dispose();
+    await expect(send(b.options, "x")).rejects.toThrow("Not delivered");
+    expect(mockPi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("starts a fresh allowance when the record settles into a continuation", async () => {
+    const coordinator = new SpawnCoordinator(owner, manager);
+    const { record, options } = await spawnWith(coordinator, true, true);
+    for (let i = 0; i < 5; i++) await send(options, `m${i}`);
+    await expect(send(options, "sixth")).rejects.toThrow("limit");
+
+    record.execution.settlementCount++;
+    await send(options, "after continuation");
+    expect(mockPi.sendMessage).toHaveBeenCalledTimes(6);
   });
 });
 

@@ -123,8 +123,9 @@ vi.mock("../src/ui/agent-widget.js", () => ({
   ERROR_STATUSES: new Set(),
 }));
 
-const { mockRenderAgentToolResult } = vi.hoisted(() => ({
+const { mockRenderAgentToolResult, mockRenderSubagentMessage } = vi.hoisted(() => ({
   mockRenderAgentToolResult: vi.fn(),
+  mockRenderSubagentMessage: vi.fn(),
 }));
 
 // registration.ts reads these exports while registering, so the fake carries every one of them.
@@ -132,6 +133,7 @@ vi.mock("../src/ui/renderer.js", () => ({
   renderAgentToolCall: vi.fn(() => "mocked-call"),
   renderAgentToolResult: mockRenderAgentToolResult,
   renderStatusLine: vi.fn(),
+  renderSubagentMessage: mockRenderSubagentMessage,
   renderSubagentResult: vi.fn(
     () =>
       new (class {
@@ -304,6 +306,14 @@ describe("message renderer registration", () => {
     mutableStore.agent.showCompletionCards = false;
     expect(renderer({ content: "done" }, { expanded: false }, theme).children).toHaveLength(0);
     expect(renderer({ content: "done" }, { expanded: true }, theme).children).toHaveLength(0);
+  });
+
+  it("registers the subagent-message renderer, independent of completion cards", () => {
+    const renderer = api.messageRenderers.find((r) => r.customType === "subagent-message")!.renderer;
+    const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text };
+    mutableStore.agent.showCompletionCards = false;
+    renderer({ content: "need creds" }, { expanded: false }, theme);
+    expect(mockRenderSubagentMessage).toHaveBeenCalledWith({ content: "need creds" }, theme);
   });
 });
 

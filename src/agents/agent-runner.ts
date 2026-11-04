@@ -7,7 +7,7 @@ import type { ExtensionOwner } from "../shell.ts";
 
 import fs from "node:fs";
 import path from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   type AgentSession,
   createAgentSession,
@@ -111,6 +111,8 @@ interface RunOptions extends RunTunables, RunCallbacks {
   projectTrusted?: boolean;
   /** Parent abort signal — when aborted, the subagent is also stopped. */
   signal?: AbortSignal;
+  /** Extra tools bound into the child session at creation (e.g. MessageParent); frontmatter gating still applies. */
+  customTools?: ToolDefinition[];
 }
 
 /** A settled run against a real child session. */
@@ -450,6 +452,7 @@ async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<
     resourceLoader: loader,
   };
   if (thinkingLevel) sessionOpts.thinkingLevel = thinkingLevel;
+  if (options.customTools?.length) sessionOpts.customTools = options.customTools;
   const result = await createAgentSession(sessionOpts);
   const session = result.session;
   patchRetryClassifier(session);

@@ -14,6 +14,8 @@ export interface SpawnIntent extends SpawnConfig {
    * spawns only. Background and menu-wizard spawns never carry one.
    */
   signal?: AbortSignal;
+  /** Whether a background spawn binds the MessageParent tool (ADR-0013). Ignored for foreground. */
+  parentMessages?: boolean;
   /** Narrowed to required — all callers resolve this before spawn. */
   graceTurns: number;
 }

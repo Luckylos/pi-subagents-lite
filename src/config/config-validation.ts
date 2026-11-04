@@ -92,6 +92,7 @@ const AGENT_KEY_SPECS: Record<string, KeySpec> = {
   modelThinkingPlacement: THINKING_PLACEMENT,
   statusBarFormat: STATUS_BAR,
   outputTranscript: BOOL,
+  parentMessages: BOOL,
   showAgentColors: BOOL,
 };
 

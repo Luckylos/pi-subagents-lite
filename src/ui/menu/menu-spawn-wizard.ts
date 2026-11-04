@@ -425,6 +425,7 @@ export async function showSpawnAgentMenu(
                   worktreePath: currentWorktreePath,
                   worktreeLabel: currentWorktreePath ? currentWorktreeLabel : undefined,
                   runInBackground: background,
+                  parentMessages: store.agent.parentMessages,
                   includeRunModeInInvocation: true,
                 }),
               );

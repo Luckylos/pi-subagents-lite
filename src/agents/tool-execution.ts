@@ -250,6 +250,7 @@ export async function executeAgentTool(
       worktreeLabel,
       projectTrusted,
       runInBackground: isBackground,
+      parentMessages: store.agent.parentMessages,
       signal: isBackground ? undefined : signal,
     }),
   );

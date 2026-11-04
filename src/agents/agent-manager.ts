@@ -6,7 +6,7 @@ import type { ExtensionOwner } from "../shell.ts";
  */
 
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.ts";
 import { disposeChildSession } from "./session-teardown.ts";
 import { AgentOutputLog } from "./output-file.ts";
@@ -80,6 +80,8 @@ interface SpawnArgs {
 
 export interface SpawnOptions extends SpawnConfig, RunCallbacks {
   isBackground?: boolean;
+  /** Extra tools bound into this agent's child session at creation (e.g. MessageParent). */
+  customTools?: ToolDefinition[];
   /** Parent abort signal — when aborted, the subagent is also stopped. */
   signal?: AbortSignal;
 }
@@ -337,6 +339,7 @@ export class AgentManager {
       cwd: options.worktreePath,
       graceTurns: options.graceTurns,
       projectTrusted: options.projectTrusted,
+      customTools: options.customTools,
       signal: record.execution.abortController!.signal,
       ...this.runTrackingCallbacks(record, options, (turnCount) => {
         record.stats.turnCount = turnCount;

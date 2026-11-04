@@ -75,6 +75,29 @@ describe("runAgent — tool filtering", () => {
     expect(activeTools).not.toContain("grep");
     expect(activeTools).not.toContain("Agent");
   });
+
+  it("passes spawn-bound custom tools to the child session", async () => {
+    const session = createMockSession();
+    session.getActiveToolNames.mockReturnValue(["read"]);
+    mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
+    const tool = { name: "MessageParent" } as never;
+
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi, customTools: [tool] });
+
+    const opts = mockModules.mockCreateAgentSession.mock.calls.at(-1)![0] as CreateAgentSessionOptions;
+    expect(opts.customTools).toEqual([tool]);
+  });
+
+  it("passes no custom tools when the spawn binds none", async () => {
+    const session = createMockSession();
+    session.getActiveToolNames.mockReturnValue(["read"]);
+    mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
+
+    await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
+
+    const opts = mockModules.mockCreateAgentSession.mock.calls.at(-1)![0] as CreateAgentSessionOptions;
+    expect("customTools" in opts).toBe(false);
+  });
 });
 
 /* ------------------------------------------------------------------ */

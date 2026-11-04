@@ -277,6 +277,28 @@ describe("ConfigStore outputTranscript", () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  parentMessages                                                     */
+/* ------------------------------------------------------------------ */
+
+describe("ConfigStore parentMessages", () => {
+  it("is false only when configured false", () => {
+    const { io } = memIO({ global: { agent: { default: null, forceBackground: false, parentMessages: false } } });
+    expect(new ConfigStore(io).agent.parentMessages).toBe(false);
+  });
+
+  it("setParentMessages persists to the global layer", () => {
+    const { io, saves } = memIO();
+    const store = new ConfigStore(io);
+    saves.length = 0;
+
+    store.mutate.agent.setParentMessages(false);
+    expect(store.agent.parentMessages).toBe(false);
+    expect(saves).toHaveLength(1);
+    expect(saves[0].config.agent!.parentMessages).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  clearAllModelOverrides preserves non-model settings                 */
 /* ------------------------------------------------------------------ */
 

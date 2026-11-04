@@ -146,6 +146,14 @@ export async function showSpawnOptionsMenu(owner: ExtensionOwner, ctx: Extension
       description: "Spawn every agent in the background by default (no foreground wait).",
     },
     {
+      id: "parentMessages",
+      label: "Parent messages",
+      currentValue: store.agent.parentMessages ? "ON" : "OFF",
+      values: ["ON", "OFF"],
+      description:
+        "Give background agents the MessageParent tool to message you mid-run (frontmatter tools still gate it).",
+    },
+    {
       id: "showCompletionCards",
       label: "Completion cards",
       currentValue: store.agent.showCompletionCards ? "ON" : "OFF",
@@ -224,6 +232,10 @@ export async function showSpawnOptionsMenu(owner: ExtensionOwner, ctx: Extension
       case "forceBackground":
         store.mutate.agent.setForceBackground(newValue === "ON");
         ctx.ui.notify(`Force background set to ${newValue}`, "info");
+        break;
+      case "parentMessages":
+        store.mutate.agent.setParentMessages(newValue === "ON");
+        ctx.ui.notify(`Parent messages set to ${newValue}`, "info");
         break;
       case "disableDefaultAgents":
         store.mutate.agent.setDisableDefaultAgents(newValue === "ON");

@@ -18,6 +18,7 @@ import type { SystemPromptMode } from "../src/agents/types.js";
 import type { ConfigStore, RawConcurrency } from "../src/config/config-store.js";
 import type { SessionModelOverrides, SubagentsConfig } from "../src/models/model-precedence.js";
 import type { SpawnIntent } from "../src/spawn/spawn-coordinator.js";
+import type { SpawnOptions } from "../src/agents/agent-manager.js";
 import type { SelectOption } from "../src/ui/searchable-select.js";
 import type { Theme } from "../src/ui/types.js";
 import type { ThinkingChoice, ThinkingLevel } from "../src/types.js";
@@ -295,6 +296,7 @@ vi.mock("../src/shell.js", async () =>
             showContext: a.showContext !== false,
             showTime: a.showTime !== false,
             outputTranscript: a.outputTranscript !== false,
+            parentMessages: a.parentMessages !== false,
             outputThinkingBufferSize: a.outputThinkingBufferSize ?? 0,
             finishedRetentionMinutes: a.finishedRetentionMinutes ?? DEFAULT_AGENT.finishedRetentionMinutes,
             modelDisplayStyle: a.modelDisplayStyle === "id" ? "id" : "name",
@@ -427,6 +429,9 @@ vi.mock("../src/shell.js", async () =>
             },
             setForceBackground(enabled: boolean) {
               mockModules.mockConfig.agent.forceBackground = enabled;
+            },
+            setParentMessages(enabled: boolean) {
+              mockModules.mockConfig.agent.parentMessages = enabled;
             },
             setShowCost(enabled: boolean) {
               mockModules.mockConfig.agent.showCost = enabled;
@@ -665,7 +670,10 @@ vi.mock("../src/shell.js", async () =>
         getSessionCtx: () => mockModules.mockSessionCtx,
         getCoordinator: vi.fn(() => ({
           spawn: vi.fn(async (_pi: ExtensionAPI, _ctx: ExtensionContext, intent: SpawnIntent) => {
-            const id = mockModules.mockManager.spawn(_pi, _ctx, intent.type, intent.prompt, {
+            // parentMessages is a test-only capture (not a SpawnOptions field): the
+            // intent flag the real coordinator turns into MessageParent.
+            const options: SpawnOptions & { parentMessages?: boolean } = {
+              parentMessages: intent.parentMessages,
               description: intent.description,
               model: intent.model,
               maxTurns: intent.maxTurns,
@@ -679,7 +687,8 @@ vi.mock("../src/shell.js", async () =>
               // Mirror the real coordinator's spread: the signal key exists only
               // when the intent carried one — menu-wizard spawns never do.
               ...(intent.signal !== undefined ? { signal: intent.signal } : {}),
-            });
+            };
+            const id = mockModules.mockManager.spawn(_pi, _ctx, intent.type, intent.prompt, options);
             const record = mockModules.mockManager.getRecord(id);
             if (!intent.runInBackground && record?.execution?.promise) {
               await record.execution.promise;

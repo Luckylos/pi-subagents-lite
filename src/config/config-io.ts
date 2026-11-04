@@ -66,6 +66,7 @@ export const DEFAULT_AGENT: SubagentsConfig["agent"] = {
   showCost: false,
   showTime: true,
   outputTranscript: false,
+  parentMessages: true,
   finishedRetentionMinutes: 1,
   /** 0 = auto: the AgentStatus settled limit derives as 2 × default concurrency at read time. */
   agentStatusLimit: 0,
