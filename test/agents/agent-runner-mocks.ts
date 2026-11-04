@@ -6,7 +6,7 @@
  */
 import { vi, type Mock } from "vite-plus/test";
 import { DefaultResourceLoader, type AgentSession, type LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
-import type { Api, AssistantMessage, Model, UserMessage } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 
 /* ------------------------------------------------------------------ */
 /*  Types shared across split test files                               */
@@ -321,30 +321,7 @@ export function createPendingPromptSession() {
 /*  Message factories                                                 */
 /* ------------------------------------------------------------------ */
 
-export function assistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [],
-    api: "anthropic-messages",
-    provider: "anthropic",
-    model: "test-model",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: 0,
-    ...overrides,
-  };
-}
-
-export function userMessage(text: string): UserMessage {
-  return { role: "user", content: text, timestamp: 0 };
-}
+export { assistantMessage, userMessage } from "./session-messages.js";
 
 /* ------------------------------------------------------------------ */
 /*  Model factory                                                     */

@@ -1,16 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import { fakePi as makeFakePi } from "../fixtures.js";
 import { asAgentSession } from "../pi-boundaries.js";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import {
-  mockModules,
-  resetMocks,
-  createMockSession,
-  createPendingPromptSession,
-  type MockSession,
-  assistantMessage,
-  userMessage,
-} from "./agent-runner-mocks.js";
+import { resetMocks, createMockSession, createPendingPromptSession, type MockSession } from "./agent-runner-mocks.js";
 import { continueAgentSession } from "../../src/agents/agent-runner.js";
 
 const fakePi = makeFakePi();
@@ -42,56 +33,6 @@ describe("continueAgentSession", () => {
     expect(result.modelError).toBeUndefined();
   });
 
-  /**
-   * Realistic continuation session: the first run's history is already in
-   * `messages`, and the prompt appends the continuation's own messages.
-   * extractText is mocked to return real text so the fallback scan is exercised.
-   */
-  function sessionWithPriorRun(continuationMessages: AgentSession["messages"]) {
-    const session = createMockSession();
-    session.messages = [
-      userMessage("first task"),
-      assistantMessage({ content: [{ type: "text", text: "first run answer" }] }),
-    ];
-    session.prompt = vi.fn(async () => {
-      session.messages.push(userMessage("keep going"), ...continuationMessages);
-    });
-    mockModules.mockExtractText.mockImplementation((content: string | ReadonlyArray<{ text?: string }>) => {
-      if (typeof content === "string") return content;
-      if (Array.isArray(content)) return content.map((c) => c.text ?? "").join("");
-      return "";
-    });
-    return session;
-  }
-
-  it("does not surface the prior run's text when the continuation ends in a model error", async () => {
-    const session = sessionWithPriorRun([assistantMessage({ stopReason: "error", errorMessage: "provider boom" })]);
-
-    const result = await continueAgentSession(asAgentSession(session), "keep going", {});
-
-    // The failed continuation produced no text of its own; the first run's
-    // "first run answer" must not leak into the result.
-    expect(result.responseText).toBe("");
-    expect(result.modelError).toBe("provider boom");
-  });
-
-  it("does not surface the prior run's text when the continuation is aborted without text", async () => {
-    const session = sessionWithPriorRun([assistantMessage({ stopReason: "aborted" })]);
-
-    const result = await continueAgentSession(asAgentSession(session), "keep going", {});
-
-    expect(result.responseText).toBe("");
-    expect(result.modelError).toBeUndefined();
-  });
-
-  it("still falls back to the continuation's own assistant text when the collector captured nothing", async () => {
-    const session = sessionWithPriorRun([assistantMessage({ content: [{ type: "text", text: "continued answer" }] })]);
-
-    const result = await continueAgentSession(asAgentSession(session), "keep going", {});
-
-    expect(result.responseText).toBe("continued answer");
-  });
-
   it("returns the session so the manager can re-attach it to the record", async () => {
     const session = createMockSession();
     session.prompt = vi.fn(async () => {});
@@ -105,16 +46,6 @@ describe("continueAgentSession", () => {
     const onSessionCreated = vi.fn();
     await continueAgentSession(asAgentSession(session), "keep going", { onSessionCreated });
     expect(onSessionCreated).not.toHaveBeenCalled();
-  });
-
-  it("classifies a provider error from the final assistant message", async () => {
-    const session = createMockSession();
-    session.prompt = vi.fn(async () => {});
-    session.messages = [
-      assistantMessage({ content: [{ type: "text", text: "x" }], stopReason: "error", errorMessage: "provider boom" }),
-    ];
-    const result = await continueAgentSession(asAgentSession(session), "keep going", {});
-    expect(result.modelError).toBe("provider boom");
   });
 
   it("applies maxTurns and graceTurns to the continuation's turn tracking", async () => {

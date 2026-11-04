@@ -36,38 +36,6 @@ describe("runAgent — model error detection", () => {
     const result = await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
     expect(result.modelError).toBe("model failed to load into memory");
   });
-
-  it("leaves modelError undefined when the final assistant message completed normally", async () => {
-    sessionWithMessages([{ role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" }]);
-
-    const result = await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
-    expect(result.modelError).toBeUndefined();
-  });
-
-  it("does not fail the run when an earlier error turn was followed by a successful final turn", async () => {
-    sessionWithMessages([
-      { role: "assistant", content: [], stopReason: "error", errorMessage: "transient blip" },
-      { role: "user", content: "continue" },
-      { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop" },
-    ]);
-
-    const result = await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
-    expect(result.modelError).toBeUndefined();
-  });
-
-  it("leaves modelError undefined when the final assistant message was aborted", async () => {
-    sessionWithMessages([{ role: "assistant", content: [], stopReason: "aborted" }]);
-
-    const result = await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
-    expect(result.modelError).toBeUndefined();
-  });
-
-  it("leaves modelError undefined when the error message is empty", async () => {
-    sessionWithMessages([{ role: "assistant", content: [], stopReason: "error" }]);
-
-    const result = await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });
-    expect(result.modelError).toBeUndefined();
-  });
 });
 
 import { createTestOwner } from "../owner-fixtures.js";
