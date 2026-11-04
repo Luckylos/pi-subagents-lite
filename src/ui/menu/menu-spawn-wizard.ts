@@ -29,6 +29,7 @@ import {
 import { getPiDefaultThinkingLevel, getPiModelThinkingLevels } from "../../pi-settings.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, buildSelectListTheme, createSearchableSelect } from "./helpers.ts";
 import { DEFAULT_GRACE_TURNS } from "../../config/config-io.ts";
+import { prepareSpawnIntent } from "../../spawn/spawn-preparation.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createNumericSubmenu, createInputSubmenu } from "./submenus/numeric-input.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
@@ -408,26 +409,25 @@ export async function showSpawnAgentMenu(
             }
 
             try {
-              await menuCoordinator.spawn(getPiInstance(owner), menuSession, {
-                type: selectedType,
-                prompt: spawnPrompt,
-                description,
-                model,
-                modelKey,
-                maxTurns,
-                maxTokens,
-                thinkingLevel: thinking,
-                graceTurns,
-                worktreePath: currentWorktreePath,
-                worktreeLabel: currentWorktreePath ? currentWorktreeLabel : undefined,
-                invocation: {
-                  modelName: model?.id,
-                  thinkingLevel: thinking,
+              await menuCoordinator.spawn(
+                getPiInstance(owner),
+                menuSession,
+                prepareSpawnIntent({
+                  type: selectedType,
+                  prompt: spawnPrompt,
+                  description,
+                  model,
+                  modelKey,
                   maxTurns,
+                  maxTokens,
+                  thinkingLevel: thinking,
+                  graceTurns,
+                  worktreePath: currentWorktreePath,
+                  worktreeLabel: currentWorktreePath ? currentWorktreeLabel : undefined,
                   runInBackground: background,
-                },
-                runInBackground: background,
-              });
+                  includeRunModeInInvocation: true,
+                }),
+              );
 
               if (!background && owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator) {
                 getWidget(owner)?.update();

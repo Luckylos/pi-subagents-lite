@@ -3,8 +3,10 @@ import { getPiInstance, getSessionCtx, getWidget } from "../shell.ts";
 import { SHORT_ID_LENGTH } from "../types.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentRecord, LiveView, SpawnConfig, ToolActivity } from "../types.ts";
+import type { AgentRecord, LiveView, ToolActivity } from "../types.ts";
 import type { AgentManager, SpawnOptions } from "../agents/agent-manager.ts";
+import { type SpawnIntent } from "./spawn-preparation.ts";
+export type { SpawnIntent } from "./spawn-preparation.ts";
 import { buildAgentDetails, formatResultContent } from "../agents/tool-execution.ts";
 
 /**
@@ -20,20 +22,6 @@ import { buildAgentDetails, formatResultContent } from "../agents/tool-execution
  */
 
 // --- Types ---
-
-/** Input for spawn(). Built by each caller from its own validation. */
-export interface SpawnIntent extends SpawnConfig {
-  type: string;
-  prompt: string;
-  runInBackground: boolean;
-  /**
-   * Parent run's interrupt signal, forwarded to the manager for foreground
-   * spawns only. Background and menu-wizard spawns never carry one.
-   */
-  signal?: AbortSignal;
-  /** Narrowed to required — all callers resolve this before spawn. */
-  graceTurns: number;
-}
 
 export interface SpawnResult {
   agentId: string;

@@ -14,6 +14,7 @@ import { getCoordinator, getManager, getPiInstance, getStore, getWidget } from "
 import { parseThinkingChoice, findModelInRegistry } from "../utils.ts";
 
 import { computeSpawnTarget, surfaceSpawnTargetWarnings } from "../spawn/spawn-target.ts";
+import { prepareSpawnIntent } from "../spawn/spawn-preparation.ts";
 import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 
 /** Extracted parameters from a historical Agent tool call. */
@@ -139,21 +140,24 @@ async function resolveAndSpawn(
     parentLevel: ctx.thinkingLevel,
   });
 
-  await coordinator!.spawn(pi!, ctx, {
-    type: resolvedType,
-    prompt: call.prompt,
-    description,
-    model,
-    modelKey,
-    maxTurns,
-    thinkingLevel,
-    graceTurns: getStore(owner).agent.graceTurns,
-    worktreePath: target.resolvedPath,
-    worktreeLabel: target.worktreeLabel,
-    projectTrusted: target.projectTrusted,
-    invocation: { modelName: model?.id, thinkingLevel, maxTurns },
-    runInBackground: true,
-  });
+  await coordinator!.spawn(
+    pi!,
+    ctx,
+    prepareSpawnIntent({
+      type: resolvedType,
+      prompt: call.prompt,
+      description,
+      model,
+      modelKey,
+      maxTurns,
+      thinkingLevel,
+      graceTurns: getStore(owner).agent.graceTurns,
+      worktreePath: target.resolvedPath,
+      worktreeLabel: target.worktreeLabel,
+      projectTrusted: target.projectTrusted,
+      runInBackground: true,
+    }),
+  );
   return { restarted: `${resolvedType}: ${description}` };
 }
 

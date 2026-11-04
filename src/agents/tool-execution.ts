@@ -17,6 +17,7 @@ import type { AgentConfig } from "./types.ts";
 
 import { getSessionContextPercent } from "./usage.ts";
 import { computeSpawnTarget, surfaceSpawnTargetWarnings } from "../spawn/spawn-target.ts";
+import { prepareSpawnIntent } from "../spawn/spawn-preparation.ts";
 
 import { parseModelKey, findModelInRegistry, parseThinkingChoice } from "../utils.ts";
 import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
@@ -216,9 +217,6 @@ export async function executeAgentTool(
   const model = findModelInRegistry(modelStr, ctx.modelRegistry, ctx.model);
   const modelKey = model ? `${model.provider}/${model.id}` : undefined;
 
-  // Determine modelName for invocation (always capture for display)
-  const modelName = model?.id;
-
   // Resolve thinking: explicit param > agent config (frontmatter) > undefined.
   // Per-model and defaultThinking are deliberately NOT resolved here — the
   // spawn runner owns them (its trust-gated settings read keeps per-model
@@ -236,22 +234,25 @@ export async function executeAgentTool(
   // run's interrupt signal — only foreground spawns can be interrupted.
   const isBackground = runInBackground || store.agent.forceBackground;
 
-  const result = await coordinator.spawn(getPiInstance(owner), ctx, {
-    type: resolvedType,
-    prompt,
-    description,
-    model,
-    modelKey,
-    maxTurns,
-    thinkingLevel,
-    graceTurns: store.agent.graceTurns,
-    worktreePath: validatedWorktreePath,
-    worktreeLabel,
-    projectTrusted,
-    invocation: { modelName, thinkingLevel, maxTurns },
-    runInBackground: isBackground,
-    signal: isBackground ? undefined : signal,
-  });
+  const result = await coordinator.spawn(
+    getPiInstance(owner),
+    ctx,
+    prepareSpawnIntent({
+      type: resolvedType,
+      prompt,
+      description,
+      model,
+      modelKey,
+      maxTurns,
+      thinkingLevel,
+      graceTurns: store.agent.graceTurns,
+      worktreePath: validatedWorktreePath,
+      worktreeLabel,
+      projectTrusted,
+      runInBackground: isBackground,
+      signal: isBackground ? undefined : signal,
+    }),
+  );
 
   const { agentId, record } = result;
 
