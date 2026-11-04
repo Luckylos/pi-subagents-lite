@@ -377,7 +377,8 @@ describe("contract: child session matches a normal pi session", () => {
     await disposeChildSession(reference);
   });
 
-  it("does not register its four tools while retaining an unrelated extension", async () => {
+  // Cold-loads a copy of src/ through jiti: ~1.5s alone, 4-5s under the full parallel suite.
+  it("does not register its four tools while retaining an unrelated extension", { timeout: 20_000 }, async () => {
     const workspace = makeWorkspace("self-exclusion");
     workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
     workspace.writeForkExtension();
