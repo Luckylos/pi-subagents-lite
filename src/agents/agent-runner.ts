@@ -518,7 +518,6 @@ async function createAndConfigureSession(
     throw err;
   }
   announceChildSessionBound(session);
-  options.onSessionCreated?.(session);
   return session;
 }
 
@@ -663,5 +662,8 @@ export async function createChildSession(
     await disposeChildSession(session);
     throwIfAborted("after session creation");
   }
+  // Only after the abort check: the caller keeps this handle for steering and
+  // continuation, so it must never see a session this setup disposed.
+  options.onSessionCreated?.(session);
   return { session, warnings, agentConfig };
 }

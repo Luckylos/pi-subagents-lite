@@ -9,7 +9,7 @@
  * Shared mocks: agent-runner-mocks.ts (must be the first import).
  */
 
-import { describe, it, expect, beforeEach } from "vite-plus/test";
+import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import { fakeCtx, fakePi as makeFakePi } from "../fixtures.js";
 import { mockModules, resetMocks, createMockSession, type MockSession } from "./agent-runner-mocks.js";
 import { runAgent } from "../../src/agents/agent-runner.js";
@@ -54,6 +54,22 @@ describe("runAgent — abort during setup", () => {
     expect(session.abort).toHaveBeenCalled();
     expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
     expect(session.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("never hands out a session the abort disposed during extension binding", async () => {
+    const controller = new AbortController();
+    const onSessionCreated = vi.fn();
+    session.bindExtensions.mockImplementation(async () => {
+      controller.abort();
+    });
+
+    await expect(
+      runAgent(owner, fakeCtx(), "test-agent", "task", { pi: fakePi, signal: controller.signal, onSessionCreated }),
+    ).rejects.toThrow(/aborted during setup/);
+
+    expect(session.dispose).toHaveBeenCalledTimes(1);
+    // The manager records this handle for steering and continuation.
+    expect(onSessionCreated).not.toHaveBeenCalled();
   });
 
   it("disposes the created session when setup fails after creation", async () => {
