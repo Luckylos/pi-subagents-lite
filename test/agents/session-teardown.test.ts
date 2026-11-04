@@ -7,7 +7,8 @@
  */
 
 import { describe, it, expect, vi } from "vite-plus/test";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type AgentSession } from "@earendil-works/pi-coding-agent";
+import { announceChildSessionCreated } from "../../src/agents/child-announcements.js";
 import { disposeChildSession } from "../../src/agents/session-teardown.js";
 
 /** The session surface the teardown drives, asserted against the real type. */
@@ -85,6 +86,21 @@ describe("disposeChildSession", () => {
     await disposeChildSession(session);
 
     expect(session.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("announces disposed once, after dispose, when teardowns overlap", async () => {
+    const session = Object.assign(teardownSession(), { sessionId: "child-session-id" });
+    const order: string[] = [];
+    session.dispose.mockImplementation(() => {
+      order.push("dispose");
+    });
+    const events = createEventBus();
+    events.on("subagents:child:disposed", (data) => order.push(`disposed:${JSON.stringify(data)}`));
+    announceChildSessionCreated(session, events, "parent-session-id");
+
+    await Promise.all([disposeChildSession(session), disposeChildSession(session)]);
+
+    expect(order).toEqual(["dispose", 'disposed:{"sessionId":"child-session-id"}']);
   });
 
   it("never rejects when dispose throws", async () => {

@@ -90,12 +90,24 @@ _Avoid_: Parent abort signal, interrupt listener, parent signal binding
 An agent that is no longer in progress, in one of the terminal statuses: completed, turn_limited, aborted, stopped, error. The AgentStatus tool always lists in-progress (running, queued) agents and shows settled agents most-recently-settled first, capped at the configured `agentStatusLimit` (0 = auto: 2 × default concurrency).
 _Avoid_: Done agent, finished agent, terminal agent
 
+**Child session**:
+The pi session a **Subagent** works in. It can carry the initial task and later continuations, so it may outlive a single **Subagent run**.
+_Avoid_: Agent session
+
+**Subagent run**:
+One execution of a **Subagent**'s initial task or of a continuation in its **Child session**. A run that settles does not end the **Child session**.
+_Avoid_: Agent lifetime
+
+**Child-session announcement**:
+A lifecycle event (`created`, `bound`, `disposed`) published on the parent session's event bus for one **Child session**. `disposed` marks the end of the **Child session**, never the end of a **Subagent run**.
+_Avoid_: Child lifecycle event, session notification
+
 **Agent id**:
 The 17-character key of an agent record. All tool and widget text shows the first 8 characters; tool input accepts that shown form when it matches exactly one retained agent, and an ambiguous prefix resolves to nothing. The ambiguity error is the only place a full id is printed (ADR-0010).
 _Avoid_: Short id (as a second kind of id), agent key
 
 **MessageAgent**:
-The main session agent's tool for sending input to a **Subagent** it already spawned: a running agent receives it at its next turn boundary, a **Settled** agent with a live session restarts. Same seam as the **ConversationViewer overlay**'s steer/continue. Runs parent-ward; the opposite direction is a **Nudge**.
+The main session agent's tool for sending input to a **Subagent** it already spawned: a running agent receives it at its next turn boundary, a **Settled** agent with a live session restarts. Same seam as the **ConversationViewer overlay**'s steer/continue. Runs child-ward; the opposite direction is a **Nudge**.
 _Avoid_: SteerAgent, agent messaging tool, follow-up
 
 **Watchdog**:

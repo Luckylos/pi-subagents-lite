@@ -237,3 +237,7 @@ Drive real keyboard input through the component returned by ui.custom before del
 ## Vite+ lint policies (AST rules over custom scanners) - 2026-10-16
 **What failed:** `test:any-gate` duplicated explicit-any linting in Bash and kept obsolete allowlists after the fixture helpers were typed.
 **Next time:** Enforce syntactic policies with a scoped Oxlint rule; keep exceptions local and documented, and remove bespoke scanners.
+
+## announce-child-sessions (partial reversal of the coverage cut) - 2026-11-04
+**What changed:** One cut test came back without a reported symptom: overlapping teardowns announce `disposed` once, after `dispose`, in `test/agents/session-teardown.test.ts`. The reason is an absent guard, not a duplicated one. With `announceChildSessionDisposed(session)` removed from `session-teardown.ts` in an isolated copy, the full suite stayed green before this test and failed only this test after it (1 failed, 2037 passed). A missing `disposed` leaks the subscriber's registration for the whole process, the symptom this file names as worth restoring for. The other cut tests stay cut.
+**Next time:** Before restoring a cut test, delete the guarded call in a scratch copy and confirm the restored test is the only one that fails. If another test already fails, the invariant is guarded and the restoration is duplication.
