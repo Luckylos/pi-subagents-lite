@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extension factory state is isolated per parent instance: managers, queues, registries, widgets, invalidations, timers, and completion notifications no longer overwrite one another.
 - Child extension loading is marked only at the resource-loader boundary with async-local state, so the four subagent tools are absent from child registries while unrelated extension tools remain available.
 - Configuration mutations reread the target layer, preserve unrelated concurrent fields, use unique same-directory atomic temporary files, and report read/write/partial-layer failures instead of swallowing them.
+- Every persisted configuration write now re-syncs the widget and concurrency limits from the effective config. The widget cost toggle no longer overrides a session cost override, settings another writer changed on disk apply on the next write, and toggling the widget shortcut applies without a reload.
 
 ### Changed
 

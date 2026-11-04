@@ -58,6 +58,41 @@ describe("ConfigStore notifyToolsExpanded", () => {
 });
 
 /* ------------------------------------------------------------------ */
+/*  effects follow the effective config                                */
+/* ------------------------------------------------------------------ */
+
+describe("ConfigStore effects after a persisted write", () => {
+  it("keeps the widget cost toggle on the session override", () => {
+    const { io } = memIO({ global: { agent: { default: null, showCost: false } } });
+    const { w, calls } = widgetStub();
+    const store = new ConfigStore(io);
+    store.setDeps({ widget: w });
+    store.mutate.session.setShowCost(false);
+    calls.length = 0;
+
+    store.mutate.agent.setShowCost(true);
+
+    expect(store.agent.showCost).toBe(false);
+    expect(calls.filter((c) => c.startsWith("setShowCost:"))).toEqual(["setShowCost:false"]);
+    expect(statsVisibilityPayloads(calls).at(-1)?.showCost).toBe(false);
+  });
+
+  it("applies settings another writer changed on disk", () => {
+    const state = memIO({ global: { agent: { default: null, widgetMaxLines: 10 } } });
+    const { w, calls } = widgetStub();
+    const store = new ConfigStore(state.io);
+    store.setDeps({ widget: w });
+    state.global().agent!.widgetMaxLines = 20; // another instance wrote this key
+    calls.length = 0;
+
+    store.mutate.agent.setGraceTurns(3);
+
+    expect(store.agent.widgetMaxLines).toBe(20);
+    expect(calls).toContain("setMaxLines:20");
+  });
+});
+
+/* ------------------------------------------------------------------ */
 /*  show* stats visibility                                             */
 /* ------------------------------------------------------------------ */
 

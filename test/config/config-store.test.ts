@@ -547,7 +547,7 @@ describe("ConfigStore persisted mutations", () => {
     expect(saves[0].config.agent!.showCompletionCards).toBe(false);
   });
 
-  it("setShortcut persists but does not sync widget", () => {
+  it("setShortcut persists and syncs the widget", () => {
     const { io, saves } = memIO();
     const { w, calls } = widgetStub();
     const store = new ConfigStore(io);
@@ -555,7 +555,7 @@ describe("ConfigStore persisted mutations", () => {
     calls.length = 0;
     store.mutate.widget.setShortcut(true);
     expect(saves[0].config.agent!.widgetShortcut).toBe(true);
-    expect(calls.some((c) => c.startsWith("setWidgetShortcut"))).toBe(false);
+    expect(calls).toContain("setWidgetShortcut:true");
   });
 
   it("concurrency setters persist and call manager.setConcurrency", () => {

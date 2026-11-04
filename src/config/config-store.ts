@@ -376,8 +376,6 @@ export class ConfigStore {
           layer.agent ??= {};
           layer.agent.showCost = enabled;
         });
-        this.widget?.setShowCost(enabled);
-        this.syncWidgetStatsVisibility();
       },
       setGraceTurns: (n: number) => this.setAgentLayerEntry("graceTurns", n, "global"),
       setToolTimeoutMinutes: (n: number) => this.setAgentLayerEntry("toolTimeoutMinutes", Math.max(0, n), "global"),
@@ -421,8 +419,6 @@ export class ConfigStore {
       setFinishedRetentionMinutes: (minutes: number): void => {
         const n = Math.max(MIN_FINISHED_RETENTION_MINUTES, minutes);
         this.setAgentLayerEntry("finishedRetentionMinutes", n, "global");
-        // Push the window to the widget so it applies on the next render tick.
-        this.widget?.setFinishedRetentionMinutes(n);
       },
       /** Max settled agents AgentStatus lists. 0 = auto (2 × default concurrency); below 1 clamps to 0. */
       setAgentStatusLimit: (limit: number): void => {
@@ -433,7 +429,6 @@ export class ConfigStore {
     widget: {
       setCompact: (enabled: boolean): void => {
         this.setAgentLayerEntry("widgetCompact", enabled, "global");
-        this.syncWidgetSettings();
       },
       setShowCompletionCards: (enabled: boolean) => this.setAgentLayerEntry("showCompletionCards", enabled, "global"),
       setMaxLines: (lines: number): void => {
@@ -444,41 +439,29 @@ export class ConfigStore {
             layer.agent.widgetMaxLinesCompact = Math.floor(lines / 2);
           }
         });
-        this.syncWidgetSettings();
       },
       setMaxLinesCompact: (lines: number): void => {
         this.setAgentLayerEntry("widgetMaxLinesCompact", lines, "global");
-        this.syncWidgetSettings();
       },
 
-      // Note: persists only. Does NOT syncWidgetSettings — matches the existing
-      // behavior, where toggling the shortcut takes effect on next reload rather
-      // than immediately. Flagged for a follow-up (the other three widget
-      // setters do sync).
       setShortcut: (enabled: boolean) => this.setAgentLayerEntry("widgetShortcut", enabled, "global"),
       setShowModel: (enabled: boolean): void => {
         this.setAgentLayerEntry("widgetShowModel", enabled, "global");
-        this.syncWidgetStatsVisibility();
       },
       setShowThinking: (enabled: boolean): void => {
         this.setAgentLayerEntry("widgetShowThinking", enabled, "global");
-        this.syncWidgetStatsVisibility();
       },
       setNavHint: (enabled: boolean): void => {
         this.setAgentLayerEntry("widgetNavHint", enabled, "global");
-        this.syncWidgetSettings();
       },
       setModelDisplayStyle: (style: "id" | "name"): void => {
         this.setAgentLayerEntry("modelDisplayStyle", style, "global");
-        this.syncWidgetSettings();
       },
       setModelThinkingPlacement: (placement: ModelThinkingPlacement): void => {
         this.setAgentLayerEntry("modelThinkingPlacement", placement, "global");
-        this.syncWidgetSettings();
       },
       setStatusBarFormat: (format: "full" | "compact"): void => {
         this.setAgentLayerEntry("statusBarFormat", format, "global");
-        this.syncWidgetSettings();
       },
     },
     concurrency: {
@@ -644,10 +627,14 @@ export class ConfigStore {
       },
       { createIfMissing: target === "project" },
     );
-    this.applyConcurrency();
   }
 
-  /** Apply a persisted mutation to the latest target file and adopt the returned layers. */
+  /**
+   * Apply a persisted mutation to the latest target file, adopt the returned
+   * layers, and re-sync every dep from the effective config. The fresh read can
+   * carry other writers' changes, so syncing only the written key would leave
+   * the widget and manager stale.
+   */
   private updatePersistedLayer(
     target: "global" | "project",
     mutate: (layer: RawConfig) => void,
@@ -658,6 +645,7 @@ export class ConfigStore {
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
     this.rebuildEffective();
+    this.syncAllDeps();
   }
 
   private rebuildEffective(): void {
@@ -770,7 +758,6 @@ export class ConfigStore {
     value: boolean,
   ): void {
     this.setAgentLayerEntry(key, value, "global");
-    this.syncWidgetStatsVisibility();
   }
 
   private applyConcurrency(): void {

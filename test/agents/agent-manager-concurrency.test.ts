@@ -308,6 +308,37 @@ describe("AgentManager", () => {
       deferred.resolve(mockRunResult());
     });
 
+    it("re-applying an unchanged config keeps running slots and the queue", () => {
+      const config: ConcurrencyConfig = { default: 1, models: { "llamacpp/4b": 1 } };
+      manager = new AgentManager(owner, onComplete, config);
+
+      const deferred = makeResolvablePromise();
+      mockModules.mockRunAgent.mockReturnValue(deferred.promise);
+
+      const ctx = fakeCtx();
+      const pi = fakePi();
+
+      const id1 = manager.spawn(pi, ctx, "general-purpose", "task 1", {
+        description: "task 1",
+        modelKey: "llamacpp/4b",
+        isBackground: true,
+      });
+      const id2 = manager.spawn(pi, ctx, "general-purpose", "task 2", {
+        description: "task 2",
+        modelKey: "llamacpp/4b",
+        isBackground: true,
+      });
+
+      manager.setConcurrency({ default: 1, models: { "llamacpp/4b": 1 } });
+      manager.setConcurrency({ default: 1, models: { "llamacpp/4b": 1 } });
+
+      expect(manager.getRecord(id1)?.lifecycle.status).toBe("running");
+      expect(manager.getRecord(id2)?.lifecycle.status).toBe("queued");
+      expect(mockModules.mockRunAgent).toHaveBeenCalledTimes(1);
+
+      deferred.resolve(mockRunResult());
+    });
+
     it("removes per-model slot when model entry is removed from config", () => {
       const config: ConcurrencyConfig = { default: 4, models: { "llamacpp/4b": 1 } };
       manager = new AgentManager(owner, onComplete, config);
