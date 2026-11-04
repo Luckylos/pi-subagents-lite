@@ -1,27 +1,43 @@
-# pi-subagents-lite
+# pi-subagents-lite（Luckylos 二开版）
 
-[![npm version](https://img.shields.io/npm/v/pi-subagents-lite)](https://www.npmjs.com/package/pi-subagents-lite)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Sub-agents for [pi](https://pi.dev). Schema-first, minimal token overhead.
+给 [pi](https://pi.dev) 用的子代理（Subagent）扩展。本仓库是 [AlexParamonov/pi-subagents-lite](https://github.com/AlexParamonov/pi-subagents-lite) 的二次开发版本，基于上游 v1.17.1 之后的 `0a3fb57`，包名仍是 `pi-subagents-lite`。
 
-Spawn custom agents in isolated sessions with their own tools, extensions, and model. Four tools (`Agent`, `StopAgent`, `MessageAgent`, and `AgentStatus`) use one-dot descriptions to minimize schema overhead. The tool names and parameter names, such as `run_in_background` and `worktree_path`, are part of the schema.
+二开的目标是让它在 [pi-web](https://github.com/agegr/pi-web) 这类“一个进程里同时跑多个父会话”的环境下行为正确，并补上子代理主动联系父会话的通道。
 
-Foreground and background agents with detailed model configuration, concurrency, custom agent types, steering and continuation, cross-repo worktree support, configurable system prompt modes, a live widget and conversation viewer with cost tracking, and a watchdog for stuck agents.
+- 设计决策记录：[docs/adr/](docs/adr/)，术语表：[CONTEXT.md](CONTEXT.md)，变更记录：[CHANGELOG.md](CHANGELOG.md)
 
-## Install
+## 与上游的区别
 
-Requires Node.js >= 22.19.0 and pi >= 0.99.0.
+| 方面 | 上游 | 本仓库 |
+|---|---|---|
+| 多父会话 | 扩展状态（manager、队列、注册表、widget、定时器、通知）在同一进程的多个父会话之间共享，会互相覆盖 | 每个扩展实例各持一份状态（ADR-0012） |
+| 后台完成通知 | SDK 用未初始化的运行时重载扩展工厂后，通知可能丢失或发错会话 | 通知 API 只在父会话 `session_start` 后发布，并绑定到该父会话 |
+| 子会话里的子代理工具 | 依赖全局标记排除 | 只在资源加载边界用 async-local 状态标记，子会话里没有 `Agent` 等四个工具，其他扩展的工具照常可用 |
+| 配置写入 | 并发写可能丢字段 | 写前重读目标层，同目录原子写，失败会报错；每次写入后按生效配置同步 widget 和并发限制 |
+| 子代理 → 父会话 | 上游 v1.18.0 用全局状态实现了另一套 | 新增 `MessageParent` 工具（ADR-0013），见下文 |
+| 停止与会话交接 | 启动中被停止的子代理可能仍持有已销毁的会话 | 先做中止检查，再交出子会话 |
+
+本仓库**没有**合并上游 v1.18.0：两边的子代理通信实现结构上冲突，评估记录见 ADR-0013。
+
+验证情况：`vp check` 和 `vp test run`（112 个测试文件，2074 个测试）通过；多父会话通知路由、空闲父会话唤醒和 `MessageParent` 在真实 pi-web 0.14.1 和真实模型上测过。没验证过的：旧版 pi SDK、长时间高负载、外部扩展（如权限系统）订阅事件的兼容性。
+
+## 安装
+
+需要 Node.js >= 22.19.0、pi >= 0.99.0。npm 上的 `pi-subagents-lite` 是上游版本，装本仓库要用 git 源或本地路径。**先卸掉上游版本**，同一个扩展装两份会重复注册同名工具：
 
 ```bash
-pi install npm:pi-subagents-lite
-pi install -l npm:pi-subagents-lite   # project-local
-pi -e npm:pi-subagents-lite           # try without installing
+pi remove npm:pi-subagents-lite            # 装过上游才需要
+pi install git:github.com/Luckylos/pi-subagents-lite          # 跟随 main
+pi install git:github.com/Luckylos/pi-subagents-lite@<提交哈希>  # 固定到某个提交（推荐生产环境）
+pi install /path/to/pi-subagents-lite      # 本地克隆，适合二次修改
+pi list                                     # 确认只有一份
 ```
 
-## Usage
+## 用法
 
-The LLM calls `Agent` like any other tool. Foreground agents return inline with stats. Background agents acknowledge immediately and auto-deliver on completion.
+模型像调用其他工具一样调用 `Agent`。前台子代理执行完才返回，并附带统计；后台子代理立即返回，完成后自动把结果通知给父会话。
 
 ```
 ◈ Agents
@@ -33,41 +49,47 @@ The LLM calls `Agent` like any other tool. Foreground agents return inline with 
   └ Now I have enough information to provide a comprehensive answer.
 ```
 
-The widget shows running and recently finished agents above the editor. `↓`/`↑` highlights an agent, `Enter` opens the conversation viewer, `Esc` closes navigation. The viewer streams the live transcript — thinking blocks, tool calls, and compaction summaries. Tool results are not shown: each call appears as a single status-colored line (pending → success/error).
+终端 pi 里，编辑器上方的 widget 显示运行中和刚结束的子代理。`↓`/`↑` 选中，`Enter` 打开会话查看器，`Esc` 退出。查看器实时显示思考块、工具调用和压缩摘要；工具结果不展开，每次调用显示为一行带状态颜色的记录。
 
-The `/agents` menu covers active and settled agents (view, steer or continue, stop, clear), manual spawns without an LLM round-trip, model and concurrency settings, agent behavior, system prompts, widget settings, and diagnostics.
+`/agents` 菜单可以查看、引导（steer）、续跑、停止和清理子代理，手动启动子代理（不经过模型），以及设置模型、并发、子代理行为、系统提示词、widget 和诊断。
 
-### Agent tools
+### 工具
 
-- `Agent` spawns a sub-agent (see [Agent options](#agent-options) for parameters).
-- `StopAgent` stops a running or queued agent by ID. IDs come from the spawn result, the stop error, or `/agents`.
-- `MessageAgent` gives an existing agent more input by ID: a running one picks it up at its next turn boundary; a settled one continues with its own context if its session is live and a model concurrency slot is available.
-- `AgentStatus` lists every running and queued agent, plus a configurable number of recently settled agents (default: twice the default concurrency). It tells the LLM not to poll for updates.
+主会话里有四个工具，工具描述都只有一个点，以减少 schema 开销；工具名和参数名本身就是 schema 的一部分：
 
-Background agents also get one tool of their own, `MessageParent`. With it they can send the parent session a short message mid-run, such as a blocking question or a finding that changes the plan. The agent keeps working, and the parent can answer with `MessageAgent`. An idle parent is woken. Each run can send at most 5 messages. An explicit frontmatter `tools` or `registeredTools` list must name `MessageParent`. Turn it off under Agent behavior > Parent messages.
+- `Agent`：启动子代理，参数见[Agent 参数](#agent-参数)。
+- `StopAgent`：按 ID 停止运行中或排队中的子代理。ID 来自启动结果、停止报错或 `/agents`。
+- `MessageAgent`：按 ID 给已有子代理追加输入。运行中的在下一个回合边界收到；已结束的如果会话还在、且有空闲并发名额，会带着原上下文续跑。
+- `AgentStatus`：列出所有运行中、排队中的子代理，以及最近结束的若干个（默认是默认并发数的两倍）。它会提醒模型不要轮询。
 
-Foreground agents keep the `Agent` tool call open until they finish and are stopped by the parent's interrupt. Background agents return immediately and do not inherit that interrupt, but can still be steered or stopped through the UI or tools.
+后台子代理自己有一个工具 `MessageParent`（二开新增）：
 
-### Steering and continuation
+- 子代理运行中可以给父会话发一条简短消息，比如卡住时的提问或改变计划的发现。子代理继续工作，不等回复；父会话需要回复时用 `MessageAgent`。
+- 父会话空闲时会被唤醒；父会话正在运行时，消息作为 steer 插入。消息总是先于完成通知到达。
+- 每次运行最多 5 条，续跑后额度恢复。父会话不可用时，工具返回 `Not delivered: the parent session is unavailable.`，这次不计入额度。
+- 前台子代理没有这个工具。frontmatter 里显式写了 `tools` 或 `registeredTools` 的，必须把 `MessageParent` 列进去。
+- 关闭：`/agents` > Settings > Agent behavior > Parent messages，或配置 `agent.parentMessages: false`。
 
-Steer a running agent mid-task to redirect it: `Enter` in the conversation viewer, `Steer` in the `/agents` menu, or `MessageAgent` from the session agent. Settled agents (completed, turn-limited, aborted, stopped, or errored) can be continued from the conversation viewer, the `/agents` menu, or `MessageAgent`.
+前台子代理会一直占着 `Agent` 工具调用，父会话中断时一起停止。后台子代理立即返回，不跟随父会话中断，但仍可通过 UI 或工具引导、停止。
 
-### Permission gates and other Subagent-aware extensions
+### 引导与续跑
 
-Lite announces each Subagent session on pi's extension event bus when it is created, when its extensions bind, and when it is disposed. A gate installed alongside lite, for example `@gotgenes/pi-permission-system`, uses those announcements to escalate an `ask` decision made inside a Subagent to the parent session instead of failing closed inside the child. With no such extension installed nothing is observable, on a pi without the event bus the announcements are skipped, and if pi refuses one, which happens when the parent session is replaced, reloaded or disposed while the Subagent is still running, lite warns and names that Subagent. An announcement never fails a spawn or a teardown.
+运行中的子代理可以中途改方向：在会话查看器里按 `Enter`、在 `/agents` 菜单里选 `Steer`，或由主会话调用 `MessageAgent`。已结束的子代理（完成、触达回合上限、中止、停止、出错）可以从会话查看器、`/agents` 菜单或 `MessageAgent` 续跑。
 
-## Built-in agents
+### 权限网关等感知子代理的扩展
 
-These built-in agents provide a starting point, create custom agent files to define specialized setups.
+每个子代理会话在创建、扩展绑定完成、销毁时，会在 pi 的扩展事件总线上发出通知。和本扩展一起安装的网关（例如 `@gotgenes/pi-permission-system`）用这些通知把子代理里的 `ask` 决定升级到父会话，而不是在子会话里直接拒绝。没装这类扩展时没有可见效果；pi 没有事件总线时跳过通知；如果父会话在子代理运行期间被替换、重载或销毁，pi 会拒绝通知，本扩展会给出警告并指出是哪个子代理。通知失败不会让启动或销毁失败。事件名和载荷由该外部集成文档定义，本仓库不改动。
 
-- `general-purpose` does general task execution using the configured session tools.
-- `Explore` is intended for read-only codebase exploration. Its prompt prohibits file changes, but it includes `bash` and is not sandboxed, so read-only behavior is not enforced. It loads extensions by default unless `loadExtensionsImplicitly` is off or its frontmatter filters them.
+## 内置子代理
 
-Built-ins can be overridden by custom agents or disabled from `/agents` > Settings > Agent behavior.
+- `general-purpose`：通用任务，使用会话配置的工具。
+- `Explore`：用于只读地探索代码。它的提示词禁止修改文件，但带有 `bash` 且没有沙箱，所以“只读”不是强制的。默认加载扩展，除非关闭了 `loadExtensionsImplicitly` 或 frontmatter 过滤了扩展。
 
-## Custom agents
+内置子代理可以被同名自定义子代理覆盖，也可以在 `/agents` > Settings > Agent behavior 里禁用。
 
-Drop a `.md` file into `.pi/agents/` (project), `.agents/agents/` (shared), or `~/.pi/agent/agents/` (global). Frontmatter configures the agent, and the body is its system prompt. On name clash the config priority is: project > shared > global > built-in. Type names resolve by exact match first, then by a unique case-insensitive match; ambiguous case variants require the exact name.
+## 自定义子代理
+
+把 `.md` 文件放进 `.pi/agents/`（项目）、`.agents/agents/`（共享）或 `~/.pi/agent/agents/`（全局）。frontmatter 是配置，正文是系统提示词。重名时优先级：项目 > 共享 > 全局 > 内置。类型名先精确匹配，再做唯一的大小写不敏感匹配；大小写有歧义时必须写准确名字。
 
 ```markdown
 ---
@@ -85,103 +107,103 @@ You are a security review specialist. Analyze code for vulnerabilities,
 focusing on injection flaws, auth bypasses, and insecure defaults.
 ```
 
-A minimal agent with just `name` and `description` gets the same default tools, extensions, and skills as `general-purpose`. Its name appears in the `Agent` tool's `agent` parameter description. Set restrictions only when you want them.
+只写 `name` 和 `description` 的子代理，拿到的工具、扩展和技能与 `general-purpose` 相同，名字会出现在 `Agent` 工具的 `agent` 参数说明里。需要限制时再加限制。
 
-### Frontmatter reference
+### frontmatter 字段
 
-| Field                   | Type                            | Default                                                     | Description                                                                                                                                                                                                                                               |
-| ----------------------- | ------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name`                  | string                          | —                                                           | Agent type name. Must be unique; a file without it is skipped.                                                                                                                                                                                            |
-| `display_name`          | string                          | `name`                                                      | Label in the UI.                                                                                                                                                                                                                                          |
-| `color`                 | string                          | none                                                        | Agent color for icon tinting. Named colors: `red`, `blue`, `green`, `yellow`, `purple`, `orange`, `pink`, `cyan`. Palette aliases: `amber`, `teal`, `indigo`, `gold`, `violet`, `rose`, `lime`, `gray`, `slate`, `navy`, etc. Also accepts `#RRGGBB` hex. |
-| `description`           | string                          | `""`                                                        | One-sentence description.                                                                                                                                                                                                                                 |
-| `tools`                 | list or comma-separated string  | pi's `defaultTools`; none if implicit tools are off         | Tool allowlist, an empty list gives the agent no tools. Mutually exclusive with `exclude_tools`.                                                                                                                                                          |
-| `exclude_tools`         | list or comma-separated string  | none                                                        | Tool blacklist. Mutually exclusive with `tools`.                                                                                                                                                                                                          |
-| `extensions`            | `true` \| `string[]` \| `false` | `true`                                                      | Which extensions load, including their tools, hooks, and commands. The `tools` field separately controls tool access.                                                                                                                                     |
-| `exclude_extensions`    | `string[]`                      | none                                                        | Extension blacklist.                                                                                                                                                                                                                                      |
-| `skills`                | `true` \| `string[]` \| `false` | `true`                                                      | Skill whitelist (metadata-only in system prompt).                                                                                                                                                                                                         |
-| `preload_skills`        | `string[]` \| `false`           | `false`                                                     | Dump full SKILL.md content into the system prompt. Expensive.                                                                                                                                                                                             |
-| `model`                 | string                          | inherit parent                                              | `"provider/model-id"`. See [Model resolution](#model-resolution).                                                                                                                                                                                         |
-| `thinking`              | string                          | see [Thinking level resolution](#thinking-level-resolution) | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `parent` to follow the parent session.                                                                                                                                                      |
-| `max_turns`             | number                          | unlimited                                                   | Soft turn limit, then grace turns before hard abort.                                                                                                                                                                                                      |
-| `max_tokens`            | number                          | unlimited                                                   | Max output tokens per LLM response.                                                                                                                                                                                                                       |
-| `hidden`                | boolean                         | `false`                                                     | Hide from the `Agent` tool's agent-type list. Still callable by name.                                                                                                                                                                                     |
-| `output_transcript`     | boolean                         | inherit global                                              | Write streaming transcript to `/tmp/pi-agent-outputs/<agentId>.log` (frontmatter overrides).                                                                                                                                                              |
-| `include_context_files` | boolean                         | inherit global                                              | Include AGENTS.md files as `<project_context>` in the system prompt. `true` = load, `false` = none, unset = global "Include AGENTS.md" setting.                                                                                                           |
-| `include_system_prompt` | boolean                         | inherit global                                              | Include the parent's system prompt for this agent. `true` = inherit parent, `false` = replace mode, unset = global mode. When the global mode is `custom`, the custom prompt wins over `true`.                                                            |
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `name` | string | — | 类型名，必须唯一；没有它的文件会被跳过。 |
+| `display_name` | string | `name` | UI 里显示的名字。 |
+| `color` | string | 无 | 图标颜色。命名色：`red`、`blue`、`green`、`yellow`、`purple`、`orange`、`pink`、`cyan`；调色板别名：`amber`、`teal`、`indigo`、`gold`、`violet`、`rose`、`lime`、`gray`、`slate`、`navy` 等；也接受 `#RRGGBB`。 |
+| `description` | string | `""` | 一句话描述。 |
+| `tools` | 列表或逗号分隔字符串 | pi 的 `defaultTools`；隐式工具关闭时为空 | 工具白名单，空列表表示没有工具。与 `exclude_tools` 互斥。 |
+| `exclude_tools` | 列表或逗号分隔字符串 | 无 | 工具黑名单。与 `tools` 互斥。 |
+| `extensions` | `true` \| `string[]` \| `false` | `true` | 加载哪些扩展（包括它们的工具、钩子和命令）。工具能否使用另由 `tools` 决定。 |
+| `exclude_extensions` | `string[]` | 无 | 扩展黑名单。 |
+| `skills` | `true` \| `string[]` \| `false` | `true` | 技能白名单（系统提示词里只放元数据）。 |
+| `preload_skills` | `string[]` \| `false` | `false` | 把完整的 SKILL.md 写进系统提示词，开销大。 |
+| `model` | string | 继承父会话 | `"provider/model-id"`，见[模型解析](#模型解析)。 |
+| `thinking` | string | 见[思考级别解析](#思考级别解析) | `off`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，或 `parent`（跟随父会话）。 |
+| `max_turns` | number | 不限 | 软回合上限，之后还有宽限回合，再硬中止。 |
+| `max_tokens` | number | 不限 | 每次模型响应的最大输出 token。 |
+| `hidden` | boolean | `false` | 不出现在 `Agent` 工具的类型列表里，但仍可按名字调用。 |
+| `output_transcript` | boolean | 继承全局 | 把流式记录写到 `/tmp/pi-agent-outputs/<agentId>.log`（frontmatter 优先）。 |
+| `include_context_files` | boolean | 继承全局 | 把 AGENTS.md 作为 `<project_context>` 放进系统提示词。`true` 加载，`false` 不加载，不写则用全局的 “Include AGENTS.md” 设置。 |
+| `include_system_prompt` | boolean | 继承全局 | 是否继承父会话的系统提示词。`true` 继承，`false` 替换模式，不写则用全局模式。全局模式为 `custom` 时，自定义提示词优先于 `true`。 |
 
-When frontmatter omits `tools` and the agent type carries no explicit registered-tools set, `loadToolsImplicitly` (config, default ON) decides: ON delegates tool setup to pi, so your `defaultTools` setting applies exactly as in a normal session, and tools left inactive stay registered for dispatcher tools to call by name. OFF starts such agents with no tools. Explicit frontmatter always wins.
+frontmatter 没写 `tools`、且该类型没有显式的已注册工具集时，由配置 `loadToolsImplicitly`（默认开）决定：开启时交给 pi 处理，`defaultTools` 和普通会话一样生效，未激活的工具仍保持注册，供调度类工具按名字调用；关闭时这类子代理没有工具。显式 frontmatter 总是优先。
 
-`tools` and `exclude_tools` accept built-in names (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and extension tool names (`codemode`, `web_search`). Use `tavily/*` or `tavily/all` in either list to include or exclude all tools from that extension. Excluding tools doesn't prevent the extension from loading; use `exclude_extensions: [tavily]` to prevent loading.
+`tools` 和 `exclude_tools` 接受内置工具名（`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`）和扩展工具名（`codemode`、`web_search`）。用 `tavily/*` 或 `tavily/all` 表示某个扩展的全部工具。排除工具不会阻止扩展加载；要阻止加载用 `exclude_extensions: [tavily]`。
 
-`loadSkillsImplicitly`, `loadExtensionsImplicitly`, and `loadToolsImplicitly` (config, default ON) decide what an agent gets when frontmatter omits `skills`, `extensions`, or the tool fields. With implicit tools ON, pi's `defaultTools` setting applies; OFF starts agents with no tools. These toggles are independent: turn implicit extensions OFF separately to stop loading extensions, then opt in explicitly where needed.
+`loadSkillsImplicitly`、`loadExtensionsImplicitly`、`loadToolsImplicitly`（配置，默认开）分别决定 frontmatter 没写 `skills`、`extensions` 或工具字段时子代理拿到什么。三个开关互相独立：比如单独关掉隐式扩展来停止加载扩展，再在需要的子代理里显式开启。
 
-Built-in extensions: child sessions load pi's built-in codemode, tool-search, and mcp extensions (llama.cpp excluded), addressed by bare name (`codemode`) from `defaultTools`, settings `extensions`, and frontmatter, exactly as in a normal session. A user extension registering the same tool, command, or flag replaces the built-in.
+内置扩展：子会话会加载 pi 内置的 codemode、tool-search 和 mcp 扩展（不含 llama.cpp），在 `defaultTools`、设置里的 `extensions` 和 frontmatter 里用裸名（如 `codemode`）引用，和普通会话一样。用户扩展注册同名工具、命令或参数时，会替换内置的。
 
-Codemode in Subagents needs two things: the codemode extension loaded, and the codemode tool activated. With default settings one line does both, in `.pi/settings.json`:
+子代理里用 codemode 需要两件事：加载 codemode 扩展，并激活 codemode 工具。默认设置下，在 `.pi/settings.json` 里写一行即可：
 
 ```json
 { "defaultTools": ["+codemode"] }
 ```
 
-Every agent whose frontmatter omits `tools` then starts with codemode active, exactly like your main session. Agents with an explicit `tools` list ignore `defaultTools`: add `codemode` to that list to activate it. If `loadExtensionsImplicitly` is off, agents also need `extensions: codemode` in frontmatter to load the extension.
+之后 frontmatter 没写 `tools` 的子代理都会和主会话一样启用 codemode。显式写了 `tools` 的子代理会忽略 `defaultTools`，需要把 `codemode` 加进列表。如果关闭了 `loadExtensionsImplicitly`，还要在 frontmatter 里写 `extensions: codemode`。
 
-## Agent options
+## Agent 参数
 
-`Agent` accepts:
+`Agent` 接受：
 
-- `prompt` (required) is the task text.
-- `description` is a short label for the widget, it defaults to the prompt's first line.
-- `agent` is the agent type; defaults to `general-purpose`.
-- `run_in_background` makes the agent return immediately and notify the parent when complete.
-- `worktree_path` is a directory inside any git repository on disk. Relative paths resolve against the parent's working directory. See [Worktree paths and trust](#worktree-paths-and-trust).
+- `prompt`（必填）：任务内容。
+- `description`：widget 上的短标签，默认取 prompt 第一行。
+- `agent`：子代理类型，默认 `general-purpose`。
+- `run_in_background`：立即返回，完成后通知父会话。
+- `worktree_path`：磁盘上任意 git 仓库内的目录，相对路径以父会话工作目录为基准。见[工作树路径与信任](#工作树路径与信任)。
 
-`model`, `thinking`, `max_turns`, and `max_tokens` are injected from config and frontmatter, never passed by the LLM. Set them once and forget.
+`model`、`thinking`、`max_turns`、`max_tokens` 由配置和 frontmatter 注入，模型不能传。设置一次即可。
 
-Subagents cannot spawn further subagents.
+子代理不能再启动子代理。
 
-### Worktree paths and trust
+### 工作树路径与信任
 
-`worktree_path` accepts a path inside any git repository on disk: a linked worktree of the parent's repo, its main checkout, or a different repo entirely. Relative paths resolve against the parent's working directory. The subagent runs with that directory as its working directory.
+`worktree_path` 可以是父仓库的关联工作树、它的主检出，或者完全不同的仓库。子代理以该目录为工作目录运行。
 
-Cross-repo targets are gated by pi's existing trust framework. The target's saved trust decision (nearest ancestor wins) applies, and an undecided target falls back to the global `defaultProjectTrust` setting. Anything other than "always" means untrusted. An untrusted target still spawns, but its project resources (`.pi/` settings, extensions, skills, prompts, themes, system prompt files, `.agents/skills`) are ignored, its `.pi/agents` types are not discovered, the extension's project config (`.pi/subagents-lite.json`) is not loaded, and pi surfaces a warning. Same-repo paths are never gated. The `/agents` spawn wizard still lists same-repo worktrees only.
+跨仓库目标受 pi 现有信任机制约束：采用目标已保存的信任决定（最近的上级目录优先），未决定时采用全局 `defaultProjectTrust`，除 “always” 以外都视为不信任。不受信任的目标仍会启动，但会忽略它的项目资源（`.pi/` 设置、扩展、技能、提示词、主题、系统提示词文件、`.agents/skills`），不发现它的 `.pi/agents` 类型，不加载它的 `.pi/subagents-lite.json`，并由 pi 给出警告。同仓库路径不受限制。`/agents` 的启动向导仍只列出同仓库的工作树。
 
-## Model resolution
+## 模型解析
 
-Precedence, highest first:
+优先级从高到低：
 
-1. Session per-type override (`/agents` > Model settings)
-2. Session global default
-3. Config per-type override (`~/.pi/agent/subagents-lite.json`)
-4. Config global default
-5. Agent frontmatter `model`
-6. Parent model
+1. 会话内按类型覆盖（`/agents` > Model settings）
+2. 会话内全局默认
+3. 配置文件按类型覆盖（`~/.pi/agent/subagents-lite.json`）
+4. 配置文件全局默认
+5. frontmatter `model`
+6. 父会话模型
 
-## Thinking level resolution
+## 思考级别解析
 
-Precedence, highest first:
+优先级从高到低：
 
-1. Spawn choice (`/agents` spawn wizard)
-2. Agent frontmatter `thinking`
-3. pi's per-model level for the resolved model (`modelThinkingLevels`)
-4. `Subagent default thinking` (`defaultThinking`, project over global)
-5. pi's own default (`defaultThinkingLevel`, else `medium`)
+1. 启动时的选择（`/agents` 启动向导）
+2. frontmatter `thinking`
+3. pi 对所解析模型的单独设置（`modelThinkingLevels`）
+4. 子代理默认思考级别（`defaultThinking`，项目优先于全局）
+5. pi 自身默认（`defaultThinkingLevel`，否则 `medium`）
 
-Then clamped to the resolved model's supported levels; non-reasoning models support only `off`.
+最后按模型支持的级别裁剪；不支持推理的模型只有 `off`。
 
-Agent frontmatter `thinking`, or `Subagent default thinking` can be set to `parent` to follow the parent session's current level. Resolution happens before the Subagent starts, so a run always reports a real level, and a `parent` with no parent to read counts as unset.
+frontmatter `thinking` 或子代理默认思考级别可以设为 `parent`，跟随父会话当前级别。解析发生在子代理启动前，所以每次运行都报告真实级别；没有父会话可读时，`parent` 视为未设置。
 
-Model settings and the spawn wizard print the deciding source in brackets: `high (frontmatter)`, `medium (pi default)`, `minimal (parent)`. `pi default` means nothing is configured here, so pi's own setting decides; in the spawn wizard that choice sends no level at all.
+模型设置和启动向导会在括号里注明决定来源，例如 `high (frontmatter)`、`medium (pi default)`、`minimal (parent)`。`pi default` 表示这里没有配置，由 pi 自己决定；在启动向导里选它则不发送任何级别。
 
-## Concurrency
+## 并发
 
-`concurrency` caps parallel agents. A per-model limit overrides a per-provider limit, which overrides the `default` per-model limit. Excess spawns queue until a slot frees.
+`concurrency` 限制并行子代理数量，默认每个模型 4 个。按模型的限制优先于按 provider 的限制，后者优先于 `default`。超出的启动请求排队等待。
 
-## Settings
+## 设置
 
-Global settings live in `~/.pi/agent/subagents-lite.json`, managed via `/agents` or edited directly.
+全局设置在 `~/.pi/agent/subagents-lite.json`，可通过 `/agents` 管理，也可以直接编辑。
 
-`/agents` settings cover model overrides, concurrency, agent behavior (turn limits, background delivery, watchdogs, transcripts, and tool-schema options), system prompt mode, and widget layout and display.
+`/agents` 的设置包括模型覆盖、并发、子代理行为（回合限制、后台投递、看门狗、记录、工具 schema、Parent messages）、系统提示词模式，以及 widget 的布局和显示。
 
 ```
 Settings
@@ -193,35 +215,43 @@ Settings
   Widget                          Configure layout, display, and stats
 ```
 
-Use `/agents` > Settings > Widget to configure layout, model/thinking labels, and displayed stats.
+### 项目级配置
 
-### Project-level config
+项目可以提交自己的 `.pi/subagents-lite.json`（与全局文件同名）。它是覆盖层，只能包含模型和并发设置（`agent.default`、按类型的模型覆盖、`concurrency`），写了的键覆盖全局值。其他设置（widget、看门狗、启动默认值）始终来自全局文件。每个键的生效值：会话覆盖 > 项目文件 > 全局文件 > 内置默认。
 
-A project can commit its own defaults as `.pi/subagents-lite.json` (same file name as the global one). This is an override layer, not a full config. It may contain only model and concurrency settings (`agent.default`, per-type model overrides, `concurrency`), and each key it sets overrides the global file's value. Every other setting (widget, watchdog, spawn defaults) always comes from the global file. The effective value of each key resolves as: session override > project file > global file > built-in default.
+### 系统提示词模式
 
-### System prompt mode
+`systemPromptMode`（默认 `replace`）：
 
-`systemPromptMode` (default `replace`):
+- `replace`：极简通用提示词加子代理自己的指令。成本最低，隔离最好。
+- `inherit`：父会话的系统提示词加子代理指令。
+- `custom`：`~/.pi/agent/subagents-lite-prompt.md` 加子代理指令。
 
-- `replace` uses a minimal generic prompt plus the agent's instructions. Lowest cost and most isolated.
-- `inherit` uses the parent's system prompt plus the agent's instructions.
-- `custom` uses `~/.pi/agent/subagents-lite-prompt.md` plus the agent's instructions.
+`includeContextFiles` 为 `true`（默认）时，AGENTS.md 作为共享上下文放在子代理指令之前，有利于 KV 缓存前缀命中。
 
-When `includeContextFiles` is `true` (default), AGENTS.md files load as shared context before agent instructions, which improves KV cache prefix hits.
+### 看门狗
 
-### Watchdog
+看门狗会停止卡住的子代理。两项检查互相独立，默认都是 45 分钟，设为 `0` 关闭：
 
-The watchdog stops agents that hang. Two independent checks, both default 45 minutes, `0` disables:
+- `toolTimeoutMinutes`：单次工具调用超过这个时长就停止子代理。
+- `idleTimeoutMinutes`：这么久没有任何活动（工具事件或流式回复文本）就停止子代理。
 
-- `toolTimeoutMinutes`: a single tool call running longer than this stops the agent.
-- `idleTimeoutMinutes`: no activity (tool events or streamed response text) for this long stops the agent.
+看门狗停止子代理时会通知主会话。
 
-The watchdog notifies the main session on a kill so it can act accordingly.
+### 输出记录
 
-### Output transcripts
+输出记录默认关闭。全局用配置 `outputTranscript` 开启，单个子代理用 frontmatter `output_transcript` 开启。开启后记录流式写入 `/tmp/pi-agent-outputs/<agentId>.log`（只追加，可 `tail -f`），widget 会显示对应的 `tail -f` 命令。会话重载（`/reload`、扩展重载）后文件仍保留，但重载会停止运行中的子代理。
 
-Output transcripts are disabled by default. Enable them globally via the `outputTranscript` config option or per-agent via the `output_transcript` frontmatter field. When enabled, the transcript streams to `/tmp/pi-agent-outputs/<agentId>.log` (append-only, `tail -f` friendly) and the widget shows a `tail -f` command for the file. The files persist across session reloads (`/reload`, extension reload), even though reload stops running agents.
+## 开发
 
-## License
+```bash
+npm ci
+./node_modules/.bin/vp check      # 格式、lint、类型检查
+./node_modules/.bin/vp test run   # 全部测试
+```
 
-MIT
+开发约定见 [AGENTS.md](AGENTS.md)：每次提交前跑 `vp check` 和 `vp test run`，行为或文档变更要写进 `CHANGELOG.md` 的 Unreleased。
+
+## 许可证
+
+MIT。原作者 AlexParamonov，二开部分同样以 MIT 发布。

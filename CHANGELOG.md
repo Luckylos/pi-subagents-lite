@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Rewrote `README.md` in Chinese for this fork: what differs from upstream, how to install from git instead of npm, and the full reference.
 - Moved the per-prompt run policy (turn limits, abort forwarding, response collection, model-error classification) from `agent-runner.ts` into `session-run.ts`, typed against a narrow `RunSession` surface. Turn-limit, result (response text, model error, abort forwarding), and event-forwarding tests now drive it with an in-memory session instead of the whole-SDK mock; `runAgent` and `continueAgentSession` keep a few wiring tests on the mock.
 - Documented the **Child session**, **Subagent run**, and **Child-session announcement** terms in `CONTEXT.md`, separating a single run from the session that can outlive it, and corrected the **MessageAgent** entry to run child-ward.
 - Spawn requests from the Agent tool, the restart path, and the menu wizard now share one pure `prepareSpawnIntent()` in `src/spawn/spawn-preparation.ts`; spawn behavior is unchanged.
