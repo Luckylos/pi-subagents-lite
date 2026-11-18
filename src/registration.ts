@@ -91,13 +91,14 @@ export function registerAgentTool(pi: ExtensionAPI, owner: ExtensionOwner): void
     ) => {
       const isError = context?.isError ?? false;
       const store = getStore(owner);
-      const agentId = result.details?.agentId as string | undefined;
-      // Register invalidate callback so onComplete can trigger a re-render
+      const backgroundId = result.details?.agentId as string | undefined;
+      // The call renderer already resolves foreground rows by toolCallId. Their
+      // historical result can be returned before the stopped run settles.
+      const agentId = backgroundId ?? (context?.state?.agentId as string | undefined);
       if (agentId && context?.invalidate) {
         registerAgentInvalidation(owner, agentId, context.invalidate);
-        // Store agentId and background flag in context state so call renderer can access it on re-render
-        if (context.state) {
-          context.state.agentId = agentId;
+        if (backgroundId && context.state) {
+          context.state.agentId = backgroundId;
           context.state.isBackground = true;
         }
       }

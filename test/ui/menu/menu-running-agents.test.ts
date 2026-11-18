@@ -10,9 +10,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test"
 import { mockModules, resetConfig } from "../../menu-mock-setup.js";
 import { createMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
 import { asAgentSession, selectListView } from "../../pi-boundaries.js";
-import type { AgentRecord, AgentDisplayInfo, AgentExecutionState, AgentLifecycle } from "../../../src/types.js";
+import type {
+  AgentRecord,
+  AgentDisplayInfo,
+  AgentExecutionState,
+  AgentLifecycle,
+  SubagentRun,
+} from "../../../src/types.js";
 import type { Theme } from "../../../src/ui/types.js";
-import type { Component, Input, SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
+import type { Component, SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
 
 /** The mocked SelectList surface the tests drive: the items the menu built
  * plus the selection state the navigation tests step by hand. */
@@ -42,6 +48,9 @@ vi.mock("@earendil-works/pi-tui", () => ({
       this.maxVisible = maxVisible;
       selectListCalls.push(this);
     }
+    setSelectedIndex(index: number) {
+      this.selectedIndex = index;
+    }
     render() {
       return [];
     }
@@ -54,8 +63,13 @@ vi.mock("@earendil-works/pi-tui", () => ({
     setValue(v: string) {
       this.value = v;
     }
-    getValue() {
-      return this.value;
+    handleInput(data: string) {
+      if (data === "\r") this.onSubmit?.(this.value);
+      else if (data === "\x1b") this.onEscape?.();
+      else this.value += data;
+    }
+    render() {
+      return [`> ${this.value}`];
     }
   },
   matchesKey: vi.fn((data: string, key: string) => {
@@ -77,6 +91,7 @@ vi.mock("@earendil-works/pi-tui", () => ({
 
 // Import AFTER mock setup
 import { showRunningAgentsMenu, buildAgentActionsList } from "../../../src/ui/menu/menu-running-agents.js";
+import { getCoordinator } from "../../../src/shell.js";
 
 /** Nested-partial overrides the record factory merges over its base record. */
 interface RecordOverrides {
@@ -109,13 +124,28 @@ function makeRecord(overrides: RecordOverrides = {}): AgentRecord {
       compactionCount: 0,
     },
   };
-  return {
+  const record = {
     ...base,
     ...overrides,
     display: { ...base.display, ...overrides.display },
     lifecycle: { ...base.lifecycle, ...overrides.lifecycle },
     execution: { ...base.execution, ...overrides.execution },
   };
+  const { status, startedAt, completedAt } = record.lifecycle;
+  if (status !== "running" && status !== "queued") {
+    const run: SubagentRun = {
+      id: `${record.id}-run-1`,
+      agentId: record.id,
+      sequence: 1,
+      phase: "settled",
+      acceptedAt: startedAt,
+      startedAt,
+      completion: Promise.resolve(),
+      outcome: { status, completedAt: completedAt ?? startedAt, result: record.result, error: record.error },
+    };
+    mockModules.mockManager.getRuns.mockReturnValue([run]);
+  }
+  return record;
 }
 const noopTheme: Theme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t };
 
@@ -125,10 +155,23 @@ function asComponent(component: unknown): Component {
   return component as Component;
 }
 
-/** The steer branch hands the delegator a pi-tui Input; assert it at the
- * setActive boundary, where Component is the wider declared type. */
-function asInput(component: Component): Input {
-  return component as Input;
+function registerTargets(...records: AgentRecord[]): void {
+  const existing = new Map(records.map((record) => [record.id, record]));
+  mockModules.mockManager.getRecord.mockImplementation((id: string) => existing.get(id));
+  mockModules.mockManager.getRuns.mockImplementation((id) => {
+    const record = existing.get(id);
+    if (!record) return [];
+    return [
+      {
+        id: `${id}-run-1`,
+        agentId: id,
+        sequence: 1,
+        acceptedAt: record.lifecycle.startedAt,
+        completion: Promise.resolve(),
+        phase: record.lifecycle.phase ?? (record.lifecycle.status === "queued" ? "queued" : "running"),
+      },
+    ];
+  });
 }
 
 afterEach(() => resetConfig());
@@ -172,6 +215,20 @@ describe("showRunningAgentsMenu", () => {
     expect(agentItems.map((i) => i.value)).toEqual(["agent-1", "agent-2"]);
   });
 
+  it("sanitizes agent labels without altering selection values", async () => {
+    const type = "A\u009b?1049hB\x1b]0;hidden\x07C";
+    const record = makeRecord({ display: { type, description: type } });
+    mockModules.mockManager.listAgents.mockReturnValue([record]);
+    await showRunningAgentsMenu(owner, createMockCtx());
+    const item = selectListCalls[0].items[0];
+    expect(item.value).toBe(record.id);
+    expect(item.label).toContain("ABC");
+    expect(item.label).not.toContain("\x1b");
+    expect(item.label).not.toContain("\u009b");
+    expect(item.label).not.toContain("hidden");
+    expect(record.display.type).toBe(type);
+  });
+
   it("includes agent type in label", async () => {
     mockModules.mockManager.listAgents.mockReturnValue([
       makeRecord({ id: "agent-1", display: { type: "general-purpose", description: "Test" } }),
@@ -186,6 +243,54 @@ describe("buildAgentActionsList — actions submenu", () => {
   beforeEach(() => {
     selectListCalls = [];
     vi.clearAllMocks();
+  });
+
+  it("builds the complete result, history, and run action item arrays without separators", async () => {
+    const record = makeRecord();
+    const first = mockModules.mockManager.getRuns(record.id)[0];
+    const second: SubagentRun = {
+      ...first,
+      id: "separate-run-id",
+      sequence: 2,
+      outcome: { status: "error", completedAt: first.startedAt! + 12_000, error: "error" },
+    };
+    mockModules.mockManager.getRuns.mockReturnValue([first, second]);
+    const coordinator = getCoordinator(owner)!;
+    vi.mocked(coordinator.getCompletionNotification).mockReturnValue({
+      status: "submitted",
+      canRetry: true,
+      notificationId: "tracked",
+    });
+    const ctx = createMockCtx();
+    const actions = buildAgentActionsList(
+      owner,
+      ctx,
+      record,
+      noopTheme,
+      () => {},
+      () => {},
+      () => {},
+    );
+    const items = selectListView(actions).items;
+    expect(items).toEqual([
+      { value: "view-result", label: "View result · Run 1" },
+      { value: "view-error", label: "View error · Run 2" },
+      { value: "run-history", label: "Run history (2)" },
+      { value: "clear", label: "Clear" },
+    ]);
+    await actions.onSelect!(items[2]);
+    const history = selectListCalls.at(-1)!;
+    expect(history.items).toEqual([
+      { value: second.id, label: "Run 2 · error · 12s" },
+      { value: first.id, label: "Run 1 · completed · 40s" },
+    ]);
+    history.onSelect!(history.items[0]);
+    expect(selectListCalls.at(-1)?.items).toEqual([
+      { value: "view-result", label: "View result" },
+      { value: "view-error", label: "View error" },
+      { value: "retry", label: "Retry completion notification" },
+    ]);
+    expect(selectListCalls.flatMap((call) => call.items).filter(({ value }) => value === "__sep__")).toHaveLength(0);
   });
 
   it("shows View result action for completed agent with result", () => {
@@ -406,6 +511,25 @@ describe("showTextViewer — component behavior", () => {
     return { component, done: doneFn };
   }
 
+  it.each(["result", "error"] as const)(
+    "sanitizes the whole %s before splitting lines and preserves record data",
+    async (kind) => {
+      const raw = "before\x1b]0;hidden\nsecret\x1b\\after\r\nsecond\rthird\x1b[?1049h\u202e";
+      const record = makeRecord({ [kind]: raw });
+      const { component } = await getComponent(record, kind, raw);
+      const lines = component.render(100);
+      expect(lines.join("\n")).not.toContain("\x1b");
+      expect(lines.join("\n")).not.toContain("\r");
+      expect(lines.join("\n")).not.toContain("\u202e");
+      expect(lines.join("\n")).not.toContain("hidden");
+      expect(lines.join("\n")).not.toContain("secret");
+      expect(lines[3]).toContain("beforeafter");
+      expect(lines[4]).toContain("second");
+      expect(lines[5]).toContain("third");
+      expect(record[kind]).toBe(raw);
+    },
+  );
+
   it("renders border frame with title", async () => {
     const record = makeRecord({ result: "hello world\nline 2" });
     const { component } = await getComponent(record, "result", "hello world\nline 2");
@@ -514,120 +638,67 @@ describe("buildAgentActionsList — stop/steer callback routing", () => {
     vi.clearAllMocks();
   });
 
-  it("calls manager.abort on stop selection", async () => {
+  function setup() {
     const record = makeRecord({
       lifecycle: { status: "running", startedAt: Date.now() - 20000 },
       execution: { session: makeMockSession([]) },
       result: "",
     });
+    registerTargets(record);
     const ctx = createMockCtx();
     const onClose = vi.fn();
-    mockModules.mockManager.abort.mockReset();
+    const setActive = vi.fn<(c: Component) => void>();
+    const list = buildAgentActionsList(owner, ctx, record, noopTheme, () => {}, setActive, onClose);
+    return { record, ctx, list, onClose, setActive };
+  }
 
-    const list = buildAgentActionsList(
-      owner,
-      ctx,
-      record,
-      noopTheme,
-      () => {},
-      () => {},
-      onClose,
-    );
+  it("calls manager.abort on stop selection and closes on acceptance", async () => {
+    const { record, ctx, list, onClose } = setup();
+    mockModules.mockManager.abort.mockImplementation(() => {
+      record.lifecycle.phase = "stopping";
+      return true;
+    });
     await list.onSelect!({ value: "stop", label: "Stop" });
-
-    expect(mockModules.mockManager.abort).toHaveBeenCalledWith("test-id-123", "user");
+    expect(mockModules.mockManager.abort).toHaveBeenCalledWith(record.id, "user");
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Stop requested for test-id- — stopping.", "info");
     expect(onClose).toHaveBeenCalled();
   });
 
-  it("opens steer input on steer selection", async () => {
-    const record = makeRecord({
-      lifecycle: { status: "running", startedAt: Date.now() - 20000 },
-      execution: { session: makeMockSession([]) },
-      result: "",
-    });
-    const ctx = createMockCtx();
-    let capturedInput: Input | null = null;
-    const setActive = vi.fn((c: Component) => {
-      capturedInput = asInput(c);
-    });
-
-    const list = buildAgentActionsList(
-      owner,
-      ctx,
-      record,
-      noopTheme,
-      () => {},
-      setActive,
-      () => {},
-    );
-    await list.onSelect!({ value: "steer", label: "Steer" });
-
-    expect(setActive).toHaveBeenCalled();
-    expect(capturedInput).toBeTruthy();
-    expect(capturedInput!.onSubmit).toBeDefined();
-    expect(capturedInput!.onEscape).toBeDefined();
+  it("keeps the operation open when Stop is refused", async () => {
+    const { ctx, list, onClose } = setup();
+    mockModules.mockManager.abort.mockReturnValue(false);
+    await list.onSelect!({ value: "stop", label: "Stop" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Stop not accepted: The manager refused the request.", "warning");
+    expect(onClose).not.toHaveBeenCalled();
   });
 
-  it("routes steer message to manager.steer on submit", async () => {
-    const record = makeRecord({
-      lifecycle: { status: "running", startedAt: Date.now() - 20000 },
-      execution: { session: makeMockSession([]) },
-      result: "",
+  it("opens the inline composer and returns to actions on acceptance", async () => {
+    const { record, list, setActive } = setup();
+    mockModules.mockManager.submitMessage.mockResolvedValue({
+      accepted: true,
+      agentId: record.id,
+      runId: `${record.id}-run-1`,
+      delivery: "steer",
     });
-    const ctx = createMockCtx();
-    let capturedInput: Input | null = null;
-    const setActive = vi.fn((c: Component) => {
-      capturedInput = asInput(c);
-    });
-    mockModules.mockManager.steer.mockResolvedValue(true);
-
-    const list = buildAgentActionsList(
-      owner,
-      ctx,
-      record,
-      noopTheme,
-      () => {},
-      setActive,
-      () => {},
-    );
     await list.onSelect!({ value: "steer", label: "Steer" });
-
-    // Submit a steer message
-    await capturedInput!.onSubmit!("please do this");
-
-    expect(mockModules.mockManager.steer).toHaveBeenCalledWith("test-id-123", "please do this");
-    // After submit, should switch back to the list
-    expect(setActive).toHaveBeenCalledTimes(2); // steer input + back to list
+    const composer = setActive.mock.calls[0][0];
+    expect(composer.render(80)).toEqual(["> "]);
+    composer.handleInput!("please do this");
+    composer.handleInput!("\r");
+    await Promise.resolve();
+    expect(mockModules.mockManager.submitMessage).toHaveBeenCalledWith(record.id, "please do this");
+    expect(setActive).toHaveBeenLastCalledWith(list);
   });
 
-  it("cancels steer on escape", async () => {
-    const record = makeRecord({
-      lifecycle: { status: "running", startedAt: Date.now() - 20000 },
-      execution: { session: makeMockSession([]) },
-      result: "",
-    });
-    const ctx = createMockCtx();
-    let capturedInput: Input | null = null;
-    const setActive = vi.fn((c: Component) => {
-      capturedInput = asInput(c);
-    });
-
-    const list = buildAgentActionsList(
-      owner,
-      ctx,
-      record,
-      noopTheme,
-      () => {},
-      setActive,
-      () => {},
-    );
+  it("cancels steer on Escape and restores the draft in the same run", async () => {
+    const { list, setActive } = setup();
     await list.onSelect!({ value: "steer", label: "Steer" });
-
-    // Cancel steer
-    capturedInput!.onEscape!();
-
-    // setActive should have been called twice: once with Input, once with list
-    expect(setActive).toHaveBeenCalledTimes(2);
+    const composer = setActive.mock.calls[0][0];
+    composer.handleInput!("  unfinished  ");
+    composer.handleInput!("\x1b");
+    expect(setActive).toHaveBeenLastCalledWith(list);
+    await list.onSelect!({ value: "steer", label: "Steer" });
+    expect(setActive.mock.lastCall?.[0].render(80)).toEqual([">   unfinished  "]);
   });
 });
 
@@ -1035,11 +1106,14 @@ describe("clear actions for finished agents", () => {
   });
 
   it("Stop all running row stops active records and leaves terminal ones", async () => {
-    mockModules.mockManager.listAgents.mockReturnValue([
+    const agents = [
       makeRecord({ id: "agent-1" }), // completed
       makeRecord({ id: "agent-2", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-3", lifecycle: { status: "queued", startedAt: Date.now() - 20000 }, result: "" }),
-    ]);
+    ];
+    registerTargets(...agents);
+    mockModules.mockManager.abort.mockReturnValue(true);
+    mockModules.mockManager.listAgents.mockReturnValue(agents);
     const ctx = createMockCtx();
     await showRunningAgentsMenu(owner, ctx);
 

@@ -12,6 +12,7 @@ import type { ExtensionOwner } from "../shell.ts";
  * via getStore(owner) and disable agent-specific coloring globally.
  */
 
+import { plainText } from "./sanitize.ts";
 import { agentColorAnsi } from "../agent-color.ts";
 import type { SubagentType, AgentInvocation } from "../agents/types.ts";
 import type { AgentRecord, AgentStatus } from "../types.ts";
@@ -180,7 +181,7 @@ export function buildStatsParts(
 /** Get display name for any agent type (built-in or custom). */
 export function getDisplayName(owner: ExtensionOwner, type: SubagentType): string {
   const config = owner.registry.getAgentConfig(type);
-  return config?.displayName ?? config?.name ?? "Agent";
+  return plainText(config?.displayName ?? config?.name ?? "Agent");
 }
 
 /** Colored bullet prefix for agent names in pickers/menus.
@@ -194,7 +195,8 @@ export function agentBulletPrefix(owner: ExtensionOwner, agentType: string | und
 /** Wrap text with agent color when showAgentColors is ON and agent has a configured color.
  * Returns plain text when colors are off, agent has no color, or agentType is undefined. */
 export function agentColoredText(owner: ExtensionOwner, text: string, agentType: string | undefined): string {
-  return applyAgentColor(owner, text, agentColorAnsi(owner, agentType), () => text);
+  const display = plainText(text);
+  return applyAgentColor(owner, display, agentColorAnsi(owner, agentType), () => display);
 }
 
 /** Tool name to human-readable action for activity descriptions. */
@@ -212,7 +214,7 @@ export function describeActivity(activeTools: Map<string, string>, responseText?
   if (activeTools.size > 0) {
     const groups = new Map<string, number>();
     for (const toolName of activeTools.values()) {
-      const action = TOOL_DISPLAY[toolName] ?? toolName;
+      const action = Object.hasOwn(TOOL_DISPLAY, toolName) ? TOOL_DISPLAY[toolName] : plainText(toolName);
       groups.set(action, (groups.get(action) ?? 0) + 1);
     }
 
@@ -229,7 +231,7 @@ export function describeActivity(activeTools: Map<string, string>, responseText?
 
   // No tools active — show first line of response text if available
   if (responseText && responseText.trim().length > 0) {
-    const firstLine = responseText.trim().split("\n")[0] ?? "";
+    const firstLine = plainText(responseText).trim().split("\n")[0] ?? "";
     return firstLine;
   }
 
@@ -249,7 +251,7 @@ export function fgPreservingNestedStyles(theme: Theme, color: string, text: stri
 export function buildInvocationTags(invocation: AgentInvocation | undefined): string[] {
   const tags: string[] = [];
   if (!invocation) return [];
-  if (invocation.thinkingLevel) tags.push(`thinking: ${invocation.thinkingLevel}`);
+  if (invocation.thinkingLevel) tags.push(`thinking: ${plainText(invocation.thinkingLevel)}`);
   if (invocation.runInBackground) tags.push("background");
   if (invocation.maxTurns != null) tags.push(`max turns: ${invocation.maxTurns}`);
   return tags;
@@ -266,8 +268,8 @@ export function buildModelThinkingParts(
 ): string[] {
   const showModel = visible?.showModel !== false;
   const showThinking = visible?.showThinking !== false;
-  const model = showModel ? modelName?.trim() : undefined;
-  const thinking = showThinking ? thinkingLevel?.trim() : undefined;
+  const model = showModel && modelName ? plainText(modelName).trim() : undefined;
+  const thinking = showThinking && thinkingLevel ? plainText(thinkingLevel).trim() : undefined;
   return [model, thinking].filter((p): p is string => p !== undefined && p.length > 0);
 }
 
@@ -291,14 +293,15 @@ export function resolveModelLabel(
   labelId: string | undefined,
 ): string | undefined {
   const label = style === "name" ? labelName : labelId;
-  return label?.trim() || undefined;
+  return label ? plainText(label).trim() || undefined : undefined;
 }
 
 /** Resolve model label from an AgentRecord, preferring session model over invocation fallback. */
 export function resolveAgentModelLabel(a: AgentRecord, style: "id" | "name"): string | undefined {
   const model = a.execution.session?.model;
   if (model) return resolveModelLabel(style, model.name, model.id);
-  return a.display.invocation?.modelName?.trim() || undefined;
+  const fallback = a.display.invocation?.modelName;
+  return fallback ? plainText(fallback).trim() || undefined : undefined;
 }
 
 export function resolveAgentModelThinking(a: AgentRecord, style: "id" | "name"): { model?: string; thinking?: string } {
@@ -328,9 +331,9 @@ export function buildMetadataLineParts(
     }
   }
 
-  if (a.display.worktreeLabel) parts.push(`@${a.display.worktreeLabel}`);
+  if (a.display.worktreeLabel) parts.push(`@${plainText(a.display.worktreeLabel)}`);
 
-  if (a.display.outputFile) parts.push(`tail -f ${a.display.outputFile}`);
+  if (a.display.outputFile) parts.push(`tail -f ${plainText(a.display.outputFile)}`);
 
   return parts;
 }

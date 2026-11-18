@@ -39,6 +39,53 @@ export interface RunTunables {
   graceTurns?: number;
 }
 
+export type SubagentRunPhase = "queued" | "running" | "stopping" | "settling" | "settled";
+export type SubagentRunStatus = Exclude<AgentStatus, "queued" | "running">;
+
+/** Immutable terminal snapshot retained independently of the current record. */
+export interface SubagentRunOutcome {
+  readonly status: SubagentRunStatus;
+  readonly result?: string;
+  readonly error?: string;
+  readonly completedAt: number;
+  readonly stoppedBy?: StopInitiator;
+  readonly stopDetail?: Readonly<WatchdogStopDetail>;
+}
+
+/** One accepted initial request or continuation; no transcript duplication. */
+export interface SubagentRun {
+  readonly id: string;
+  readonly agentId: string;
+  readonly sequence: number;
+  readonly phase: SubagentRunPhase;
+  readonly acceptedAt: number;
+  readonly startedAt?: number;
+  readonly stopRequestedAt?: number;
+  readonly outcome?: SubagentRunOutcome;
+  /** Resolves only after execution and run-owned cleanup have actually finished. */
+  readonly completion: Promise<void>;
+}
+
+export type AgentSubmissionRejection =
+  | "not_found"
+  | "empty_message"
+  | "queued"
+  | "stopping"
+  | "settling"
+  | "unavailable"
+  | "capacity"
+  | "delivery_failed";
+
+/** Acceptance is admission, not confirmation that the model consumed a message. */
+export type AgentSubmissionResult =
+  | {
+      readonly accepted: true;
+      readonly agentId: string;
+      readonly runId: string;
+      readonly delivery: "steer" | "pending_steer" | "continuation";
+    }
+  | { readonly accepted: false; readonly reason: AgentSubmissionRejection; readonly message: string };
+
 export interface AgentRecord {
   id: string;
   result?: string;
@@ -115,6 +162,8 @@ export type WatchdogStopDetail =
  */
 export interface AgentLifecycle {
   status: AgentStatus;
+  /** Current run phase; manager-owned records always provide it. */
+  phase?: SubagentRunPhase;
   startedAt: number;
   completedAt?: number;
   stoppedBy?: StopInitiator;
@@ -151,11 +200,13 @@ export interface AgentDisplayInfo {
  * Used by agent-manager (session lifecycle), tool-execution (steering, nudge).
  */
 export interface AgentExecutionState {
+  /** Current accepted run; legacy fields below project only this run. */
+  currentRunId?: string;
   session?: AgentSession;
   abortController?: AbortController;
   /**
-   * Completion gate, created at spawn, opened exactly once at the terminal
-   * transition; never the run's own promise.
+   * Current run's parent wait gate. Opens on Stop acceptance or settlement;
+   * distinct from the actual run execution and SubagentRun.completion.
    */
   promise?: Promise<string>;
   /** Steering messages queued before the session was ready. */

@@ -7,7 +7,13 @@ import type { AgentRecord, LiveView, ToolActivity } from "../types.ts";
 import type { AgentManager, SpawnOptions } from "../agents/agent-manager.ts";
 import { type SpawnIntent } from "./spawn-preparation.ts";
 export type { SpawnIntent } from "./spawn-preparation.ts";
-import { buildAgentDetails, formatResultContent } from "../agents/tool-execution.ts";
+import {
+  CompletionNotifications,
+  readParentSessionId,
+  type CompletionNotificationRetryResult,
+  type CompletionNotificationState,
+} from "./completion-notifications.ts";
+export type { CompletionNotificationRetryResult, CompletionNotificationState } from "./completion-notifications.ts";
 import { createParentMessageTool } from "../agents/parent-message.ts";
 
 /**
@@ -29,29 +35,34 @@ export interface SpawnResult {
   record: AgentRecord;
 }
 
-// --- Constants ---
-
-/** Batch delay for nudges — only emit one update per batch window (ms). */
-const NUDGE_DELAY_MS = 200;
-
-// --- SpawnCoordinator ---
-
 export class SpawnCoordinator {
-  /** Agent IDs spawned as background — the one-shot first-settlement nudge gate; also backs isBackground(). */
-  private backgroundAgentIds = new Set<string>();
-
-  /** Pending nudge agent IDs, batched within the delay window. */
-  private pendingNudges = new Set<string>();
-
-  private nudgeTimer: ReturnType<typeof setTimeout> | null = null;
-
-  /** Set during dispose to prevent nudge emission after session replacement. */
+  private readonly backgroundAgentIds = new Set<string>();
+  private readonly notifications: CompletionNotifications;
+  private readonly generation: number;
+  private readonly parentSessionId: string | undefined;
   private disposed = false;
 
   constructor(
     private owner: ExtensionOwner,
     private manager: AgentManager,
-  ) {}
+  ) {
+    this.generation = owner.generation;
+    this.parentSessionId = readParentSessionId(getSessionCtx(owner));
+    this.notifications = new CompletionNotifications(getPiInstance(owner), this.generation, this.parentSessionId, () =>
+      this.currentParent(),
+    );
+  }
+
+  private currentParent(): ExtensionContext | null {
+    if (
+      this.disposed ||
+      this.generation !== this.owner.generation ||
+      (this.owner.coordinator && this.owner.coordinator !== this)
+    )
+      return null;
+    const ctx = getSessionCtx(this.owner);
+    return this.parentSessionId && readParentSessionId(ctx) === this.parentSessionId ? ctx : null;
+  }
 
   /**
    * Spawn + wire tracking + (foreground) await.
@@ -95,6 +106,10 @@ export class SpawnCoordinator {
     // fallback reachable for any later nudge (continuations included).
     record.execution.liveView = liveView;
     record.execution.spawnCtx = ctx;
+    if (runInBackground) this.backgroundAgentIds.add(agentId);
+    // Already-aborted spawns can settle synchronously inside manager.spawn,
+    // before the background classification and fallback ctx are attached.
+    this.onAgentComplete(record);
 
     // Ensure widget timer is running so it displays the new agent
     // (menu path calls this explicitly, but tool path doesn't)
@@ -103,11 +118,7 @@ export class SpawnCoordinator {
       widget.ensureTimer();
     }
 
-    if (intent.runInBackground) {
-      this.backgroundAgentIds.add(agentId);
-    } else {
-      await record.execution.promise;
-    }
+    if (!runInBackground) await record.execution.promise;
 
     return { agentId, record };
   }
@@ -121,50 +132,40 @@ export class SpawnCoordinator {
     return this.backgroundAgentIds.has(agentId);
   }
 
-  /**
-   * Schedule a nudge for an agent.
-   * Batches with NUDGE_DELAY_MS window to coalesce rapid completions.
-   */
-  scheduleNudge(agentId: string): void {
-    if (this.disposed) return;
-    this.pendingNudges.add(agentId);
-
-    if (this.nudgeTimer) return;
-
-    this.nudgeTimer = setTimeout(() => {
-      this.nudgeTimer = null;
-      const batch = [...this.pendingNudges];
-      this.pendingNudges.clear();
-
-      for (const id of batch) {
-        this.emitIndividualNudge(id);
-      }
-    }, NUDGE_DELAY_MS);
+  /** Called synchronously on settlement, before another run can replace the record projection. */
+  onAgentComplete(record: AgentRecord): void {
+    if (!record.execution.spawnCtx || !this.currentParent()) return;
+    const run = this.manager.getRuns(record.id).at(-1);
+    if (run?.outcome) {
+      this.notifications.record(record, run, run.outcome, run.sequence > 1 || this.isBackground(record.id));
+    }
   }
 
-  /**
-   * Called by AgentManager's onComplete callback (wired at session_start).
-   * Owns the completion side-effects: nudge scheduling. The live view stays
-   * on the record — a settled agent can be continued and re-feeds it.
-   */
-  onAgentComplete(record: AgentRecord): void {
-    // One-shot background gate: the first settlement of a background agent
-    // nudges and consumes the set entry. Continuation settlements (ordinal
-    // >= 2, written by the manager before this callback fires) nudge for both
-    // spawn classes — the coordinator never observes steers itself.
-    if (this.backgroundAgentIds.delete(record.id) || record.execution.settlementCount >= 2) {
-      this.scheduleNudge(record.id);
-    }
+  getCompletionNotification(runId: string): CompletionNotificationState {
+    return this.notifications.state(runId);
+  }
+
+  observeCompletionNotifications(ctx: ExtensionContext): void {
+    this.notifications.observe(ctx);
+  }
+
+  retryCompletionNotification(
+    runId: string,
+    notificationId: string,
+    ctx: ExtensionContext,
+  ): CompletionNotificationRetryResult {
+    return this.notifications.retry(runId, notificationId, ctx);
+  }
+
+  onAgentClear(agentId: string): void {
+    this.backgroundAgentIds.delete(agentId);
+    this.notifications.clearAgent(agentId);
   }
 
   dispose(): void {
-    if (this.nudgeTimer) {
-      clearTimeout(this.nudgeTimer);
-      this.nudgeTimer = null;
-    }
-    this.pendingNudges.clear();
-    this.backgroundAgentIds.clear();
     this.disposed = true;
+    this.notifications.dispose();
+    this.backgroundAgentIds.clear();
   }
 
   // ── Private ──
@@ -196,12 +197,14 @@ export class SpawnCoordinator {
    * back to a UI toast so the Subagent learns it was not delivered.
    */
   deliverParentMessage(agentId: string, text: string): boolean {
-    if (this.disposed) return false;
+    const ctx = this.currentParent();
+    if (!ctx) return false;
     const record = this.manager.getRecord(agentId);
     if (!record) return false;
 
     try {
-      const parentIdle = getSessionCtx(this.owner)?.isIdle?.() ?? true;
+      const parentIdle = ctx.isIdle();
+      if (!this.currentParent()) return false;
       getPiInstance(this.owner).sendMessage(
         {
           customType: "subagent-message",
@@ -214,56 +217,6 @@ export class SpawnCoordinator {
       return true;
     } catch {
       return false;
-    }
-  }
-
-  private emitIndividualNudge(agentId: string): void {
-    // Skip if disposed — prevents stale pi usage after session replacement
-    if (this.disposed) return;
-
-    // This coordinator can deliver only through its factory's API.
-    const pi = getPiInstance(this.owner);
-    if (!pi) return;
-
-    const record = this.manager.getRecord(agentId);
-    if (!record) return;
-
-    const details = buildAgentDetails(record, {
-      includeStats: true,
-      includeStatus: true,
-    });
-
-    try {
-      // Pick delivery mode based on parent session state:
-      // - steer: queues while running, delivers before next LLM call
-      // - followUp: waits for agent to finish, then delivers
-      const ctx = getSessionCtx(this.owner);
-      const parentIdle = ctx?.isIdle?.() ?? true;
-      const deliverAs = parentIdle ? "followUp" : "steer";
-
-      pi.sendMessage(
-        {
-          customType: "subagent-result",
-          content: `[Subagent "${record.display.type}" ${record.id.slice(0, SHORT_ID_LENGTH)} ${record.lifecycle.status}]\n\n${formatResultContent(record)}`,
-          details,
-          display: true,
-        },
-        {
-          deliverAs,
-          triggerTurn: true,
-        },
-      );
-    } catch {
-      // sendMessage failed (shared runtime overwritten by subagent bindCore).
-      // Fall back to UI notification using the captured spawning-session context.
-      const spawnCtx = record.execution.spawnCtx;
-      if (spawnCtx?.ui?.notify) {
-        try {
-          spawnCtx.ui.notify(`[Subagent "${record.display.type}" ${record.lifecycle.status}] Result available`, "info");
-        } catch {
-          // ctx may also be stale if session was replaced
-        }
-      }
     }
   }
 }

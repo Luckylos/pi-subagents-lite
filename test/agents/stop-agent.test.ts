@@ -55,20 +55,38 @@ describe("executeStopAgentTool", () => {
     expect(mockMatchAgents).not.toHaveBeenCalled();
   });
 
-  it("stops a running agent and returns the short ID", async () => {
+  it("reports an accepted stop while the run still owns execution", async () => {
+    const record = agent("running");
+    mockMatchAgents.mockReturnValue([record]);
+    mockAbort.mockImplementation(() => {
+      record.lifecycle.phase = "stopping";
+      return true;
+    });
+    const result = await stop({ agent_id: ID });
+    expect(result.content[0].text).toBe(`Stop requested for ${SHORT_ID} — stopping.`);
+    expect((await stop({ agent_id: ID })).content[0].text).toContain("already stopping");
+    expect(mockAbort).toHaveBeenCalledOnce();
+  });
+
+  it("does not claim settlement simply because abort returned true", async () => {
     mockMatchAgents.mockReturnValue([agent("running")]);
     mockAbort.mockReturnValue(true);
 
     const result = await stop({ agent_id: ID });
 
     expect(mockAbort).toHaveBeenCalledWith(ID, "agent");
-    expect(result.content[0].text).toBe(`Stopped agent ${SHORT_ID}`);
+    expect(result.content[0].text).toBe(`Stop requested for ${SHORT_ID}.`);
     expect(result.isError).toBeFalsy();
   });
 
-  it("stops a queued agent", async () => {
-    mockMatchAgents.mockReturnValue([agent("queued")]);
-    mockAbort.mockReturnValue(true);
+  it("reports a queued stop that settles synchronously", async () => {
+    const record = agent("queued");
+    mockMatchAgents.mockReturnValue([record]);
+    mockAbort.mockImplementation(() => {
+      record.lifecycle.status = "stopped";
+      record.lifecycle.phase = "settled";
+      return true;
+    });
 
     const result = await stop({ agent_id: SHORT_ID });
 

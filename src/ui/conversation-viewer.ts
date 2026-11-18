@@ -12,7 +12,6 @@ import { getHideThinkingBlock } from "../pi-settings.ts";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import {
   type Component,
-  Input,
   Markdown,
   matchesKey,
   type TUI,
@@ -20,7 +19,9 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import type { AgentRecord } from "../types.ts";
+import { canRequestStop } from "../agents/agent-status.ts";
+import { captureRunAction, messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "./message-composer.ts";
+import type { AgentRecord, AgentSubmissionResult } from "../types.ts";
 import { getSessionContextPercent } from "../agents/usage.ts";
 import { extractText } from "../prompt/context.ts";
 import type { Theme } from "./types.ts";
@@ -33,6 +34,7 @@ import {
   resolveAgentModelLabel,
   statusIcon,
 } from "./format.ts";
+import { plainText } from "./sanitize.ts";
 import { summarizeToolArgs } from "../utils.ts";
 import { createViewerKeys, type ViewerKeybindings, type ViewerKeys } from "./viewer-keys.ts";
 
@@ -43,6 +45,22 @@ const MIN_VIEWPORT = 3;
 export const VIEWPORT_HEIGHT_PCT = 70;
 /** Debounce interval for streaming renders — reduces CPU during fast token arrival. */
 const STREAM_RENDER_DEBOUNCE_MS = 100;
+type AgentMessage = AgentSession["messages"][number];
+
+interface DisplayToolObject {
+  [key: string]: DisplayToolValue;
+}
+type DisplayToolValue = string | number | boolean | null | undefined | DisplayToolValue[] | DisplayToolObject;
+
+/** Copy JSON tool arguments before summarizing: JSON escaping would hide raw C0 controls. */
+function plainToolValue(value: unknown): DisplayToolValue {
+  if (typeof value === "string") return plainText(value);
+  if (Array.isArray(value)) return value.map(plainToolValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [plainText(key), plainToolValue(item)]));
+  }
+  return typeof value === "number" || typeof value === "boolean" || value === null ? value : undefined;
+}
 
 /**
  * What a tool result contributes to rendering: only whether the call errored.
@@ -60,31 +78,21 @@ export class ConversationViewer implements Component {
   private unsubscribe: (() => void) | undefined;
   private lastInnerW = 0;
   private closed = false;
-  /** Rendered lines per message index — avoids re-rendering unchanged messages. */
+  /** Cache only completed transcript rows. The SDK owns the in-flight assistant. */
   private messageCache = new Map<number, string[]>();
-  /** Message count and width of the last cache population. Mismatch → stale. */
-  private cacheMeta: { count: number; width: number; messagesRef: any[] | undefined } = {
-    count: 0,
-    width: 0,
-    messagesRef: undefined,
-  };
-  /** Full content lines from the last build — avoids re-iterating cached messages. */
+  private cacheMeta: { count: number; width: number; messagesRef?: AgentMessage[] } = { count: 0, width: 0 };
   private cachedContentLines: string[] | undefined;
-  private cachedNonStreamingCount = 0;
+  private streamingCache: { message: AgentMessage; width: number; lines: string[] } | undefined;
+  /** Execution ends can precede the durable toolResult messages in parallel mode. */
+  private provisionalToolResults = new Map<string, ToolResultStatus>();
+  private toolResults = new Map<string, ToolResultStatus>();
 
   /** Two-press confirm guard for the stop key, so a stray key can't kill the agent. */
-  private stopArmed = false;
+  private stopArmed: ReturnType<typeof captureRunAction> | undefined;
+  private stopFeedback: { text: string; phase: AgentRecord["lifecycle"]["phase"] } | undefined;
   private keys: ViewerKeys;
-  /** Steering composer -- present while the user is typing a message to the agent. */
-  private composer: Input | undefined;
-  /** Accumulated thinking text from streaming deltas, cleared on thinking_end. */
-  private streamingThinking = "";
-  /** Accumulated response text from streaming deltas, cleared on text_end. */
-  private streamingText = "";
-  /** Persistent Markdown instance for streaming thinking — lazily initialized. */
-  private streamingThinkingMd: Markdown | undefined;
-  /** Persistent Markdown instance for streaming text — lazily initialized. */
-  private streamingTextMd: Markdown | undefined;
+  private composer: MessageComposer | undefined;
+  private draft: { composer: MessageComposer; target: ReturnType<typeof captureRunAction> } | undefined;
   /** Debounce timer for streaming renders — avoids fighting the TUI's 16ms loop. */
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -99,71 +107,40 @@ export class ConversationViewer implements Component {
     private theme: Theme,
     private done: (result: undefined) => void,
     /** Abort the agent shown here. Omitted -> no stop affordance (e.g. read-only history). */
-    private onStop?: () => void,
+    private onStop?: (target: ReturnType<typeof captureRunAction>) => string | void,
     /** User keybindings from `ctx.ui.custom()`. Omitted -> hardcoded defaults. */
     keybindings?: ViewerKeybindings,
     /** Send a steering message to the agent. Omitted -> no compose affordance. */
-    private onSteer?: (message: string) => void,
+    private onSteer?: (message: string) => Promise<AgentSubmissionResult>,
   ) {
     this.thinkingVisible = !getHideThinkingBlock();
     this.keys = createViewerKeys(keybindings);
     this.unsubscribe = session.subscribe((event) => {
-      try {
-        if (this.closed) return;
-        if (event?.type === "message_update") {
-          const me = event.assistantMessageEvent;
-          const prevThinking = this.streamingThinking;
-          const prevText = this.streamingText;
-          switch (me?.type) {
-            case "thinking_start":
-            case "thinking_end":
-              this.streamingThinking = "";
-              this.streamingThinkingMd?.setText("");
-              this.refreshStreamingMessage();
-              break;
-            case "thinking_delta":
-              this.streamingThinking += me.delta;
-              this.ensureThinkingMd().setText(this.streamingThinking);
-              break;
-            case "text_start":
-            case "text_end":
-              this.streamingText = "";
-              this.streamingTextMd?.setText("");
-              this.refreshStreamingMessage();
-              break;
-            case "text_delta":
-              this.streamingText += me.delta;
-              this.ensureTextMd().setText(this.streamingText);
-              break;
-          }
-          if (this.streamingThinking !== prevThinking || this.streamingText !== prevText) {
-            this.scheduleRender();
-          }
-        } else if (event?.type === "message_end") {
-          // Session-level end-of-message (pi swaps the final message object
-          // into the last slot at "done") — same refresh as the boundaries.
-          this.refreshStreamingMessage();
-        }
-      } catch {
-        // Swallow — a throw here would crash the host menu; events can arrive after closure, before dispose.
+      if (this.closed) return;
+      switch (event?.type) {
+        case "message_start":
+        case "message_update":
+        case "message_end":
+          // The SDK may reuse the same cumulative partial object across updates.
+          this.streamingCache = undefined;
+          this.scheduleRender();
+          break;
+        case "entry_appended":
+        case "compaction_end":
+          this.scheduleRender();
+          break;
+        case "tool_execution_end":
+          if (event.parentToolCallId) break;
+          this.provisionalToolResults.set(event.toolCallId, { isError: event.isError });
+          this.invalidateToolCalls(new Set([event.toolCallId]));
+          this.scheduleRender();
+          break;
+        case "agent_end":
+        case "agent_settled":
+          this.scheduleRender();
+          break;
       }
     });
-  }
-  private ensureThinkingMd(): Markdown {
-    if (!this.streamingThinkingMd) {
-      this.streamingThinkingMd = new Markdown("", 1, 0, makeMarkdownTheme(this.theme), {
-        color: (text: string) => this.theme.fg("thinkingText", text),
-        italic: true,
-      });
-    }
-    return this.streamingThinkingMd;
-  }
-
-  private ensureTextMd(): Markdown {
-    if (!this.streamingTextMd) {
-      this.streamingTextMd = new Markdown("", 1, 0, makeMarkdownTheme(this.theme));
-    }
-    return this.streamingTextMd;
   }
   private scheduleRender(): void {
     if (this.renderTimer !== undefined) return; // already scheduled
@@ -173,54 +150,7 @@ export class ConversationViewer implements Component {
     }, STREAM_RENDER_DEBOUNCE_MS);
   }
 
-  /**
-   * Re-render the in-flight (last) message's cache entry from the session
-   * transcript.
-   *
-   * pi's agent loop replaces the last messages-array slot on every streaming
-   * delta, keeping the array reference and length constant — so the per-index
-   * cache (keyed on reference + count + width) never goes stale on its own
-   * while a message streams, and its entry stays frozen at whatever was on
-   * screen when it was first rendered. Meanwhile the streaming accumulators
-   * are cleared exactly at the block boundaries, so a completed block would
-   * vanish: no longer in an accumulator, and absent from the frozen cache
-   * entry that predates it.
-   *
-   * Called exactly on the events that clear an accumulator (`thinking_start`,
-   * `thinking_end`, `text_start`, `text_end`) plus the session's
-   * `message_end`. The rebuild happens synchronously, at the boundary itself:
-   * at that moment the finished block exists only in the transcript (the
-   * accumulator that duplicated it was just cleared, and for a `*_start` the
-   * new block has no content yet), so the rebuild can never duplicate the
-   * live suffix — deferring the rebuild to the debounced render could land
-   * after the next block's deltas arrived, and the cumulative partial would
-   * render its block twice. `toolcall_*` events mutate the partial without
-   * clearing an accumulator and are deliberately not refreshed here; the call
-   * line lands with the next boundary, and `message_end` always follows the
-   * last `toolcall_end`, so args are complete before the tool even runs.
-   */
-  private refreshStreamingMessage(): void {
-    const messages = this.session.messages;
-    if (!messages || messages.length === 0) return;
-    const index = messages.length - 1;
-    // Force the next render through the slow path so the streaming suffix is
-    // re-spliced behind the refreshed entry.
-    this.cachedContentLines = undefined;
-    const msg = messages[index];
-    if (this.lastInnerW > 0 && msg?.role === "assistant") {
-      // No toolResults: the in-flight message's calls have no results yet
-      // (they arrive as later messages) — render the calls as pending.
-      this.messageCache.set(index, this.renderMessage(msg, this.lastInnerW, new Map()));
-    } else {
-      // Nothing to rebuild against (no render yet, or a non-assistant end
-      // event) — drop the entry and let the next full build handle it.
-      this.messageCache.delete(index);
-    }
-    this.scheduleRender();
-  }
-
-  /** Render one message's lines — shared by the full rebuild and the streaming refresh. */
-  private renderMessage(msg: any, width: number, toolResults: Map<string, ToolResultStatus>): string[] {
+  private renderMessage(msg: AgentMessage, width: number, toolResults: Map<string, ToolResultStatus>): string[] {
     switch (msg.role) {
       case "user":
         return this.renderUserMessage(msg, width);
@@ -251,11 +181,10 @@ export class ConversationViewer implements Component {
       return;
     }
 
-    // Enter opens the steering composer (only while the agent can still be
-    // steered) -- then type + Enter sends, Esc or an empty submit returns. When
-    // not steerable, fall through so the key still disarms a pending stop.
+    // Enter opens a composer only when the current run accepts messages.
     if (matchesKey(data, "enter") && this.canSteer()) {
-      this.stopArmed = false;
+      this.stopArmed = undefined;
+      this.stopFeedback = undefined;
       this.openComposer();
       return;
     }
@@ -265,16 +194,22 @@ export class ConversationViewer implements Component {
     if (matchesKey(data, "s")) {
       if (this.isStoppable()) {
         if (this.stopArmed) {
-          this.stopArmed = false;
-          this.onStop?.();
+          const target = this.stopArmed;
+          this.stopArmed = undefined;
+          const text = this.onStop?.(target);
+          this.stopFeedback = text ? { text, phase: this.record.lifecycle.phase } : undefined;
         } else {
-          this.stopArmed = true;
+          this.stopArmed = captureRunAction(this.owner, this.record);
+          this.stopFeedback = undefined;
         }
         this.tui.requestRender();
+      } else {
+        this.stopArmed = undefined;
       }
       return;
     }
-    if (this.stopArmed) this.stopArmed = false;
+    this.stopArmed = undefined;
+    this.stopFeedback = undefined;
 
     if (data === "\x14") {
       this.thinkingVisible = !this.thinkingVisible;
@@ -346,10 +281,15 @@ export class ConversationViewer implements Component {
     );
 
     const worktreeTag = this.record.display.worktreeLabel
-      ? th.fg("muted", ` @${this.record.display.worktreeLabel}`)
+      ? th.fg("muted", ` @${plainText(this.record.display.worktreeLabel)}`)
       : "";
+    const stopping = this.record.lifecycle.phase === "stopping" ? th.fg("warning", " stopping") : "";
     // Row 1: status icon, name, description, worktree
-    lines.push(row(`${icon} ${th.bold(name)}  ${th.fg("muted", this.record.display.description)}${worktreeTag}`));
+    lines.push(
+      row(
+        `${icon} ${th.bold(name)}${stopping}  ${th.fg("muted", plainText(this.record.display.description))}${worktreeTag}`,
+      ),
+    );
 
     // Row 2: model name + compact usage stats
     const resolvedInvocation = {
@@ -369,8 +309,9 @@ export class ConversationViewer implements Component {
     lines.push(hrMid);
 
     // Content area
-    const contentLines = this.buildContentLines(innerW);
-    const totalContentLines = contentLines.length;
+    const completed = this.buildContentLines(innerW);
+    const streaming = this.buildStreamingLines(innerW);
+    const totalContentLines = completed.length + streaming.length;
     const viewportHeight = this.viewportHeight();
     const maxScroll = Math.max(0, totalContentLines - viewportHeight);
 
@@ -379,24 +320,30 @@ export class ConversationViewer implements Component {
     }
 
     const visibleStart = Math.min(this.scrollOffset, maxScroll);
-    const visible = contentLines.slice(visibleStart, visibleStart + viewportHeight);
-
     for (let i = 0; i < viewportHeight; i++) {
-      lines.push(row(visible[i] ?? ""));
+      const index = visibleStart + i;
+      lines.push(row((index < completed.length ? completed[index] : streaming[index - completed.length]) ?? ""));
     }
 
     // Footer
     lines.push(hrMid);
     // US-2: the action verb distinguishes steering a running agent from
     // continuing a settled one.
-    const steerVerb = this.isActive() ? "steer" : "continue";
+    const steerVerb = messageIntent(this.record);
     if (this.composer) {
       // Composer row: the Input renders its own `> ` prompt and cursor.
-      lines.push(row(this.composer.render(innerW)[0] ?? ""));
-      const composeHint = th.fg("dim", "Enter send · Esc cancel");
-      const composeLeft = th.fg("accent", `✎ ${steerVerb}`);
-      const composeGap = Math.max(1, innerW - visibleWidth(composeLeft) - visibleWidth(composeHint));
-      lines.push(row(composeLeft + " ".repeat(composeGap) + composeHint));
+      lines.push(row(this.composer.input.render(innerW)[0] ?? ""));
+      const hint = this.composer.pending ? "Submitting…" : this.composer.feedback;
+      if (hint) {
+        lines.push(row(th.fg(this.composer.pending ? "dim" : "warning", hint.replace(/\n/g, " "))));
+      } else {
+        const composeHint = th.fg("dim", "Enter send · Esc cancel");
+        const composeLeft = th.fg("accent", `✎ ${this.composer.intent}`);
+        const composeGap = Math.max(1, innerW - visibleWidth(composeLeft) - visibleWidth(composeHint));
+        lines.push(row(composeLeft + " ".repeat(composeGap) + composeHint));
+      }
+    } else if (this.stopFeedback && this.stopFeedback.phase === this.record.lifecycle.phase) {
+      lines.push(row(th.fg("dim", this.stopFeedback.text)));
     } else {
       // Actions on the left, navigation on the right.
       const sep = th.fg("dim", " · ");
@@ -429,49 +376,54 @@ export class ConversationViewer implements Component {
     return lines;
   }
 
-  private isActive(): boolean {
-    return this.record.lifecycle.status === "running" || this.record.lifecycle.status === "queued";
-  }
-
   private isStoppable(): boolean {
-    return !!this.onStop && this.isActive();
+    return !!this.onStop && canRequestStop(this.record);
   }
 
   private canSteer(): boolean {
-    // Offered whenever a session exists — a settled agent can be continued.
-    return !!this.onSteer && !!this.record.execution.session;
+    return !!this.onSteer && this.record.execution.session === this.session && !!messageIntent(this.record);
   }
 
   private openComposer(): void {
-    const input = new Input();
-    input.focused = true;
-    input.onSubmit = (value: string) => {
-      const message = value.trim();
-      if (message) this.onSteer?.(message);
-      this.closeComposer();
-    };
-    input.onEscape = () => {
-      this.closeComposer();
-    };
-    this.composer = input;
-    this.tui.requestRender();
-  }
-
-  private closeComposer(): void {
-    this.composer = undefined;
+    const submit = this.onSteer;
+    const intent = messageIntent(this.record);
+    if (!submit || !intent) return;
+    if (!this.draft?.target.isCurrent() || this.draft.composer.intent !== intent) {
+      const target = captureRunAction(this.owner, this.record);
+      const composer = new MessageComposer(
+        intent,
+        submitToRun(this.record, target, intent, (message) => {
+          if (this.record.execution.session !== this.session) {
+            return Promise.resolve({ accepted: false, reason: "unavailable", message: STALE_RUN_REASON });
+          }
+          return submit(message);
+        }),
+        () => {
+          this.composer = undefined;
+          this.tui.requestRender();
+        },
+        () => this.tui.requestRender(),
+      );
+      this.draft = { composer, target };
+    }
+    this.composer = this.draft.composer;
+    this.composer.open();
     this.tui.requestRender();
   }
 
   invalidate(): void {
     this.messageCache.clear();
     this.cachedContentLines = undefined;
-    this.cacheMeta = { count: 0, width: 0, messagesRef: undefined };
-    this.cachedNonStreamingCount = 0;
+    this.cacheMeta = { count: 0, width: 0 };
+    this.streamingCache = undefined;
   }
 
   dispose(): void {
     this.closed = true;
+    this.composer?.hide();
     this.invalidate();
+    this.provisionalToolResults.clear();
+    this.toolResults.clear();
     if (this.renderTimer !== undefined) {
       clearTimeout(this.renderTimer);
       this.renderTimer = undefined;
@@ -498,47 +450,23 @@ export class ConversationViewer implements Component {
   }
 
   private scrollMax(): number {
-    // Derive from a fresh build, not cachedContentLines.length: that cache holds
-    // the last slow-path result and goes stale while streaming grows the suffix.
-    // buildContentLines takes its fast path when the cache is warm, so this is cheap.
-    const totalLines = this.buildContentLines(this.lastInnerW).length;
+    const width = this.lastInnerW;
+    const totalLines = this.buildContentLines(width).length + this.buildStreamingLines(width).length;
     return Math.max(0, totalLines - this.viewportHeight());
   }
-  /**
-   * Drop cached assistant messages whose tool calls just received a result.
-   *
-   * A tool call line's background derives from whether its result exists
-   * (`toolPendingBg` vs `toolSuccessBg`/`toolErrorBg`), and assistant messages
-   * are cached per-index. A newly arrived toolResult must therefore invalidate
-   * the cached assistant that references it, or the call line would stay stuck
-   * in its pending color even though the call has settled.
-   */
-  private invalidateCacheForNewMessages(newMsgs: any[], oldCount: number, allMessages: any[]): void {
-    const newToolCallIds = new Set<string>();
-    for (const m of newMsgs) {
-      if (m.role === "toolResult" && m.toolCallId) {
-        newToolCallIds.add(m.toolCallId);
-      }
-    }
-    if (newToolCallIds.size === 0) return;
 
-    for (let i = 0; i < oldCount; i++) {
-      if (!this.messageCache.has(i)) continue;
-      const msg = allMessages[i];
-      if (msg?.role !== "assistant") continue;
-      for (const c of msg.content) {
-        if (c.type === "toolCall" && newToolCallIds.has(c.id)) {
-          this.messageCache.delete(i);
-          break;
-        }
-      }
-    }
-  }
-
-  /** Record the messages array reference so array replacement (e.g. compaction) is detected. */
-  private updateCacheMeta(messages: any[], width: number): void {
-    this.cacheMeta = { count: messages.length, width, messagesRef: messages };
+  /** A change in the result color invalidates only the corresponding assistant rows. */
+  private invalidateToolCalls(ids: Set<string>): void {
+    if (ids.size === 0) return;
     this.cachedContentLines = undefined;
+    this.streamingCache = undefined;
+    const messages = this.cacheMeta.messagesRef;
+    for (const index of this.messageCache.keys()) {
+      const msg = messages?.[index];
+      if (msg?.role === "assistant" && msg.content.some((block) => block.type === "toolCall" && ids.has(block.id))) {
+        this.messageCache.delete(index);
+      }
+    }
   }
 
   private wrapInBg(bg: string, inner: string[], width: number): string[] {
@@ -546,9 +474,9 @@ export class ConversationViewer implements Component {
     return [fill, ...inner, fill];
   }
 
-  private renderUserMessage(msg: any, width: number): string[] {
+  private renderUserMessage(msg: Extract<AgentMessage, { role: "user" }>, width: number): string[] {
     const th = this.theme;
-    const text = typeof msg.content === "string" ? msg.content : extractText(msg.content);
+    const text = plainText(typeof msg.content === "string" ? msg.content : extractText(msg.content));
     if (!text.trim()) return [];
     const wrapped = wrapTextWithAnsi(text.trim(), width - 2);
     const inner: string[] = [];
@@ -559,7 +487,12 @@ export class ConversationViewer implements Component {
     return [...this.wrapInBg("userMessageBg", inner, width), ""];
   }
 
-  private renderAssistantMessage(msg: any, width: number, toolResults: Map<string, ToolResultStatus>): string[] {
+  private renderAssistantMessage(
+    msg: Extract<AgentMessage, { role: "assistant" }>,
+    width: number,
+    toolResults: Map<string, ToolResultStatus>,
+    streaming = false,
+  ): string[] {
     const th = this.theme;
     const lines: string[] = [];
     const textParts: string[] = [];
@@ -575,23 +508,23 @@ export class ConversationViewer implements Component {
     // Thinking blocks — italic Markdown, matching Pi's assistant-message.ts
     if (thinkingParts.length > 0) {
       if (this.thinkingVisible) {
-        const md = new Markdown(thinkingParts.join("\n\n").trim(), 1, 0, makeMarkdownTheme(th), {
+        const md = new Markdown(plainText(thinkingParts.join("\n\n")).trim(), 1, 0, makeMarkdownTheme(th), {
           color: (text: string) => th.fg("thinkingText", text),
           italic: true,
         });
         lines.push(...md.render(width));
-        lines.push("");
+        if (!streaming) lines.push("");
       } else {
         lines.push(...this.renderHiddenThinkingLabel());
       }
     }
     // Assistant text
     if (textParts.length > 0) {
-      const md = new Markdown(textParts.join("\n\n").trim(), 1, 0, makeMarkdownTheme(th));
+      const md = new Markdown(plainText(textParts.join("\n\n")).trim(), 1, 0, makeMarkdownTheme(th));
       const textLines = md.render(width);
       if (textLines.length > 0) {
         lines.push(...textLines);
-        lines.push("");
+        if (!streaming) lines.push("");
       }
     }
     // Tool calls
@@ -608,8 +541,12 @@ export class ConversationViewer implements Component {
     toolResults: Map<string, ToolResultStatus>,
   ): string[] {
     const th = this.theme;
-    const argsSummary = tc.args ? summarizeToolArgs(tc.name, tc.args) : "";
-    const label = argsSummary ? `${tc.name}${argsSummary}` : tc.name;
+    const args = tc.args
+      ? Object.fromEntries(Object.entries(tc.args).map(([key, value]) => [plainText(key), plainToolValue(value)]))
+      : undefined;
+    const argsSummary = args ? plainText(summarizeToolArgs(tc.name, args)) : "";
+    const name = plainText(tc.name);
+    const label = argsSummary ? `${name}${argsSummary}` : name;
     // The result's content never renders; this lookup only picks the call
     // line's status color — pending while it runs, success/error once settled.
     const result = tc.id ? toolResults.get(tc.id) : undefined;
@@ -626,88 +563,57 @@ export class ConversationViewer implements Component {
   private buildContentLines(width: number): string[] {
     if (width <= 0) return [];
 
-    const th = this.theme;
-    const messages = this.session.messages ?? [];
-
-    if (messages.length === 0) {
-      this.cachedContentLines = undefined;
-      const lines = [th.fg("dim", "(waiting for first message...)")];
-      const streamingLines = this.buildStreamingLines(width);
-      this.cachedNonStreamingCount = lines.length;
-      lines.push(...streamingLines);
-      this.cachedContentLines = lines;
-      return lines;
-    }
-
-    // Invalidate cache on array replacement or width change (both require full rebuild)
-    if (messages !== this.cacheMeta.messagesRef || width !== this.cacheMeta.width) {
+    const messages = this.session.messages;
+    const previous = this.cacheMeta;
+    const replaced = messages !== previous.messagesRef || messages.length < previous.count;
+    if (replaced || width !== previous.width) {
       this.messageCache.clear();
-      this.updateCacheMeta(messages, width);
-    } else if (messages.length !== this.cacheMeta.count) {
-      // Message count changed — only invalidate entries affected by new messages.
-      const newMsgs = messages.slice(this.cacheMeta.count);
-      this.invalidateCacheForNewMessages(newMsgs, this.cacheMeta.count, messages);
-      this.updateCacheMeta(messages, width);
+      this.cachedContentLines = undefined;
     }
-
-    // Fast path: if we have cached content and only streaming text changed,
-    // splice new streaming lines into the cached result.
-    if (this.cachedContentLines) {
-      const streamingLines = this.buildStreamingLines(width);
-      const result = this.cachedContentLines.slice(0, this.cachedNonStreamingCount);
-      result.push(...streamingLines);
-      return result;
-    }
-
-    // Slow path: full rebuild. Only this path reads result status (for call-line
-    // coloring), so the call-id lookup is built here rather than paying a full
-    // transcript scan on the streaming fast path above.
-    const toolResults = new Map<string, ToolResultStatus>();
-    for (const msg of messages) {
-      if (msg.role === "toolResult" && msg.toolCallId) {
-        toolResults.set(msg.toolCallId, msg);
+    if (replaced) this.toolResults.clear();
+    if (replaced || messages.length !== previous.count) {
+      const changed = new Set<string>();
+      for (let i = replaced ? 0 : previous.count; i < messages.length; i++) {
+        const result = messages[i];
+        if (result.role !== "toolResult") continue;
+        const id = result.toolCallId;
+        const provisional = this.provisionalToolResults.get(id);
+        this.provisionalToolResults.delete(id);
+        this.toolResults.set(id, { isError: result.isError });
+        if (provisional?.isError !== result.isError) changed.add(id);
       }
+      this.invalidateToolCalls(changed);
+      this.cachedContentLines = undefined;
     }
+    this.cacheMeta = { count: messages.length, width, messagesRef: messages };
+    if (this.cachedContentLines) return this.cachedContentLines;
 
+    const results = new Map([...this.provisionalToolResults, ...this.toolResults]);
     const lines: string[] = [];
-
     for (let i = 0; i < messages.length; i++) {
-      const cached = this.messageCache.get(i);
-      if (cached) {
-        lines.push(...cached);
-      } else {
-        const msgLines = this.renderMessage(messages[i], width, toolResults);
-        this.messageCache.set(i, msgLines);
-        lines.push(...msgLines);
+      let cached = this.messageCache.get(i);
+      if (!cached) {
+        cached = this.renderMessage(messages[i], width, results);
+        this.messageCache.set(i, cached);
       }
+      lines.push(...cached);
     }
-
-    const streamingLines = this.buildStreamingLines(width);
-    this.cachedNonStreamingCount = lines.length;
-    lines.push(...streamingLines);
-
-    // Cache for fast-path streaming splice on next render
     this.cachedContentLines = lines;
-
     return lines;
   }
 
   private buildStreamingLines(width: number): string[] {
-    const lines: string[] = [];
-
-    // Streaming thinking text — rendered before text, matching assistant message order
-    if (this.streamingThinking.trim()) {
-      if (this.thinkingVisible) {
-        lines.push(...this.ensureThinkingMd().render(width));
-      } else {
-        lines.push(...this.renderHiddenThinkingLabel());
-      }
+    if (width <= 0) return [];
+    const message = this.session.state?.streamingMessage;
+    if (message?.role !== "assistant") {
+      return this.session.messages.length === 0 ? [this.theme.fg("dim", "(waiting for first message...)")] : [];
     }
-
-    if (this.streamingText.trim()) {
-      lines.push(...this.ensureTextMd().render(width));
+    if (this.streamingCache?.message === message && this.streamingCache.width === width) {
+      return this.streamingCache.lines;
     }
-
+    // Partial blocks use the same cumulative raw-text sanitization as completed ones.
+    const lines = this.renderAssistantMessage(message, width, this.provisionalToolResults, true);
+    this.streamingCache = { message, width, lines };
     return lines;
   }
 

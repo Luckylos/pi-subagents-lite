@@ -8,8 +8,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
+import type { AgentManager } from "../src/agents/agent-manager.js";
+import type { AgentRecord, SubagentRun } from "../src/types.js";
+import { makeAgentRecord } from "./fixtures.js";
 import type { AgentConfig } from "../src/agents/types.js";
-import { asExtensionContext } from "./pi-boundaries.js";
+import { asAgentSession, asExtensionContext } from "./pi-boundaries.js";
+import { createMockCtx, type ComponentFactory } from "./menu-test-helpers.js";
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: () => "/home/test/.pi/agent",
@@ -23,7 +27,8 @@ import { createNavInputHandler } from "../src/events.js";
 const mockMatchesKey = vi.fn<(data: string, keyId: KeyId) => boolean>();
 const mockIsKeyRelease = vi.fn<(data: string) => boolean>(() => false);
 
-vi.mock("@earendil-works/pi-tui", () => ({
+vi.mock("@earendil-works/pi-tui", async (importActual) => ({
+  ...(await importActual<typeof import("@earendil-works/pi-tui")>()),
   matchesKey: (data: string, keyId: KeyId) => mockMatchesKey(data, keyId),
   isKeyRelease: (data: string) => mockIsKeyRelease(data),
   truncateToWidth: (text: string, _width: number) => text,
@@ -109,6 +114,9 @@ vi.mock("../src/ui/format.js", () => ({
 const mockManager = {
   listAgents: vi.fn(() => []),
   getTotalAgentCost: vi.fn(() => 0),
+  getRecord: vi.fn<AgentManager["getRecord"]>(),
+  getRuns: vi.fn<AgentManager["getRuns"]>(),
+  submitMessage: vi.fn<AgentManager["submitMessage"]>(),
 };
 
 const mockWidget = {
@@ -118,7 +126,7 @@ const mockWidget = {
   navActivate: vi.fn(),
   navUp: vi.fn(),
   navDown: vi.fn(),
-  navSelect: vi.fn(() => null),
+  navSelect: vi.fn<() => AgentRecord | null>(() => null),
   navDeactivate: vi.fn(),
   setViewerOpen: vi.fn(),
   highlightedIndex: vi.fn(() => 0),
@@ -127,6 +135,7 @@ const mockWidget = {
 };
 
 const mockStore = {
+  agent: { modelDisplayStyle: "id" },
   notifyToolsExpanded: vi.fn(),
 };
 
@@ -293,6 +302,36 @@ describe("navigation key handler (createNavInputHandler)", () => {
       const result = handler("some_data");
       expect(result).toEqual({ consume: true });
       expect(mockWidget.navSelect).toHaveBeenCalled();
+    });
+
+    it("routes the widget viewer's Continue through structured submission", () => {
+      const session = asAgentSession({ messages: [], state: {}, subscribe: vi.fn(() => () => {}) });
+      const record = makeAgentRecord({ lifecycle: { status: "completed", phase: "settled" }, execution: { session } });
+      const run: SubagentRun = {
+        id: "old-run",
+        agentId: record.id,
+        sequence: 1,
+        phase: "settled",
+        acceptedAt: 1,
+        completion: Promise.resolve(),
+      };
+      mockWidget.navSelect.mockReturnValueOnce(record);
+      mockManager.getRecord.mockReturnValue(record);
+      mockManager.getRuns.mockReturnValue([run]);
+      mockManager.submitMessage.mockResolvedValue({ accepted: false, reason: "capacity", message: "Full." });
+      mockMatchesKey.mockImplementation((data, key) => data === "\r" && key === "enter");
+      const custom = vi.fn((factory: ComponentFactory) => {
+        const tui = { terminal: { rows: 40 }, requestRender: vi.fn() };
+        const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+        const view = factory(tui, theme, undefined, () => {});
+        if (!view || typeof view !== "object" || !("handleInput" in view) || typeof view.handleInput !== "function") {
+          throw new Error("Expected a viewer");
+        }
+        for (const key of ["\r", " ", "a", " ", "\r"]) view.handleInput(key);
+      });
+      const viewCtx = createMockCtx([], [], [], { ui: { custom } });
+      expect(createNavInputHandler(owner, viewCtx)("\r")).toEqual({ consume: true });
+      expect(mockManager.submitMessage).toHaveBeenCalledWith(record.id, " a ");
     });
 
     it("deactivates on non-navigation key", () => {

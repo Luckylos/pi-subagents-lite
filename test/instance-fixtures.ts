@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, vi } from "vite-plus/test";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { LoadedConfig } from "../src/config/config-io.js";
 import type { RunResult } from "../src/agents/agent-runner.js";
 import { createMockExtensionAPI, fakeCtx, type MockExtensionAPI } from "./fixtures.js";
@@ -57,7 +58,7 @@ export function parent(): ParentFixture {
 
 export async function emit(
   parent: ParentFixture,
-  event: "session_start" | "session_shutdown" | "turn_start",
+  event: "session_start" | "session_shutdown" | "turn_start" | "agent_settled" | "session_tree",
   ctx = fakeCtx({ hasUI: false }),
 ) {
   const listener = parent.api.listeners.find((listener) => listener.event === event);
@@ -93,6 +94,7 @@ export function finishedRun(): RunResult {
     turnLimited: false,
     session: asAgentSession({
       abort: vi.fn(async () => {}),
+      clearQueue: vi.fn<AgentSession["clearQueue"]>(() => ({ steering: [], followUp: [] })),
       dispose: vi.fn(),
       subscribe: vi.fn(() => () => {}),
       messages: [],

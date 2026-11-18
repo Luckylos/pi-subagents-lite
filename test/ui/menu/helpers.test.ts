@@ -4,6 +4,7 @@
 
 import { describe, it, expect } from "vite-plus/test";
 import {
+  headerItem,
   installSeparatorSkip,
   validateNumeric,
   buildSettingsListTheme,
@@ -16,6 +17,44 @@ const mockTheme = {
   fg: (color: string, text: string) => `[${color}:${text}]`,
   bold: (text: string) => `**${text}**`,
 };
+
+describe("menu display copies", () => {
+  const hostile = "A\u009b?1049hB\x1b]0;hidden\x07C";
+
+  it("sanitizes model and provider labels while keeping picker values raw", () => {
+    const raw = `${hostile}/${hostile}`;
+    expect(buildModelOptions([raw], raw, [raw])).toEqual([
+      { value: "(inherits parent)", label: "(inherits parent)", provider: "" },
+      { value: raw, label: "ABC", provider: "ABC" },
+    ]);
+  });
+
+  it.each(["options", "current", "configured"] as const)(
+    "sanitizes the complete %s model key before parsing its display labels",
+    (source) => {
+      const raw = "provider\x1b]0;hidden/payload\x07/model";
+      const result =
+        source === "options"
+          ? buildModelOptions([raw])
+          : source === "current"
+            ? buildModelOptions([], raw)
+            : buildModelOptions([], undefined, [raw]);
+      expect(result).toEqual([
+        { value: "(inherits parent)", label: "(inherits parent)", provider: "" },
+        { value: raw, label: "model", provider: "provider" },
+      ]);
+    },
+  );
+
+  it("sanitizes group headers, values and descriptions before applying theme styles", () => {
+    const theme = buildSettingsListTheme(mockTheme);
+    expect(headerItem({ ...mockTheme, bg: (_color, text) => text }, hostile).label).toBe("**[accent:ABC]**");
+    expect(theme.value(hostile, true)).toBe("[accent:ABC]");
+    expect(theme.value(hostile, false)).toBe("[muted:ABC]");
+    expect(theme.description(hostile)).toBe("[dim:ABC]");
+    expect(buildSelectListTheme(mockTheme).description(hostile)).toBe("[muted:ABC]");
+  });
+});
 
 describe("validateNumeric", () => {
   it("returns parsed integer for valid input", () => {

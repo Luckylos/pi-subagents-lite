@@ -18,6 +18,7 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { SelectList, type SelectItem } from "@earendil-works/pi-tui";
 
+import { plainText } from "../sanitize.ts";
 import type { AgentConfig } from "../../agents/types.ts";
 import { buildSelectListTheme } from "./helpers.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
@@ -69,7 +70,7 @@ async function showAgentTypes(owner: ExtensionOwner, ctx: ExtensionCommandContex
     lines.push("");
   }
 
-  ctx.ui.notify(lines.join("\n"), "info");
+  ctx.ui.notify(plainText(lines.join("\n")), "info");
 }
 
 async function handleAgentBriefing(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
@@ -159,7 +160,7 @@ async function handleRestartLastAgentsMenu(owner: ExtensionOwner, ctx: Extension
     for (const s of skipped) lines.push(`  • ${s}`);
   }
 
-  ctx.ui.notify(lines.join("\n"), "info");
+  ctx.ui.notify(plainText(lines.join("\n")), "info");
 }
 
 export async function showDebugMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {

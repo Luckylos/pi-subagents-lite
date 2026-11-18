@@ -90,6 +90,8 @@ import {
   cleanupInvalidations,
 } from "../../src/ui/renderer.js";
 import { getManager } from "../../src/shell.js";
+import { asExtensionOwner } from "../pi-boundaries.js";
+import { makeAgentRecord } from "../fixtures.js";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                           */
@@ -527,6 +529,23 @@ describe("renderAgentToolCall — background agent icon", () => {
 
     const allText = textInstances.map((t) => t.text).join("\n");
     expect(allText).toContain("▸");
+  });
+
+  it.each([false, true])("renders stopping on the existing call line (background=%s)", (background) => {
+    const record = makeAgentRecord({
+      lifecycle: { status: "running", phase: "stopping" },
+      display: { toolCallId: "call" },
+    });
+    const renderOwner = asExtensionOwner({
+      ...owner,
+      manager: { listAgents: () => [record], getRecord: () => record },
+    });
+    vi.mocked(getManager).mockReturnValueOnce(renderOwner.manager);
+    renderAgentToolCall(renderOwner, { agent: "builder", run_in_background: background }, noopTheme, {
+      toolCallId: "call",
+    });
+    expect(textInstances).toHaveLength(1);
+    expect(textInstances[0].text).toContain("Builder stopping");
   });
 
   it("shows model override when present", () => {

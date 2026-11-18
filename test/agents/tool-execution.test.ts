@@ -274,6 +274,20 @@ describe("executeAgentTool — worktree_path validation", () => {
     }
   });
 
+  it("reports a foreground gate release while execution is still stopping", async () => {
+    const record = mockGetRecord();
+    let release!: (value: string) => void;
+    record.execution.promise = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const output = executeAgentTool(owner, "tc-stopping", makeParams(), undefined, undefined, ctx);
+    record.lifecycle.phase = "stopping";
+    release("");
+    const result = await output;
+    expect(record.lifecycle.status).toBe("running");
+    expect(result.content[0].text).toBe("Stop requested for agent-id — stopping.");
+  });
+
   it("returns a successful result when worktree_path is valid", async () => {
     mockValidateWorktreePath.mockResolvedValue({
       ok: true,

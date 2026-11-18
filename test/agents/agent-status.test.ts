@@ -57,6 +57,15 @@ describe("AgentStatus tool execute behavior", () => {
     expect(result.isError).toBeUndefined();
   });
 
+  it("lists stopping above settled history when settled rows are capped", async () => {
+    mockListAgents.mockReturnValue([
+      { id: "old11111", display: { type: "builder" }, lifecycle: { status: "completed", completedAt: 1 } },
+      { id: "live1234", display: { type: "builder" }, lifecycle: { status: "running", phase: "stopping" } },
+    ]);
+    const result = await executeAgentStatusTool(owner, "call_1", {}, undefined, undefined, asExtensionContext({}));
+    expect(result.content[0].text).toMatch(/^live1234 \(builder\) stopping, old11111 \(builder\) completed/);
+  });
+
   it("formats each agent as {shortId} ({type}) {status}", async () => {
     mockListAgents.mockReturnValue([
       { id: "abc123def456ghijk", display: { type: "builder" }, lifecycle: { status: "running" } },

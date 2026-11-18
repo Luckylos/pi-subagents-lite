@@ -125,6 +125,16 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
     expect(ctx.ui.select).not.toHaveBeenCalled();
   });
 
+  it("sanitizes provider and model row labels while retaining raw keys", async () => {
+    const hostile = "A\u009b?1049hB\x1b]0;hidden\x07C";
+    const model = `${hostile}/${hostile}`;
+    mockModules.mockConfig.concurrency = { providers: { [hostile]: 2 }, models: { [model]: 3 } };
+    await showConcurrencySettingsMenu(owner, createMockCtx(), [model]);
+    const items = settingsListCalls[0].items;
+    expect(items.find((item) => item.id === `provider:${hostile}`)?.label).toBe("ABC");
+    expect(items.find((item) => item.id === `model:${model}`)?.label).toBe("ABC/ABC");
+  });
+
   it("shows default concurrency with current value", async () => {
     mockModules.mockConfig.concurrency = { default: 4 };
     const ctx = createMockCtx();

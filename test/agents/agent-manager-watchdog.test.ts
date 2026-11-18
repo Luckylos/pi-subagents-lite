@@ -54,6 +54,7 @@ describe("AgentManager", () => {
         mockStoreState.toolTimeoutMinutes = 45;
         manager = new AgentManager(owner, onComplete);
         const id = spawnRunningAgent();
+        const abort = vi.spyOn(manager, "abort");
 
         getOnToolActivity()({ type: "start", toolName: "bash", toolCallId: "call_1" });
         // Jump the clock so the next watchdog tick lands 46 minutes after the call started.
@@ -61,10 +62,14 @@ describe("AgentManager", () => {
         vi.advanceTimersByTime(WATCHDOG_TICK_MS);
 
         const record = manager.getRecord(id)!;
-        expect(record.lifecycle.status).toBe("stopped");
+        expect(record.lifecycle.status).toBe("running");
+        expect(record.lifecycle.phase).toBe("stopping");
         expect(record.lifecycle.stoppedBy).toBe("watchdog");
         expect(record.lifecycle.stopDetail).toEqual({ kind: "tool", toolName: "bash", elapsedMs: 46 * 60_000 });
         expect(record.execution.abortController?.signal.aborted).toBe(true);
+        expect(abort).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(WATCHDOG_TICK_MS);
+        expect(abort).toHaveBeenCalledTimes(1);
       } finally {
         vi.useRealTimers();
       }
@@ -82,7 +87,8 @@ describe("AgentManager", () => {
         vi.setSystemTime(Date.now() + 46 * 60_000 - WATCHDOG_TICK_MS);
         await vi.advanceTimersByTimeAsync(WATCHDOG_TICK_MS);
 
-        expect(manager.getRecord(id)?.lifecycle.status).toBe("stopped");
+        expect(manager.getRecord(id)?.lifecycle.status).toBe("running");
+        expect(manager.getRecord(id)?.lifecycle.phase).toBe("stopping");
         void manager.dispose().catch(() => {});
       } finally {
         vi.useRealTimers();
@@ -121,7 +127,8 @@ describe("AgentManager", () => {
         vi.advanceTimersByTime(WATCHDOG_TICK_MS);
 
         const record = manager.getRecord(id)!;
-        expect(record.lifecycle.status).toBe("stopped");
+        expect(record.lifecycle.status).toBe("running");
+        expect(record.lifecycle.phase).toBe("stopping");
         expect(record.lifecycle.stoppedBy).toBe("watchdog");
         expect(record.lifecycle.stopDetail).toEqual({ kind: "idle", elapsedMs: 46 * 60_000 });
       } finally {
@@ -148,7 +155,8 @@ describe("AgentManager", () => {
         // 46 minutes of quiet: idle kill.
         vi.setSystemTime(Date.now() + 36 * 60_000 - WATCHDOG_TICK_MS);
         vi.advanceTimersByTime(WATCHDOG_TICK_MS);
-        expect(manager.getRecord(id)?.lifecycle.status).toBe("stopped");
+        expect(manager.getRecord(id)?.lifecycle.status).toBe("running");
+        expect(manager.getRecord(id)?.lifecycle.phase).toBe("stopping");
       } finally {
         vi.useRealTimers();
       }
@@ -197,8 +205,10 @@ describe("AgentManager", () => {
         vi.setSystemTime(Date.now() + 46 * 60_000 - WATCHDOG_TICK_MS);
         vi.advanceTimersByTime(WATCHDOG_TICK_MS);
 
-        expect(manager.getRecord(fgId)?.lifecycle.status).toBe("stopped");
-        expect(manager.getRecord(bgId)?.lifecycle.status).toBe("stopped");
+        expect(manager.getRecord(fgId)?.lifecycle.status).toBe("running");
+        expect(manager.getRecord(fgId)?.lifecycle.phase).toBe("stopping");
+        expect(manager.getRecord(bgId)?.lifecycle.status).toBe("running");
+        expect(manager.getRecord(bgId)?.lifecycle.phase).toBe("stopping");
       } finally {
         vi.useRealTimers();
       }
@@ -283,7 +293,7 @@ describe("AgentManager", () => {
         vi.advanceTimersByTime(WATCHDOG_TICK_MS);
 
         deferred.resolve(mockRunResult());
-        await manager.getRecord(id)!.execution.promise;
+        await manager.getRuns(id)[0].completion;
 
         expect(onComplete).toHaveBeenCalledTimes(1);
         const completed = onComplete.mock.calls[0][0];

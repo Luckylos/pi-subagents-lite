@@ -152,6 +152,14 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
     vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
+  it("sanitizes type labels while retaining the raw override key", async () => {
+    const type = "A\u009b?1049hB\x1b]0;hidden\x07C";
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue([type]);
+    mockModules.mockConfig.agent[type] = "openai/gpt-4o";
+    await showModelSettingsMenu(owner, createMockCtx(), ["openai/gpt-4o"]);
+    expect(settingsListCalls[0].items.find((item) => item.id === `type:${type}`)?.label).toBe("ABC");
+  });
+
   it("uses ctx.ui.custom (not ctx.ui.select/runMenuLoop)", async () => {
     const ctx = createMockCtx();
     await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514"]);

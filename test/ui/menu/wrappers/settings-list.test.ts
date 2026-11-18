@@ -6,10 +6,15 @@
  */
 
 import { describe, it, expect, vi, type Mock } from "vite-plus/test";
-import { SelectList, type Component, type SelectItem, type SettingItem } from "@earendil-works/pi-tui";
+import { SelectList, SettingsList, type Component, type SelectItem, type SettingItem } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { SettingsListWrapper } from "../../../../src/ui/menu/wrappers/settings-list.js";
-import { buildSelectListTheme, createDelegatingComponent } from "../../../../src/ui/menu/helpers.js";
+import {
+  buildSelectListTheme,
+  buildSettingsListTheme,
+  createDelegatingComponent,
+  headerItem,
+} from "../../../../src/ui/menu/helpers.js";
 import { SearchableSelectDialog } from "../../../../src/ui/searchable-select.js";
 import { selectListView } from "../../../pi-boundaries.js";
 import type { Theme } from "../../../../src/ui/types.js";
@@ -165,6 +170,79 @@ describe("SettingsListWrapper — onRebuild sets items directly", () => {
 });
 
 describe("SettingsListWrapper — render frame", () => {
+  it.each([false, true])("sanitizes complete display copies before real layout with search=%s", (enableSearch) => {
+    const styledTheme: Theme = {
+      ...theme,
+      fg: (_color, text) => `\x1b[36m${text}\x1b[39m`,
+      bold: (text) => `\x1b[1m${text}\x1b[22m`,
+    };
+    const raw = `A\u009d${"hidden".repeat(20)}\nsecret\u009cB`;
+    const description = "A\x1b]0;hidden\nsecret\x1b\\B";
+    const submenu = vi.fn<NonNullable<SettingItem["submenu"]>>(() => ({ render: () => [], invalidate: () => {} }));
+    const onChange = vi.fn();
+    const items: SettingItem[] = [
+      headerItem(styledTheme, "Header"),
+      { id: raw, label: "Value", currentValue: raw, description, values: [raw, "next"], submenu },
+    ];
+    const snapshot = items.map((item) => ({ ...item }));
+    const list = new SettingsList(items, 10, buildSettingsListTheme(styledTheme), onChange, vi.fn(), {
+      enableSearch,
+    });
+    let rebuild: ((items: SettingItem[]) => void) | undefined;
+    const wrapper = new SettingsListWrapper(list, {
+      title: "Test",
+      theme: styledTheme,
+      onRebuild: (r) => {
+        rebuild = r;
+      },
+    });
+    // Rebuild must retain the same display boundary as initial construction.
+    for (const shouldRebuild of [false, true]) {
+      if (shouldRebuild) rebuild!(items);
+      list.selectItem(raw);
+      const frame = wrapper.render(40).join("\n");
+      expect(frame).not.toContain("hidden");
+      expect(frame).not.toContain("secret");
+      expect(frame).toContain("\x1b[36mAB\x1b[39m");
+      expect(frame).toContain("\x1b[1m\x1b[36mHeader\x1b[39m\x1b[22m");
+      expect(items).toEqual(snapshot);
+    }
+    wrapper.handleInput("\r");
+    expect(submenu).toHaveBeenCalledWith(raw, expect.any(Function));
+    submenu.mock.calls[0][1]("next");
+    expect(onChange).toHaveBeenCalledWith(raw, "next");
+    // Value cycling still indexes the original raw values after a render.
+    delete items[1].submenu;
+    wrapper.render(40);
+    wrapper.handleInput("\r");
+    expect(onChange).toHaveBeenLastCalledWith(raw, raw);
+    expect(items[1].currentValue).toBe(raw);
+  });
+
+  it("restores raw item arrays when list rendering throws", () => {
+    const raw = "A\x1b]0;hidden\nsecret\x1b\\B";
+    const items: SettingItem[] = [{ id: raw, label: "Value", currentValue: raw, description: raw }];
+    const list = makeSettingsList(items);
+    list.filteredItems = [items[0]];
+    const filteredItems = list.filteredItems;
+    list.render = () => {
+      expect(list.items[0].currentValue).toBe("AB");
+      expect(list.filteredItems?.[0].description).toBe("AB");
+      throw new Error("render failed");
+    };
+    const wrapper = new SettingsListWrapper(list, { title: "Test", theme });
+    expect(() => wrapper.render(40)).toThrow("render failed");
+    expect(list.items).toBe(items);
+    expect(list.filteredItems).toBe(filteredItems);
+    expect(items[0].currentValue).toBe(raw);
+    expect(items[0].description).toBe(raw);
+  });
+
+  it("sanitizes a raw menu title before theme styling", () => {
+    const list = makeSettingsList([]);
+    const wrapper = new SettingsListWrapper(list, { title: "A\u009b?1049hB\x1b]0;hidden\x07C", theme });
+    expect(wrapper.render(40)[2]).toBe("  ABC");
+  });
   it("renders the list content between top/bottom separators with a header", () => {
     const list = {
       items: [{ id: "a", label: "A", currentValue: "" }],

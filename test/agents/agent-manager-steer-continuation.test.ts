@@ -98,7 +98,7 @@ describe("AgentManager", () => {
     expect(record.execution.settled).toBe(true);
   });
 
-  it("keeps the completion gate untouched across continuation", async () => {
+  it("creates a fresh parent wait for each continuation", async () => {
     manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(deferred.promise);
@@ -107,7 +107,8 @@ describe("AgentManager", () => {
     const gate = record.execution.promise;
 
     await manager.steer(id, "keep going");
-    expect(record.execution.promise).toBe(gate);
+    expect(record.execution.promise).not.toBe(gate);
+    expect(await gate).toBe("done");
 
     await settleRun(deferred);
     expect(record.execution.settled).toBe(true);
@@ -131,12 +132,12 @@ describe("AgentManager", () => {
     mockModules.mockRunAgent.mockReturnValue(deferred.promise);
     const id = spawnForeground("first task");
     const record = manager.getRecord(id)!;
-    // Simulate a session already created, then stop: status flips to stopped
-    // synchronously while the run is still settling (settled stays false).
+    // Stop publishes intent while execution remains active (settled stays false).
     const session = mockAgentSession();
     mockModules.mockRunAgent.mock.calls[0][4].onSessionCreated(session);
     manager.abort(id, "user");
-    expect(record.lifecycle.status).toBe("stopped");
+    expect(record.lifecycle.status).toBe("running");
+    expect(record.lifecycle.phase).toBe("stopping");
 
     await expect(manager.steer(id, "keep going")).resolves.toBe(false);
     expect(mockModules.mockContinueAgentSession).not.toHaveBeenCalled();
@@ -353,7 +354,8 @@ describe("AgentManager", () => {
     expect(contSignal).toBe(record.execution.abortController!.signal);
 
     manager.abort(id, "user");
-    expect(record.lifecycle.status).toBe("stopped");
+    expect(record.lifecycle.status).toBe("running");
+    expect(record.lifecycle.phase).toBe("stopping");
     expect(contSignal.aborted).toBe(true);
 
     await settleRun(contRun);
@@ -402,10 +404,12 @@ describe("AgentManager", () => {
       // 44 minutes after the continuation: the restarted clock kills it.
       vi.setSystemTime(Date.now() + 44 * 60_000 - WATCHDOG_TICK_MS);
       vi.advanceTimersByTime(WATCHDOG_TICK_MS);
-      expect(record.lifecycle.status).toBe("stopped");
+      expect(record.lifecycle.status).toBe("running");
+      expect(record.lifecycle.phase).toBe("stopping");
       expect(record.lifecycle.stoppedBy).toBe("watchdog");
 
       await settleRun(contRun);
+      expect(record.lifecycle.status).toBe("stopped");
     } finally {
       vi.useRealTimers();
     }
@@ -438,10 +442,12 @@ describe("AgentManager", () => {
       // 46 minutes of quiet after the last delta: idle kill.
       vi.setSystemTime(Date.now() + 46 * 60_000 - WATCHDOG_TICK_MS);
       vi.advanceTimersByTime(WATCHDOG_TICK_MS);
-      expect(record.lifecycle.status).toBe("stopped");
+      expect(record.lifecycle.status).toBe("running");
+      expect(record.lifecycle.phase).toBe("stopping");
       expect(record.lifecycle.stoppedBy).toBe("watchdog");
 
       await settleRun(contRun);
+      expect(record.lifecycle.status).toBe("stopped");
     } finally {
       vi.useRealTimers();
     }

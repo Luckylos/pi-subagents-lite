@@ -9,10 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `GLOSSARY.md`, recording ConversationViewer overlay terminology and distinguishing Subagent identity, individual runs, continuations, run results, completion notifications and receipts, stop requests, and settled runs.
+- Running agents retain a history of individual run results and errors after continuation. Completion notifications show whether a matching entry was observed in parent history. An unconfirmed notification can be retried explicitly, with a warning about duplicate delivery or wakeups. See ADR-0014 and ADR-0015.
 - Background subagents get a `MessageParent` tool for one-way messages to the parent session mid-run (a blocking question or a plan-changing finding). Delivery works like a completion notification and wakes an idle parent. It is capped at 5 messages per run, and the subagent is told when a message was not delivered. Foreground agents never get it. Explicit frontmatter `tools` and `registeredTools` lists must name it. Turn it off with `/agents` > Settings > Agent behavior > Parent messages (`agent.parentMessages`). See ADR-0013.
 
 ### Fixed
 
+- Stopping a subagent during SDK startup preserves the stop request. A stopping run keeps its concurrency slot until it settles. Settlement clears unconsumed steering and follow-up input before continuation.
+- Background completion messages use the original run result even when a continuation starts before the notification is sent. Unconfirmed notifications are not resent automatically.
+- The conversation viewer keeps partial text and tool results visible across SDK streaming events. Continue and Steer preserve the draft when submission is rejected.
+- Custom conversation, tool and completion displays, result/error viewers, activity widgets and related agent menus now remove terminal control sequences and Unicode bidi/annotation controls from display copies. CRLF and CR become newlines; unfinished control strings and CSI tails stay hidden during streaming. Session/model data and output logs retain their original content, while theme colors and normal Markdown links remain available.
+- Settings menus sanitize complete description/value display copies before layout and complete model keys before parsing labels, preserving raw selections and styled headers. Complete and unfinished CSI sequences also consume embedded DEL bytes.
 - Background subagent completion notifications retain the parent session's bound API when the SDK reloads the extension factory with an uninitialized runtime. The next `session_start` takes ownership before asynchronous setup.
 - Extension factory state is isolated per parent instance: managers, queues, registries, widgets, invalidations, timers, and completion notifications no longer overwrite one another.
 - Child extension loading is marked only at the resource-loader boundary with async-local state, so the four subagent tools are absent from child registries while unrelated extension tools remain available.

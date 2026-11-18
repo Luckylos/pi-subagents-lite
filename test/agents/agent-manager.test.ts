@@ -139,7 +139,7 @@ describe("AgentManager", () => {
         turnLimited: false,
       });
 
-      await manager.getRecord(id)!.execution.promise;
+      await manager.getRuns(id)[0].completion;
 
       expect(manager.getTotalAgentCost()).toBe(0.04);
     });
@@ -361,7 +361,7 @@ describe("AgentManager", () => {
           session: sessionWithModel({ provider: "anthropic", id: "claude-sonnet-4" }),
         }),
       );
-      await manager.getRecord(id)!.execution.promise;
+      await manager.getRuns(id)[0].completion;
 
       expect(manager.getRecord(id)!.lifecycle.status).toBe("stopped");
     });
@@ -389,19 +389,20 @@ describe("AgentManager", () => {
       expect(record.lifecycle.status).toBe("running");
 
       controller.abort();
-      expect(record.lifecycle.status).toBe("stopped");
+      expect(record.lifecycle.status).toBe("running");
       expect(record.lifecycle.stoppedBy).toBe("user");
 
-      // The gate must not open until the run settles and partial output is captured.
+      // Stop ends the parent wait independently of eventual output capture.
       let gateOpened = false;
       void record.execution.promise!.then(() => {
         gateOpened = true;
       });
       await Promise.resolve();
-      expect(gateOpened).toBe(false);
+      expect(gateOpened).toBe(true);
+      expect(record.lifecycle.phase).toBe("stopping");
 
       deferred.resolve(mockRunResult({ responseText: "partial output", aborted: true }));
-      await record.execution.promise;
+      await manager.getRuns(id)[0].completion;
 
       expect(record.result).toBe("partial output");
       expect(record.lifecycle.status).toBe("stopped");
@@ -492,16 +493,18 @@ describe("AgentManager", () => {
       const id2 = spawnForeground("second", { signal: controller.signal });
 
       controller.abort();
-      expect(manager.getRecord(id1)!.lifecycle.status).toBe("stopped");
+      expect(manager.getRecord(id1)!.lifecycle.status).toBe("running");
+      expect(manager.getRecord(id1)!.lifecycle.phase).toBe("stopping");
       expect(manager.getRecord(id1)!.lifecycle.stoppedBy).toBe("user");
-      expect(manager.getRecord(id2)!.lifecycle.status).toBe("stopped");
+      expect(manager.getRecord(id2)!.lifecycle.status).toBe("running");
+      expect(manager.getRecord(id2)!.lifecycle.phase).toBe("stopping");
       expect(manager.getRecord(id2)!.lifecycle.stoppedBy).toBe("user");
 
       // Settlement order does not matter — gates open for both.
       deferred1.resolve(mockRunResult({ responseText: "partial one", aborted: true }));
       deferred2.resolve(mockRunResult({ responseText: "partial two", aborted: true }));
-      await manager.getRecord(id1)!.execution.promise;
-      await manager.getRecord(id2)!.execution.promise;
+      await manager.getRuns(id1)[0].completion;
+      await manager.getRuns(id2)[0].completion;
       expect(manager.getRecord(id1)!.result).toBe("partial one");
       expect(manager.getRecord(id2)!.result).toBe("partial two");
     });
@@ -781,7 +784,7 @@ describe("AgentManager", () => {
       deferred2.resolve(mockRunResult());
     });
 
-    it("opens the completion gate when a stopped-but-settling record is cleared", async () => {
+    it("opens the parent wait on Stop but rejects Clear until actual settlement", async () => {
       manager = new AgentManager(owner, onComplete);
       const deferred = makeResolvablePromise();
       mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -790,8 +793,9 @@ describe("AgentManager", () => {
       const id = spawnForeground("task", { signal: controller.signal });
       const record = manager.getRecord(id)!;
 
-      controller.abort(); // status flips to stopped; the run is still settling
-      expect(record.lifecycle.status).toBe("stopped");
+      controller.abort(); // the parent wait opens while execution is stopping
+      expect(record.lifecycle.status).toBe("running");
+      expect(record.lifecycle.phase).toBe("stopping");
 
       const gate = record.execution.promise!;
       let gateOpened = false;
@@ -799,13 +803,17 @@ describe("AgentManager", () => {
         gateOpened = true;
       });
       await Promise.resolve();
-      expect(gateOpened).toBe(false);
+      expect(gateOpened).toBe(true);
 
-      manager.clear(id);
-      await gate; // the coordinator's await must resume, not dangle
-      expect(manager.getRecord(id)).toBeUndefined();
+      expect(manager.clear(id)).toBe(false);
+      await gate;
+      expect(manager.getRecord(id)).toBe(record);
 
       deferred.resolve(mockRunResult({ aborted: true, responseText: "partial" }));
+      await manager.getRuns(id)[0].completion;
+      expect(record.result).toBe("partial");
+      expect(manager.clear(id)).toBe(true);
+      expect(manager.getRecord(id)).toBeUndefined();
     });
 
     it("detaches the parent binding when a finished record is cleared", async () => {

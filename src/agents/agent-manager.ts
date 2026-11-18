@@ -8,11 +8,17 @@ import type { ExtensionOwner } from "../shell.ts";
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.ts";
+import type { SessionPromptOptions } from "./session-run.ts";
 import { disposeChildSession } from "./session-teardown.ts";
 import { AgentOutputLog } from "./output-file.ts";
 import { Watchdog } from "./watchdog.ts";
 import { getStore } from "../shell.ts";
+import { AgentRun } from "./agent-run.ts";
 import {
+  type AgentSubmissionResult,
+  type AgentSubmissionRejection,
+  type SubagentRun,
+  type SubagentRunStatus,
   type AgentRecord,
   type AgentStatus,
   type RunCallbacks,
@@ -38,6 +44,8 @@ const DISPOSE_QUEUED_MESSAGE = "Agent manager disposed before the queued agent c
 const AGENT_ID_PREFIX_LENGTH = 17;
 
 const DEFAULT_CONCURRENCY_LIMIT = 4;
+
+const QUEUE_CLEANUP_FAILED = "The previous run's message queue could not be cleared. This subagent cannot continue.";
 
 /** Whether the agent status is terminal (no longer running or queued). */
 function isTerminalStatus(status: AgentStatus): boolean {
@@ -68,6 +76,7 @@ type OnAgentStart = (record: AgentRecord) => void;
 interface ConcurrencySlot {
   limit: number;
   running: number;
+  modelKey?: string;
 }
 
 interface SpawnArgs {
@@ -91,13 +100,14 @@ export class AgentManager {
   private watchdog = new Watchdog();
   private watchdogInterval: ReturnType<typeof setInterval>;
   private onComplete?: OnAgentComplete;
+  private onClear?: (id: string) => void;
   private onStart?: OnAgentStart;
 
-  /** Completion-gate resolvers for every spawned record, keyed by agent id. The gate
-   * (record.execution.promise) is created at spawn and opened exactly once at the record's
-   * terminal transition; the resolver is dropped when the gate opens. Never assigned the
-   * run's own promise (gate invariant). */
-  private gateResolvers = new Map<string, (value: string) => void>();
+  private runs = new WeakMap<AgentRecord, AgentRun[]>();
+  /** Fixed run-owned leases; configuration changes never replace ownership. */
+  private activeLeases = new Set<ConcurrencySlot>();
+  private runLeases = new WeakMap<AgentRun, ConcurrencySlot>();
+  private disposed = false;
 
   /** Parent-interrupt bindings by record, removed at every terminal transition. */
   private parentBindings = new WeakMap<AgentRecord, { signal: AbortSignal; handler: () => void }>();
@@ -148,13 +158,8 @@ export class AgentManager {
 
   /**
    * Update the concurrency configuration.
-   * Existing slots are updated; new slots are created; slots whose keys are
-   * absent from the new config are deleted so the new limit takes effect.
-   * In-flight agents that held a reference to a deleted slot still decrement
-   * that orphaned object in their .finally — a brief undercount window where
-   * the running total is not reflected in any live slot. This is acceptable:
-   * the agent completes shortly, and new spawns use the reconciled slots.
-   * The queue is drained after update so newly expanded limits take effect.
+   * Existing leases remain owned by their originating run. Admission counts
+   * all active leases under the new routing policy before draining the queue.
    */
   setConcurrency(config: ConcurrencyConfig): void {
     this.defaultConcurrency = config.default;
@@ -197,22 +202,23 @@ export class AgentManager {
    * Precedence: per-model slot > per-provider shared slot > default (per-model).
    */
   private getSlot(modelKey: string): ConcurrencySlot {
-    let slot = this.concurrencySlots.get(modelKey);
-    if (slot) return slot;
-
+    const pool = (key: string): string => {
+      if (this.concurrencySlots.has(key)) return `model:${key}`;
+      const provider = key.split("/")[0];
+      return this.providerSlots.has(provider) ? `provider:${provider}` : `model:${key}`;
+    };
     const provider = modelKey.split("/")[0];
-    const providerSlot = this.providerSlots.get(provider);
-    if (providerSlot) return providerSlot;
-
-    slot = { limit: Math.max(1, this.defaultConcurrency), running: 0 };
-    this.concurrencySlots.set(modelKey, slot);
-    return slot;
+    const limit =
+      this.concurrencySlots.get(modelKey)?.limit ?? this.providerSlots.get(provider)?.limit ?? this.defaultConcurrency;
+    const key = pool(modelKey);
+    const running = [...this.activeLeases].filter((lease) => lease.modelKey && pool(lease.modelKey) === key).length;
+    return { modelKey, limit: Math.max(1, limit), running };
   }
 
   /** Spawn an agent, returning its ID immediately; queued when the concurrency limit is reached. */
   spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
+    if (this.disposed) throw new Error("Agent manager is disposed.");
     const id = randomUUID().slice(0, AGENT_ID_PREFIX_LENGTH);
-    const abortController = new AbortController();
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
     let queued = false;
@@ -243,7 +249,6 @@ export class AgentManager {
         worktreeLabel: options.worktreeLabel,
       },
       execution: {
-        abortController,
         modelKey: options.modelKey,
         settled: false,
         settlementCount: 0,
@@ -264,10 +269,7 @@ export class AgentManager {
     };
     this.agents.set(id, record);
 
-    // Completion gate: every record carries one from birth, opened exactly once
-    // at its terminal transition (settlement, queued stop, start failure,
-    // already-aborted spawn, dispose, removal).
-    record.execution.promise = this.createCompletionGate(id);
+    this.acceptRun(record, queued);
 
     // Parent interrupt binding: registered before the queued early-return so
     // queued subagents are covered too. An already-aborted signal never starts
@@ -289,8 +291,7 @@ export class AgentManager {
     try {
       this.startAgent(id, record, args, concurrencySlot);
     } catch (err) {
-      this.detachParentBinding(record);
-      this.openGate(id, "");
+      this.failStart(record, err);
       this.agents.delete(id);
       throw err;
     }
@@ -304,7 +305,14 @@ export class AgentManager {
     { pi, ctx, type, prompt, options }: SpawnArgs,
     concurrencySlot?: ConcurrencySlot,
   ) {
-    if (concurrencySlot) concurrencySlot.running++;
+    const run = this.currentRun(record);
+    if (concurrencySlot) {
+      this.activeLeases.add(concurrencySlot);
+      this.runLeases.set(run, concurrencySlot);
+    }
+    run.phase = "running";
+    run.startedAt = Date.now();
+    this.projectRun(record, run);
 
     record.lifecycle.status = "running";
     record.lifecycle.startedAt = Date.now();
@@ -340,20 +348,18 @@ export class AgentManager {
       graceTurns: options.graceTurns,
       projectTrusted: options.projectTrusted,
       customTools: options.customTools,
-      signal: record.execution.abortController!.signal,
-      ...this.runTrackingCallbacks(record, options, (turnCount) => {
+      signal: run.controller.signal,
+      ...this.runTrackingCallbacks(record, run, options, (turnCount) => {
         record.stats.turnCount = turnCount;
         options.onTurnEnd?.(turnCount);
       }),
       onSessionCreated: (session) => {
+        if (!this.isCurrentRun(record, run)) return;
         record.execution.session = session;
         // Flush any steers that arrived before the session was ready
-        if (record.execution.pendingSteers?.length) {
+        if (!run.controller.signal.aborted && record.execution.pendingSteers?.length) {
           for (const msg of record.execution.pendingSteers) {
-            session.steer(msg).catch(() => {
-              // Steer is advisory — a failure here (e.g. session already aborting)
-              // is fine; the user can re-send if needed.
-            });
+            void this.deliverSteer(record, run, msg);
           }
           record.execution.pendingSteers = undefined;
         }
@@ -363,110 +369,156 @@ export class AgentManager {
         options.onSessionCreated?.(session);
       },
     });
-    this.attachSettlementChain(record, promise, concurrencySlot);
+    this.attachSettlementChain(record, run, promise);
   }
 
-  /**
-   * Wire the shared settlement chain (status precedence, error formatting,
-   * tally, slot release, gate open) onto a run promise. Used by both the
-   * first run (startAgent) and continuations (continueSettledAgent) so the two paths
-   * cannot drift. openGate is idempotent, so a continuation's second call
-   * is a no-op — the gate resolver is dropped at the first settlement.
-   */
-  private attachSettlementChain(
-    record: AgentRecord,
-    runPromise: Promise<RunResult>,
-    concurrencySlot?: ConcurrencySlot,
-  ) {
-    // Track the chain's terminal promise, not runPromise: dispose() must resume
-    // only after the .finally body ran (its vanished-record teardown lands in
-    // pendingDisposals), and derived-promise reactions resolve in that order.
+  /** Settle only the execution promise; Stop opens the parent gate separately. */
+  private attachSettlementChain(record: AgentRecord, run: AgentRun, runPromise: Promise<RunResult>) {
+    let status: SubagentRunStatus = "completed";
+    let result: string | undefined;
+    let error: string | undefined;
     const settled = runPromise
       .then(({ responseText, session, aborted, turnLimited, modelError }) => {
-        // Don't overwrite status if externally stopped via abort()
-        if (record.lifecycle.status !== "stopped") {
-          // Precedence: an abort during a model error wins; a model error outranks a turn limit.
-          record.lifecycle.status = aborted
-            ? "aborted"
-            : modelError
-              ? "error"
-              : turnLimited
-                ? "turn_limited"
-                : "completed";
-        }
-        record.result = responseText;
-        if (modelError) {
-          record.error = formatModelError(record.display.type, session?.model, modelError);
-        }
+        run.executionFinished = true;
+        run.phase = run.stopRequestedAt !== undefined ? "stopping" : "settling";
+        this.projectRun(record, run);
+        status = aborted ? "aborted" : modelError ? "error" : turnLimited ? "turn_limited" : "completed";
+        result = responseText;
+        if (modelError) error = formatModelError(record.display.type, session?.model, modelError);
         record.execution.session = session;
         record.stats.contextPercent = getSessionContextPercent(session);
-        record.lifecycle.completedAt ??= Date.now();
         return responseText;
       })
       .catch((err) => {
-        // Don't overwrite status if externally stopped via abort()
-        if (record.lifecycle.status !== "stopped") {
-          record.lifecycle.status = "error";
-        }
-        // A failed continuation must not leave the prior run's result visible.
-        record.result = undefined;
-        record.error = errorMessage(err);
-        record.lifecycle.completedAt ??= Date.now();
+        run.executionFinished = true;
+        run.phase = run.stopRequestedAt !== undefined ? "stopping" : "settling";
+        this.projectRun(record, run);
+        status = "error";
+        error = errorMessage(err);
         return "";
       })
-      .finally(() => {
-        this.inFlightRuns.delete(settled);
-        // Count this settlement before notifying, so the completion callback
-        // can tell a continuation settlement (>= 2) from the first one.
-        record.execution.settlementCount++;
-        if (record.execution.outputLog) {
-          try {
-            record.execution.outputLog.finalize({
-              turnCount: record.stats.turnCount ?? 0,
-              toolUseCount: record.stats.toolUses,
-              totalTokens: getLifetimeTotal(record.stats.lifetimeUsage),
-            });
-          } catch {
-            /* ignore */
-          }
-          record.execution.outputLog = undefined;
+      .finally(async () => {
+        await run.drainCallbacks();
+        // The SDK may leave steering or follow-up messages behind on any exit.
+        // Both the prompt (including its wrap-up steer) and live steers have
+        // drained, so clear their remaining messages before reuse.
+        try {
+          record.execution.session?.clearQueue();
+        } catch {
+          // Keep the transcript and execution outcome, but never reuse a queue
+          // we could not verify was cleared. Settlement must still release capacity.
+          run.queueCleanupFailed = true;
+          error = error ? `${error}\n${QUEUE_CLEANUP_FAILED}` : QUEUE_CLEANUP_FAILED;
         }
-
-        if (concurrencySlot) concurrencySlot.running--;
-
-        // The record was removed while this run was in flight (cleared or
-        // stopped mid-setup): nobody else will dispose the session it created.
+        record.execution.pendingSteers = undefined;
+        record.execution.settlementCount++;
+        this.finalizeOutput(record);
+        this.releaseLease(run);
         if (!this.agents.has(record.id)) this.releaseSession(record);
-
+        this.detachParentBinding(record);
+        run.settle({
+          status: run.stopRequestedAt !== undefined ? "stopped" : status,
+          result,
+          error,
+          completedAt: Date.now(),
+          stoppedBy: record.lifecycle.stoppedBy,
+          stopDetail: record.lifecycle.stopDetail,
+        });
+        this.projectRun(record, run);
         this.tallyCompletion(record);
         this.drainQueue();
-        // Detach before opening the gate so an abort racing settlement cannot
-        // re-target the record, and the coordinator's await resumes only after
-        // the result text is captured and the completion notify has fired.
-        this.detachParentBinding(record);
-        this.openGate(record.id, record.result ?? "");
-        // The run chain is fully settled: a continuation may now re-reserve
-        // the slot and prompt the session again.
         record.execution.settled = true;
+        this.inFlightRuns.delete(settled);
       });
     this.inFlightRuns.add(settled);
   }
 
-  private createCompletionGate(id: string): Promise<string> {
-    let resolve!: (value: string) => void;
-    const gate = new Promise<string>((res) => {
-      resolve = res;
-    });
-    this.gateResolvers.set(id, resolve);
-    return gate;
+  private releaseLease(run: AgentRun): void {
+    const lease = this.runLeases.get(run);
+    if (!lease) return;
+    this.runLeases.delete(run);
+    this.activeLeases.delete(lease);
   }
 
-  /** Open a record's completion gate. Idempotent — the resolver is dropped on first open. */
+  private finalizeOutput(record: AgentRecord): void {
+    const output = record.execution.outputLog;
+    if (!output) return;
+    record.execution.outputLog = undefined;
+    try {
+      output.finalize({
+        turnCount: record.stats.turnCount ?? 0,
+        toolUseCount: record.stats.toolUses,
+        totalTokens: getLifetimeTotal(record.stats.lifetimeUsage),
+      });
+    } catch {
+      /* Output failure must not prevent execution cleanup. */
+    }
+  }
+
+  private failStart(record: AgentRecord, error: unknown): void {
+    const run = this.currentRun(record);
+    this.finalizeOutput(record);
+    this.releaseLease(run);
+    this.detachParentBinding(record);
+    run.settle({
+      status: run.stopRequestedAt !== undefined ? "stopped" : "error",
+      error: errorMessage(error),
+      completedAt: Date.now(),
+    });
+    this.projectRun(record, run);
+    record.execution.settled = true;
+  }
+
+  private currentRun(record: AgentRecord): AgentRun {
+    const run = this.runs.get(record)?.at(-1);
+    if (!run) throw new Error("Subagent record has no accepted run.");
+    return run;
+  }
+
+  private isCurrentRun(record: AgentRecord, run: AgentRun): boolean {
+    return (
+      this.agents.get(record.id) === record &&
+      this.currentRun(record) === run &&
+      !run.executionFinished &&
+      (run.phase === "running" || run.phase === "stopping")
+    );
+  }
+
+  private acceptRun(record: AgentRecord, queued = false): AgentRun {
+    const history = this.runs.get(record) ?? [];
+    const run = new AgentRun(record.id, history.length + 1, queued);
+    history.push(run);
+    this.runs.set(record, history);
+    record.execution.currentRunId = run.id;
+    record.execution.abortController = run.controller;
+    record.execution.promise = run.parentWait;
+    record.execution.settled = false;
+    record.execution.pendingSteers = undefined;
+    record.lifecycle.stoppedBy = undefined;
+    record.lifecycle.stopDetail = undefined;
+    this.projectRun(record, run);
+    return run;
+  }
+
+  /** Central compatibility projection; old outcomes never read mutable record results. */
+  private projectRun(record: AgentRecord, run: AgentRun): void {
+    if (this.currentRun(record) !== run) return;
+    record.lifecycle.phase = run.phase;
+    record.lifecycle.status = run.outcome?.status ?? (run.startedAt === undefined ? "queued" : "running");
+    record.lifecycle.startedAt = run.startedAt ?? run.acceptedAt;
+    record.lifecycle.completedAt = run.outcome?.completedAt;
+    record.result = run.outcome?.result;
+    record.error = run.outcome?.error;
+  }
+
+  getRuns(id: string): readonly SubagentRun[] {
+    const record = this.agents.get(id);
+    return Object.freeze(record ? (this.runs.get(record) ?? []).map((run) => run.snapshot()) : []);
+  }
+
   private openGate(id: string, value: string): void {
-    const resolve = this.gateResolvers.get(id);
-    if (!resolve) return;
-    this.gateResolvers.delete(id);
-    resolve(value);
+    const record = this.agents.get(id);
+    if (record) this.currentRun(record).openParent(value);
   }
 
   /** Remove a record's parent-interrupt binding; a later abort of the signal is a no-op. */
@@ -502,6 +554,10 @@ export class AgentManager {
     this.onComplete = cb;
   }
 
+  setOnClear(cb: (id: string) => void): void {
+    this.onClear = cb;
+  }
+
   /** Get the session-level cumulative agent cost. Survives record removal (Clear/dispose). */
   getTotalAgentCost(): number {
     return this.totalAgentCost;
@@ -520,33 +576,44 @@ export class AgentManager {
    */
   private runTrackingCallbacks(
     record: AgentRecord,
+    run: AgentRun,
     forward: RunCallbacks | undefined,
     writeTurnCount: (turnCount: number) => void,
-  ): RunCallbacks {
+  ): SessionPromptOptions {
     return {
+      onPromptStateChange: (state) => {
+        if (this.isCurrentRun(record, run)) run.promptState = state;
+      },
       onToolActivity: (activity) => {
+        if (!this.isCurrentRun(record, run)) return;
         if (activity.type === "end") record.stats.toolUses++;
         this.watchdog.recordActivity(record.id, activity);
         forward?.onToolActivity?.(activity);
       },
       onAssistantUsage: (usage) => {
+        if (!this.isCurrentRun(record, run)) return;
         addUsage(record.stats.lifetimeUsage, usage);
         forward?.onAssistantUsage?.(usage);
       },
       onCompaction: (info) => {
+        if (!this.isCurrentRun(record, run)) return;
         record.stats.compactionCount++;
         forward?.onCompaction?.(info);
       },
       onTextDelta: (delta: string, fullText: string) => {
+        if (!this.isCurrentRun(record, run)) return;
         // Streamed response text counts as activity for the idle watchdog.
         this.watchdog.recordText(record.id);
         forward?.onTextDelta?.(delta, fullText);
       },
-      onTurnEnd: writeTurnCount,
+      onTurnEnd: (turnCount) => {
+        if (this.isCurrentRun(record, run)) writeTurnCount(turnCount);
+      },
     };
   }
 
   private drainQueue() {
+    if (this.disposed) return;
     const started = new Set<string>();
     for (const entry of this.queue) {
       const record = this.agents.get(entry.id);
@@ -560,11 +627,7 @@ export class AgentManager {
         started.add(entry.id);
       } catch (err) {
         // Late failure — surface on the record so the user can see it
-        record.lifecycle.status = "error";
-        record.error = errorMessage(err);
-        record.lifecycle.completedAt = Date.now();
-        this.detachParentBinding(record);
-        this.openGate(record.id, "");
+        this.failStart(record, err);
         started.add(entry.id);
         // Failed starts notify the UI but aren't tallied as completed agents
         this.notifyComplete(record);
@@ -573,32 +636,73 @@ export class AgentManager {
     this.queue = this.queue.filter((e) => !started.has(e.id));
   }
 
-  /**
-   * Steer a running agent; queues the message when the session isn't created
-   * yet. A settled agent (completed, errored, aborted, stopped, turn-limited)
-   * with a live session is continued: the concurrency slot is re-reserved,
-   * the record is reset to running, and the session is prompted again.
-   */
-  async steer(id: string, message: string): Promise<boolean> {
+  /** Structured admission: live steering waits for the SDK's input handlers. */
+  async submitMessage(id: string, message: string): Promise<AgentSubmissionResult> {
+    const reject = (reason: AgentSubmissionRejection, text: string): AgentSubmissionResult => ({
+      accepted: false,
+      reason,
+      message: text,
+    });
     const record = this.agents.get(id);
-    if (!record) return false;
-
-    if (record.lifecycle.status === "running") {
+    if (!record) return reject("not_found", "Subagent was not found.");
+    if (!message.trim()) return reject("empty_message", "Message is required.");
+    if (this.disposed) return reject("unavailable", "The subagent manager is unavailable.");
+    const run = this.currentRun(record);
+    if (run.phase === "stopping")
+      return reject("stopping", "The subagent is still stopping. Wait for execution to settle.");
+    if (run.phase === "queued") return reject("queued", "The subagent is queued and has not started.");
+    if (run.phase === "settling" || (run.phase === "settled" && !record.execution.settled))
+      return reject("settling", "The subagent is finishing its previous run. Retry after settlement.");
+    if (run.phase === "running") {
       if (!record.execution.session) {
-        if (!record.execution.pendingSteers) record.execution.pendingSteers = [];
-        record.execution.pendingSteers.push(message);
-        return true;
+        (record.execution.pendingSteers ??= []).push(message);
+        return { accepted: true, agentId: id, runId: run.id, delivery: "pending_steer" };
       }
-
-      try {
-        await record.execution.session.steer(message);
-        return true;
-      } catch {
-        // steer failures are surfaced to the caller via the boolean return value
-        return false;
-      }
+      return this.deliverSteer(record, run, message);
     }
-    return this.continueSettledAgent(record, message);
+    if (run.queueCleanupFailed) return reject("unavailable", QUEUE_CLEANUP_FAILED);
+    const session = record.execution.session;
+    if (!session || session.isStreaming) return reject("unavailable", "The subagent session is unavailable or busy.");
+    const modelKey = record.execution.modelKey;
+    if (modelKey) {
+      const slot = this.getSlot(modelKey);
+      if (slot.running >= slot.limit)
+        return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
+    }
+    this.continueSettledAgent(record, message);
+    return { accepted: true, agentId: id, runId: this.currentRun(record).id, delivery: "continuation" };
+  }
+
+  private async deliverSteer(record: AgentRecord, run: AgentRun, message: string): Promise<AgentSubmissionResult> {
+    const session = record.execution.session;
+    if (!session) return { accepted: false, reason: "unavailable", message: "The subagent session is unavailable." };
+    if (run.isPromptClosed(session.isStreaming)) {
+      return {
+        accepted: false,
+        reason: "settling",
+        message: "The subagent is finishing its previous run. Retry after settlement.",
+      };
+    }
+    try {
+      await run.trackCallback(session.steer(message));
+      // An input hook can finish after the SDK prompt closes or Stop is requested.
+      // Report that rejection here and leave queue cleanup to settlement.
+      if (run.controller.signal.aborted || run.isPromptClosed(session.isStreaming)) {
+        return {
+          accepted: false,
+          reason: run.controller.signal.aborted ? "stopping" : "settling",
+          message: "The run ended before the message could be delivered. Retry after settlement.",
+        };
+      }
+      return { accepted: true, agentId: record.id, runId: run.id, delivery: "steer" };
+    } catch {
+      return { accepted: false, reason: "delivery_failed", message: "The session refused the message." };
+    }
+  }
+
+  /** Compatibility adapter for the existing boolean result. */
+  async steer(id: string, message: string): Promise<boolean> {
+    return (await this.submitMessage(id, message)).accepted;
   }
 
   /**
@@ -624,32 +728,29 @@ export class AgentManager {
       const slot = this.getSlot(modelKey);
       if (slot.running >= slot.limit) return false;
       concurrencySlot = slot;
-      concurrencySlot.running++;
+      this.activeLeases.add(concurrencySlot);
     }
 
-    // Reset the record to running; stats (usage, toolUses, turnCount) carry over.
-    const abortController = new AbortController();
-    record.execution.abortController = abortController;
-    record.execution.settled = false;
-    record.lifecycle.status = "running";
-    record.lifecycle.startedAt = Date.now();
-    record.lifecycle.completedAt = undefined;
-    record.result = undefined;
-    record.error = undefined;
+    // Accept a new run; cumulative conversation statistics carry over.
+    const run = this.acceptRun(record);
+    if (concurrencySlot) this.runLeases.set(run, concurrencySlot);
+    run.startedAt = Date.now();
+    this.projectRun(record, run);
     // A stale idle clock from the first run would kill the continuation
     // immediately — restart the watchdog before the new turn begins.
     this.watchdog.start(record.id);
 
     const previousTurns = record.stats.turnCount ?? 0;
-    const promise = continueAgentSession(session, message, {
-      ...this.runTrackingCallbacks(record, record.execution.liveViewCallbacks, (turnCount) => {
-        record.stats.turnCount = previousTurns + turnCount;
-      }),
-      maxTurns: record.stats.maxTurns,
-      graceTurns: getStore(this.owner).agent.graceTurns ?? DEFAULT_GRACE_TURNS,
-      signal: abortController.signal,
-    });
-    this.attachSettlementChain(record, promise, concurrencySlot);
+    const promise = (async () =>
+      continueAgentSession(session, message, {
+        ...this.runTrackingCallbacks(record, run, record.execution.liveViewCallbacks, (turnCount) => {
+          record.stats.turnCount = previousTurns + turnCount;
+        }),
+        maxTurns: record.stats.maxTurns,
+        graceTurns: getStore(this.owner).agent.graceTurns ?? DEFAULT_GRACE_TURNS,
+        signal: run.controller.signal,
+      }))();
+    this.attachSettlementChain(record, run, promise);
     // The run proceeds asynchronously; the caller only learns the wiring
     // succeeded. The parent abort binding is deliberately NOT re-attached —
     // the parent turn that spawned the agent is over.
@@ -684,8 +785,10 @@ export class AgentManager {
    */
   clear(id: string): boolean {
     const record = this.agents.get(id);
-    if (!record || !isTerminalStatus(record.lifecycle.status)) return false;
+    if (!record || !isTerminalStatus(record.lifecycle.status) || this.currentRun(record).phase !== "settled")
+      return false;
     this.removeRecord(id, record);
+    this.onClear?.(id);
     return true;
   }
 
@@ -698,24 +801,23 @@ export class AgentManager {
 
   /** Abort the session or remove the agent from the queue. Returns false if not running/queued. */
   private stopAgent(record: AgentRecord, stoppedBy?: StopInitiator, stopDetail?: WatchdogStopDetail): boolean {
-    const wasQueued = record.lifecycle.status === "queued";
-    if (wasQueued) {
-      this.queue = this.queue.filter((q) => q.id !== record.id);
-    } else if (record.lifecycle.status !== "running") {
-      return false;
-    } else {
-      record.execution.abortController?.abort();
-    }
-    record.lifecycle.status = "stopped";
+    const run = this.currentRun(record);
+    if (run.phase !== "queued" && run.phase !== "running") return false;
+    this.queue = this.queue.filter((q) => q.id !== record.id);
+    run.stopRequestedAt = Date.now();
+    run.phase = "stopping";
     record.lifecycle.stoppedBy = stoppedBy;
     record.lifecycle.stopDetail = stopDetail;
-    record.lifecycle.completedAt = Date.now();
+    record.execution.pendingSteers = undefined;
+    // Publish intent before abort: listeners may run synchronously.
+    this.projectRun(record, run);
     this.detachParentBinding(record);
+    run.openParent();
+    run.controller.abort();
     if (!record.lifecycle.started) {
-      // A record that never started has no run whose .finally opens the
-      // gate — open it now and notify directly. Such stops never tally as
-      // completed agents.
-      this.openGate(record.id, "");
+      run.settle({ status: "stopped", completedAt: Date.now(), stoppedBy, stopDetail });
+      this.projectRun(record, run);
+      record.execution.settled = true;
       this.notifyComplete(record);
     }
     return true;
@@ -724,9 +826,7 @@ export class AgentManager {
   private removeRecord(id: string, record: AgentRecord): void {
     this.releaseSession(record);
     this.detachParentBinding(record);
-    // A stopped record's run can still be settling (stopAgent flips status
-    // synchronously; the gate opens in .finally) — resolve so the coordinator's
-    // await never dangles, then drop the resolver. A later .finally resolve no-ops.
+    // Gates already opened on Stop or settlement; Clear drops retained history.
     this.openGate(id, "");
     this.agents.delete(id);
   }
@@ -756,7 +856,7 @@ export class AgentManager {
     const decisions = this.watchdog.check(
       toolTimeoutMinutes * MINUTE_MS,
       idleTimeoutMinutes * MINUTE_MS,
-      (id) => this.agents.get(id)?.lifecycle.status === "running",
+      (id) => this.agents.get(id)?.lifecycle.phase === "running",
     );
     for (const [id, detail] of decisions) {
       this.abort(id, "watchdog", detail);
@@ -771,23 +871,22 @@ export class AgentManager {
    * teardown drains, so no session outlives this call.
    */
   async dispose(): Promise<void> {
+    this.disposed = true;
     clearInterval(this.watchdogInterval);
     this.queue = [];
     for (const record of this.agents.values()) {
-      record.execution.abortController?.abort();
-      // Queued subagents never start: fail them honestly so the waiting tool
-      // call resumes with an explicit error instead of hanging (US-9).
-      if (record.lifecycle.status === "queued") {
-        record.lifecycle.status = "error";
-        record.error = DISPOSE_QUEUED_MESSAGE;
-        record.lifecycle.completedAt = Date.now();
-        this.openGate(record.id, "");
+      const run = this.currentRun(record);
+      if (run.phase === "queued") {
+        run.settle({ status: "error", error: DISPOSE_QUEUED_MESSAGE, completedAt: Date.now() });
+        this.projectRun(record, run);
+        record.execution.settled = true;
+      } else {
+        this.stopAgent(record, "user");
       }
       this.releaseSession(record);
       this.detachParentBinding(record);
     }
-    // Running records' gates open when their runs settle after this synchronous
-    // pass — keep their resolvers so .finally can still resolve (no dangling gate).
+    // Owner end drops retained records; actual runs and leases remain tracked.
     this.agents.clear();
     // Runs still settling may create or re-attach sessions after the sweep
     // above; their vanished-record teardowns land in pendingDisposals during

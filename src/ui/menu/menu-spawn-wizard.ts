@@ -28,6 +28,7 @@ import {
 } from "../../models/thinking-resolution.ts";
 import { getPiDefaultThinkingLevel, getPiModelThinkingLevels } from "../../pi-settings.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, buildSelectListTheme, createSearchableSelect } from "./helpers.ts";
+import { plainText } from "../sanitize.ts";
 import { DEFAULT_GRACE_TURNS } from "../../config/config-io.ts";
 import { prepareSpawnIntent } from "../../spawn/spawn-preparation.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
@@ -184,7 +185,7 @@ export async function showSpawnAgentMenu(
     const result = await ctx.ui.custom<string | undefined>((_tui, theme, _kb, done) => {
       const items: SettingItem[] = types.map((t) => ({
         id: t,
-        label: `${agentBulletPrefix(owner, t)}${t}`,
+        label: `${agentBulletPrefix(owner, t)}${plainText(t)}`,
         currentValue: t,
         description: owner.registry.getAgentConfig(t)?.description ?? "Agent type",
         submenu: (_v: string, _subDone: (value?: string) => void) => {
@@ -486,8 +487,8 @@ export async function showSpawnAgentMenu(
                   { value: "Inherits parent cwd", label: "Inherits parent cwd" },
                   ...worktrees.map((wt) => {
                     const branchLabel = wt.isDetached ? "detached" : (wt.branch ?? "detached");
-                    const truncPath = truncatePath(wt.path);
-                    return { value: wt.path, label: truncPath, provider: branchLabel };
+                    const truncPath = truncatePath(plainText(wt.path));
+                    return { value: wt.path, label: truncPath, provider: plainText(branchLabel) };
                   }),
                 ];
                 return createSearchableSelect(

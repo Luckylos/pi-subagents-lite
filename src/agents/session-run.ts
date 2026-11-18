@@ -46,6 +46,8 @@ export interface SessionRunResult<S extends RunSession = RunSession> {
 export interface SessionPromptOptions extends RunCallbacks {
   maxTurns?: number;
   graceTurns?: number;
+  /** SDK prompt lifecycle, separate from run-owned cleanup and settlement. */
+  onPromptStateChange?: (state: "started" | "finished") => void;
   /** Abort signal forwarded to session.abort() while the prompt runs. */
   signal?: AbortSignal;
 }
@@ -80,8 +82,8 @@ function getLastAssistantText(session: RunSession, fromIndex: number): string {
  * assistant message ended normally (or was aborted), so a transient error
  * followed by a successful turn never fails the run.
  */
-function getFinalModelError(session: RunSession): string | undefined {
-  for (let i = session.messages.length - 1; i >= 0; i--) {
+function getFinalModelError(session: RunSession, fromIndex: number): string | undefined {
+  for (let i = session.messages.length - 1; i >= fromIndex; i--) {
     const msg = session.messages[i];
     if (msg.role !== "assistant") continue;
     if (msg.stopReason !== "error") return undefined;
@@ -100,7 +102,18 @@ function forwardAbortSignal(session: RunSession, signal?: AbortSignal): () => vo
     void session.abort().catch(() => {});
   };
   signal.addEventListener("abort", onAbort, { once: true });
-  return () => signal.removeEventListener("abort", onAbort);
+  // SDK input/auth preflight precedes _startRun, which resets its abort
+  // intent. Reapply our run-owned intent at the public start boundary. The
+  // low-level event loop awaits listeners: returning abort() would wait for
+  // that same loop to become idle and deadlock it.
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type === "agent_start" && signal.aborted) onAbort();
+  });
+  if (signal.aborted) onAbort();
+  return () => {
+    signal.removeEventListener("abort", onAbort);
+    unsubscribe();
+  };
 }
 
 /**
@@ -150,25 +163,25 @@ export function subscribeToSessionEvents(
 
 function wireTurnTracking(
   session: RunSession,
-  options: Pick<SessionPromptOptions, "maxTurns" | "graceTurns" | "onTurnEnd">,
+  options: Pick<SessionPromptOptions, "maxTurns" | "graceTurns" | "onTurnEnd" | "onPromptStateChange">,
 ) {
   let turnCount = 0;
   const maxTurns = normalizeMaxTurns(options.maxTurns);
   let softLimitReached = false;
   let aborted = false;
+  let wrapUp: Promise<"queued" | "handled" | void> | undefined;
   const graceTurns = options.graceTurns ?? DEFAULT_GRACE_TURNS;
 
   const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+    if (event.type === "agent_start") options.onPromptStateChange?.("started");
     if (event.type !== "turn_end") return;
     turnCount++;
     options.onTurnEnd?.(turnCount);
     if (maxTurns == null) return;
     if (!softLimitReached && turnCount >= maxTurns) {
       softLimitReached = true;
-      // steer() returns a promise and fires from a subscribe callback: a
-      // rejection would escape the run. It only costs the graceful wrap-up;
-      // the hard abort below still fires.
-      void session
+      // The SDK can finish this input hook after the prompt has returned.
+      wrapUp = session
         .steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.")
         .catch(() => {});
     } else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
@@ -179,15 +192,17 @@ function wireTurnTracking(
     }
   });
 
-  return { unsubscribe, getAborted: () => aborted, getTurnLimited: () => softLimitReached };
+  return {
+    unsubscribe,
+    getAborted: () => aborted,
+    getTurnLimited: () => softLimitReached,
+    // The manager clears the SDK queue once both this steer and its own input
+    // callbacks have drained. Neither path may clear the shared queue early.
+    drainWrapUp: () => wrapUp,
+  };
 }
 
-async function runTurnLoop(
-  session: RunSession,
-  prompt: string,
-  options: { signal?: AbortSignal } & RunCallbacks,
-  unsubTurns: () => void,
-) {
+async function runTurnLoop(session: RunSession, prompt: string, options: SessionPromptOptions, unsubTurns: () => void) {
   const unsubEvents = subscribeToSessionEvents(session, options);
   const collector = collectResponseText(session, options.onTextDelta);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
@@ -196,8 +211,9 @@ async function runTurnLoop(
   // or abort with no output) — that would resurrect a prior run's result.
   const messageStart = session.messages.length;
   try {
-    await session.prompt(prompt);
+    if (!options.signal?.aborted) await session.prompt(prompt);
   } finally {
+    options.onPromptStateChange?.("finished");
     unsubTurns();
     unsubEvents();
     collector.unsubscribe();
@@ -217,13 +233,19 @@ export async function runSessionPrompt<S extends RunSession>(
   prompt: string,
   options: SessionPromptOptions,
 ): Promise<SessionRunResult<S>> {
-  const { unsubscribe: unsubTurns, getAborted, getTurnLimited } = wireTurnTracking(session, options);
-  const responseText = await runTurnLoop(session, prompt, options, unsubTurns);
+  const messageStart = session.messages.length;
+  const { unsubscribe: unsubTurns, getAborted, getTurnLimited, drainWrapUp } = wireTurnTracking(session, options);
+  let responseText: string;
+  try {
+    responseText = await runTurnLoop(session, prompt, options, unsubTurns);
+  } finally {
+    await drainWrapUp();
+  }
   return {
     responseText,
     session,
-    aborted: getAborted(),
+    aborted: getAborted() || options.signal?.aborted === true,
     turnLimited: getTurnLimited(),
-    modelError: getFinalModelError(session),
+    modelError: getFinalModelError(session, messageStart),
   };
 }

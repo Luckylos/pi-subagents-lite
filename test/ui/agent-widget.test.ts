@@ -253,6 +253,22 @@ describe("compact mode", () => {
     expect(lines[1]).toContain("reading");
   });
 
+  it.each([false, true])("shows stopping with the same line count and elapsed time (compact=%s)", (compact) => {
+    widget.setCompactMode(compact);
+    widget.setWidgetShortcut(compact);
+    const agent = makeRunningAgent("a1");
+    agent.lifecycle.startedAt = Date.now() - 60_500;
+    activity.set(agent.id, makeActivity(agent.id));
+    manager.listAgents = () => [agent];
+    const before = renderWidgetLines(widget);
+    agent.lifecycle.phase = "stopping";
+    const during = renderWidgetLines(widget);
+    expect(during).toHaveLength(before.length);
+    expect(during.join("\n")).toContain("stopping");
+    expect(during.join("\n")).toContain("1m");
+    expect(during.join("\n")).not.toContain("reading");
+  });
+
   it("full mode renders running agent with metadata lines", () => {
     widget.setCompactMode(false);
     const agent = makeRunningAgent("a1");

@@ -23,7 +23,9 @@ import { parseModelKey, findModelInRegistry, parseThinkingChoice } from "../util
 import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 import { getPiModelThinkingLevel } from "../pi-settings.ts";
 import { getPiInstance, getStore, getCoordinator, getManager } from "../shell.ts";
-import { formatAgentStatusList } from "./agent-status.ts";
+import { canRequestStop, displayAgentStatus, formatAgentStatusList, stopRequestedText } from "./agent-status.ts";
+import { invalidateAgentRow } from "../ui/renderer.ts";
+import { plainText } from "../ui/sanitize.ts";
 
 // --- Tool result helpers ---
 
@@ -264,15 +266,21 @@ export async function executeAgentTool(
 
   if (isBackground) {
     const suffix = `Success! You delegated to an agent. A notification will arrive when done - USER: do not poll, don't check status and don't duplicate the delegated work!\n\nAgent ID: ${agentId}`;
-    const label = record.lifecycle.status === "queued" ? "Agent queued" : "Agent running";
+    const label =
+      record.lifecycle.phase === "stopping"
+        ? "Agent stopping"
+        : record.lifecycle.status === "queued"
+          ? "Agent queued"
+          : "Agent running";
     const details = buildAgentDetails(record);
     details.agentId = agentId;
     details.status = record.lifecycle.status;
     return successResult(`[${label}] ${suffix}`, details);
   }
 
-  // Foreground: record.execution.promise is already awaited by coordinator.spawn()
+  // The coordinator awaits the parent gate, which Stop can open before execution settles.
   const details = buildAgentDetails(record, { includeStats: true });
+  if (record.lifecycle.phase === "stopping") return successResult(stopRequestedText(record), details);
 
   if (record.lifecycle.status === "error") {
     throw new Error(`Agent failed: ${record.error || "unknown error"}`);
@@ -293,9 +301,7 @@ function shortId(record: AgentRecord): string {
  * Format: "short_id (type), short_id (type)" — one line, easy for LLM to parse.
  */
 function formatRunningAgents(owner: ExtensionOwner): string {
-  const agents = getManager(owner)!
-    .listAgents()
-    .filter((a) => a.lifecycle.status === "running" || a.lifecycle.status === "queued");
+  const agents = getManager(owner)!.listAgents().filter(canRequestStop);
 
   if (agents.length === 0) return "none";
 
@@ -336,14 +342,19 @@ export async function executeStopAgentTool(
   const manager = getManager(owner)!;
   const record = resolveAgent(owner, params.agent_id, () => `Running agents: ${formatRunningAgents(owner)}`);
 
-  if (record.lifecycle.status !== "running" && record.lifecycle.status !== "queued") {
+  if (!canRequestStop(record)) {
+    const state = displayAgentStatus(record.lifecycle);
+    const status = record.lifecycle.phase === "settling" ? "settling" : state;
     return successResult(
-      `Agent ${shortId(record)} is already ${record.lifecycle.status}. Running agents: ${formatRunningAgents(owner)}`,
+      `Agent ${shortId(record)} is already ${status}. Running agents: ${formatRunningAgents(owner)}`,
     );
   }
 
   if (manager.abort(record.id, "agent")) {
-    return successResult(`Stopped agent ${shortId(record)}`);
+    invalidateAgentRow(owner, record.id);
+    return successResult(
+      record.lifecycle.status === "stopped" ? `Stopped agent ${shortId(record)}` : stopRequestedText(record),
+    );
   }
 
   throw new Error(`Failed to stop agent ${shortId(record)}`);
@@ -378,24 +389,26 @@ export async function executeMessageAgentTool(
   if (!text) throw new Error("message is required");
 
   const record = resolveAgent(owner, params.agent_id, () => `Known agents: ${formatKnownAgents(owner)}`);
-  const wasRunning = record.lifecycle.status === "running";
-
-  if (!wasRunning && !record.execution.session) {
-    return successResult(
-      `Agent ${shortId(record)} is ${record.lifecycle.status} with no live session. Message not sent.`,
-    );
-  }
-
   const manager = getManager(owner);
   if (!manager) throw new Error("Subagents session has not started");
-  if (!(await manager.steer(record.id, text))) {
-    throw new Error(
-      `Failed to send message to agent ${shortId(record)}. ` +
-        `It may still be settling or its concurrency slot is full. Try again.`,
-    );
+  const result = await manager.submitMessage(record.id, text);
+  if (!result.accepted) {
+    if (result.reason === "unavailable" && !record.execution.session && !canRequestStop(record)) {
+      return successResult(
+        `Agent ${shortId(record)} is ${displayAgentStatus(record.lifecycle)} with no live session. Message not sent.`,
+        { reason: result.reason },
+      );
+    }
+    throw new Error(`Failed to send message to agent ${shortId(record)}. ${plainText(result.message)}`);
   }
 
-  return successResult(wasRunning ? "Sent (steered)" : "Sent (continued)");
+  const { agentId, runId, delivery } = result;
+  const report = {
+    steer: "Sent (steered)",
+    pending_steer: "Accepted (pending steer; waiting for session startup)",
+    continuation: "Sent (continued)",
+  }[delivery];
+  return successResult(report, { agentId, runId, delivery });
 }
 
 // --- Tool_call listener — inject model into Agent tool calls ---

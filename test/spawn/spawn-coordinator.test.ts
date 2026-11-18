@@ -4,7 +4,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentRecord, AgentStatus } from "../../src/types.js";
+import type { AgentRecord, SubagentRun, SubagentRunStatus } from "../../src/types.js";
 import type { AgentManager, SpawnOptions } from "../../src/agents/agent-manager.js";
 import { asExtensionAPI, asExtensionContext } from "../pi-boundaries.js";
 
@@ -47,7 +47,10 @@ vi.mock("../../src/shell.js", async () =>
   (await import("../owner-fixtures.js")).ownerShellMock(
     await (() => ({
       getPiInstance: () => mockGetPiInstance(),
-      getSessionCtx: () => ({ isIdle: () => parentState.idle }),
+      getSessionCtx: () => ({
+        isIdle: () => parentState.idle,
+        sessionManager: { getSessionId: () => "parent", getEntries: () => [] },
+      }),
       getWidget: () => null,
     }))(),
   ),
@@ -55,6 +58,7 @@ vi.mock("../../src/shell.js", async () =>
 
 function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & MockManager {
   const records = new Map<string, AgentRecord>();
+  const runs = new Map<string, SubagentRun>();
   // Capture forwarded spawn arguments (named fields, not positional indices) so
   // tests assert the coordinator's output to the manager without call indexing.
   const spawnCalls: SpawnCall[] = [];
@@ -85,6 +89,28 @@ function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & M
       return id;
     }),
     getRecord: vi.fn((id: string) => records.get(id)),
+    getRuns: vi.fn<AgentManager["getRuns"]>((id) => {
+      const run = runs.get(id);
+      return records.has(id) && run ? [run] : [];
+    }),
+    settle(id: string) {
+      const record = records.get(id);
+      if (!record) return undefined;
+      const { lifecycle, execution } = record;
+      const sequence = execution.settlementCount || 1;
+      const status = lifecycle.status === "queued" || lifecycle.status === "running" ? "completed" : lifecycle.status;
+      runs.set(id, {
+        id: `${id}-run-${sequence}`,
+        agentId: id,
+        sequence,
+        phase: "settled",
+        acceptedAt: lifecycle.startedAt,
+        startedAt: lifecycle.started ? lifecycle.startedAt : undefined,
+        outcome: { status, completedAt: Date.now(), result: record.result, error: record.error },
+        completion: Promise.resolve(),
+      });
+      return record;
+    },
     getSpawnCalls: () => spawnCalls,
     getGateResolver: (id: string) => gateResolvers.get(id),
     dispose: async () => {
@@ -115,6 +141,7 @@ interface MockManager {
   getRecord: (id: string) => AgentRecord | undefined;
   getSpawnCalls: () => SpawnCall[];
   getGateResolver: (id: string) => ((value: string) => void) | undefined;
+  settle: (id: string) => AgentRecord | undefined;
   dispose: () => Promise<void>;
 }
 
@@ -134,6 +161,11 @@ describe("SpawnCoordinator", () => {
   let SpawnCoordinator: typeof import("../../src/spawn/spawn-coordinator.js").SpawnCoordinator;
   let manager: ReturnType<typeof makeMockManager>;
   let ctx: ExtensionContext;
+
+  function complete(coordinator: InstanceType<typeof SpawnCoordinator>, id: string): void {
+    const record = manager.settle(id);
+    if (record) coordinator.onAgentComplete(record);
+  }
 
   beforeEach(async () => {
     vi.useFakeTimers();
@@ -249,7 +281,7 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
 
       expect(mockPi.sendMessage).not.toHaveBeenCalled();
 
@@ -277,8 +309,8 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      coordinator.scheduleNudge(r1.agentId);
-      coordinator.scheduleNudge(r2.agentId);
+      complete(coordinator, r1.agentId);
+      complete(coordinator, r2.agentId);
 
       // Advance past the batch window
       vi.advanceTimersByTime(200);
@@ -289,7 +321,7 @@ describe("SpawnCoordinator", () => {
     it("does not emit nudge for agent without record", () => {
       const coordinator = new SpawnCoordinator(owner, manager);
       // agent-999 doesn't exist in the mock manager
-      coordinator.scheduleNudge("agent-999");
+      complete(coordinator, "agent-999");
 
       vi.advanceTimersByTime(200);
 
@@ -314,12 +346,12 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      coordinator.scheduleNudge(r1.agentId);
+      complete(coordinator, r1.agentId);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
 
-      coordinator.scheduleNudge(r2.agentId);
+      complete(coordinator, r2.agentId);
 
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
 
@@ -342,7 +374,7 @@ describe("SpawnCoordinator", () => {
       result.record.lifecycle.status = "error";
       result.record.error = "model failed to load";
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -364,7 +396,7 @@ describe("SpawnCoordinator", () => {
       });
       result.record.lifecycle.status = "completed";
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -386,7 +418,7 @@ describe("SpawnCoordinator", () => {
       });
       expect(coordinator.liveView(result.agentId)).toBeDefined();
 
-      coordinator.onAgentComplete({ id: result.agentId } as AgentRecord);
+      complete(coordinator, result.agentId);
 
       expect(coordinator.liveView(result.agentId)).toBeDefined();
     });
@@ -402,12 +434,12 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      coordinator.onAgentComplete({ id: result.agentId } as AgentRecord);
+      complete(coordinator, result.agentId);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
 
-      expect(coordinator.isBackground(result.agentId)).toBe(false);
+      expect(coordinator.isBackground(result.agentId)).toBe(true);
     });
 
     it("re-feeds the live view with activity after completion", async () => {
@@ -421,7 +453,7 @@ describe("SpawnCoordinator", () => {
       });
       const spawn = manager.getSpawnCalls()[0];
 
-      coordinator.onAgentComplete({ id: result.agentId } as AgentRecord);
+      complete(coordinator, result.agentId);
 
       // Continuation activity flows through the same spawn-time callbacks
       // into the retained live view.
@@ -443,9 +475,11 @@ describe("SpawnCoordinator", () => {
         runInBackground: false,
       });
 
-      // The record exists, so only the backgroundAgentIds guard can
-      // prevent the nudge from being scheduled and emitted.
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
+      expect(coordinator.getCompletionNotification(`${result.agentId}-run-1`)).toMatchObject({
+        status: "not-required",
+        canRetry: false,
+      });
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).not.toHaveBeenCalled();
@@ -461,20 +495,20 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      // First settlement consumes the one-shot set entry and nudges once.
+      // The first background run nudges once.
       result.record.execution.settlementCount = 1;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
 
       // Each continuation settlement nudges again.
       result.record.execution.settlementCount = 2;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(2);
 
       result.record.execution.settlementCount = 3;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(3);
     });
@@ -490,7 +524,7 @@ describe("SpawnCoordinator", () => {
       });
 
       result.record.execution.settlementCount = 2;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -507,7 +541,7 @@ describe("SpawnCoordinator", () => {
       });
 
       result.record.execution.settlementCount = 1;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).not.toHaveBeenCalled();
@@ -524,8 +558,9 @@ describe("SpawnCoordinator", () => {
       });
 
       // Never-started stops notify directly without incrementing the counter.
-      result.record.execution.settlementCount = 0;
-      coordinator.onAgentComplete(result.record);
+      result.record.lifecycle.status = "stopped";
+      result.record.lifecycle.started = false;
+      complete(coordinator, result.agentId);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).not.toHaveBeenCalled();
@@ -541,16 +576,16 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      // The one-shot set still gates the first settlement even when the
-      // counter never incremented (queued stop / already-aborted spawn).
-      result.record.execution.settlementCount = 0;
-      coordinator.onAgentComplete(result.record);
+      // The first run still nudges when stopped before starting.
+      result.record.lifecycle.status = "stopped";
+      result.record.lifecycle.started = false;
+      complete(coordinator, result.agentId);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
     });
 
-    it("never emits more than one nudge for settlements within one batch window", async () => {
+    it("never emits more than one nudge for repeated callbacks for the same run", async () => {
       const coordinator = new SpawnCoordinator(owner, manager);
       const result = await coordinator.spawn(mockPiApi, ctx, {
         type: "builder",
@@ -560,11 +595,7 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      // First and continuation settlements inside the same 200ms window
-      // coalesce into a single batched nudge — never more than one.
-      result.record.execution.settlementCount = 1;
-      coordinator.onAgentComplete(result.record);
-      result.record.execution.settlementCount = 2;
+      complete(coordinator, result.agentId);
       coordinator.onAgentComplete(result.record);
 
       vi.advanceTimersByTime(200);
@@ -582,7 +613,7 @@ describe("SpawnCoordinator", () => {
       });
 
       result.record.execution.settlementCount = 2;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(coordinator.isBackground(result.agentId)).toBe(false);
@@ -604,7 +635,7 @@ describe("SpawnCoordinator", () => {
         throw new Error("stale context");
       });
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -621,7 +652,7 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
 
       // Dispose before timer fires — should prevent emission
       coordinator.dispose();
@@ -652,7 +683,7 @@ describe("SpawnCoordinator", () => {
       });
 
       result.record.execution.settlementCount = 2;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(notify).toHaveBeenCalledTimes(1);
@@ -675,8 +706,7 @@ describe("SpawnCoordinator", () => {
       });
 
       // Initial completion delivers inline — no nudge, no fallback.
-      result.record.execution.settlementCount = 1;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(notify).not.toHaveBeenCalled();
@@ -695,8 +725,7 @@ describe("SpawnCoordinator", () => {
       });
 
       // First settlement: sendMessage works, notify untouched.
-      result.record.execution.settlementCount = 1;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
       expect(notify).not.toHaveBeenCalled();
@@ -706,7 +735,7 @@ describe("SpawnCoordinator", () => {
         throw new Error("stale context");
       });
       result.record.execution.settlementCount = 2;
-      coordinator.onAgentComplete(result.record);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
       expect(notify).toHaveBeenCalledTimes(1);
     });
@@ -723,7 +752,7 @@ describe("SpawnCoordinator", () => {
         graceTurns: 6,
         runInBackground: true,
       });
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
 
       coordinator.dispose();
 
@@ -752,10 +781,11 @@ describe("SpawnCoordinator", () => {
   });
 
   describe("stale pi protection", () => {
-    it("reads pi from shell at nudge time, not from spawn", async () => {
+    it("uses the owner API captured at construction, independent of the spawn API", async () => {
       const coordinator = new SpawnCoordinator(owner, manager);
 
-      const result = await coordinator.spawn(mockPiApi, ctx, {
+      const otherPi = asExtensionAPI({ sendMessage: vi.fn() });
+      const result = await coordinator.spawn(otherPi, ctx, {
         type: "builder",
         prompt: "task",
         description: "Test",
@@ -763,9 +793,9 @@ describe("SpawnCoordinator", () => {
         runInBackground: true,
       });
 
-      // Nudge still works because it reads from shell at call time
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
+      expect(otherPi.sendMessage).not.toHaveBeenCalled();
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
     });
 
@@ -784,7 +814,7 @@ describe("SpawnCoordinator", () => {
       const freshPi = asExtensionAPI({ ...mockPi, sendMessage: vi.fn() });
       mockGetPiInstance.mockReturnValue(freshPi);
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(freshPi.sendMessage).not.toHaveBeenCalled();
@@ -807,7 +837,7 @@ describe("SpawnCoordinator", () => {
       // Simulate shell having no pi at nudge time
       mockGetPiInstance.mockReturnValue(null);
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -817,7 +847,7 @@ describe("SpawnCoordinator", () => {
 
   describe("nudge message status", () => {
     it("uses lifecycle status in the nudge message", async () => {
-      const statuses: Array<{ status: AgentStatus; expected: string }> = [
+      const statuses: Array<{ status: SubagentRunStatus; expected: string }> = [
         { status: "completed", expected: "completed" },
         { status: "error", expected: "error" },
         { status: "aborted", expected: "aborted" },
@@ -840,7 +870,7 @@ describe("SpawnCoordinator", () => {
         manager.getRecord(result.agentId)!.lifecycle.status = status;
         manager.getRecord(result.agentId)!.result = "Result text";
 
-        coordinator.scheduleNudge(result.agentId);
+        complete(coordinator, result.agentId);
         vi.advanceTimersByTime(200);
 
         expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -925,7 +955,7 @@ describe("SpawnCoordinator", () => {
       record.lifecycle.started = false;
       record.result = undefined;
 
-      coordinator.scheduleNudge(result.agentId);
+      complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
 
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -1032,6 +1062,27 @@ describe("SpawnCoordinator parent messages", () => {
     await manager.dispose();
     await expect(send(b.options, "x")).rejects.toThrow("Not delivered");
     expect(mockPi.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("submits each run's Parent message before its completion notification", async () => {
+    const coordinator = new SpawnCoordinator(owner, manager);
+    const { agentId, record, options } = await spawnWith(coordinator, true, true);
+    for (const sequence of [1, 2]) {
+      record.execution.settlementCount = sequence - 1;
+      await send(options, `progress ${sequence}`);
+      record.execution.settlementCount = sequence;
+      record.result = `result ${sequence}`;
+      coordinator.onAgentComplete(manager.settle(agentId)!);
+      vi.advanceTimersByTime(200);
+    }
+    expect(
+      mockPi.sendMessage.mock.calls.map(([message]) => [message.customType, message.content.split("\n\n")[1]]),
+    ).toEqual([
+      ["subagent-message", "progress 1"],
+      ["subagent-result", "result 1"],
+      ["subagent-message", "progress 2"],
+      ["subagent-result", "result 2"],
+    ]);
   });
 
   it("starts a fresh allowance when the record settles into a continuation", async () => {

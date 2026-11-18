@@ -77,6 +77,36 @@ describe("streamToOutputFile", () => {
     return session;
   }
 
+  it("keeps raw terminal controls in output data and shared tool summaries", () => {
+    const raw = "A\u009b?1049hB\x1b]0;hidden\x07C\rD";
+    const path = createOutputFilePath(testAgentId, fixture.getDir());
+    writeInitialEntry(path, raw);
+    const session = setupSession([
+      { role: "user", content: raw },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: raw },
+          { type: "toolCall", name: "read", arguments: { path: raw } },
+        ],
+      },
+    ]);
+    const cleanup = streamToOutputFile(session, path);
+    try {
+      session._fireTurnEnd();
+      const output = readFileSync(path, "utf-8");
+      expect(output).toContain(`[USER] ${raw}\n`);
+      expect(output).toContain(`[ASSISTANT] ${raw}\n`);
+      expect(output).toContain(`[TOOL] read(${JSON.stringify(raw)})`);
+      expect(session.messages[1].content).toEqual([
+        { type: "text", text: raw },
+        { type: "toolCall", name: "read", arguments: { path: raw } },
+      ]);
+    } finally {
+      cleanup();
+    }
+  });
+
   it("appends TOOL lines when session events fire", () => {
     const dir = fixture.getDir();
     const path = createOutputFilePath(testAgentId, dir);

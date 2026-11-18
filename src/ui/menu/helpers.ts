@@ -7,6 +7,7 @@
 import type { Component, SettingItem, SettingsListTheme } from "@earendil-works/pi-tui";
 import type { Theme } from "../types.ts";
 import { SearchableSelectDialog, type SelectOption } from "../searchable-select.ts";
+import { plainText } from "../sanitize.ts";
 import { parseModelKey } from "../../utils.ts";
 
 /** Group header marker — shared by model-settings and widget-settings. */
@@ -18,7 +19,7 @@ export function headerItem(theme: Theme, label: string): GroupHeaderItem {
   return {
     id: SEPARATOR_ID,
     kind: GROUP_HEADER_KIND,
-    label: theme.bold(theme.fg("accent", label)),
+    label: theme.bold(theme.fg("accent", plainText(label))),
     currentValue: "",
   };
 }
@@ -102,9 +103,11 @@ export function buildModelOptions(
   // Parse all options into SelectOption objects
   const parsed: SelectOption[] = [];
   for (const opt of rawOptions) {
-    const parsedKey = parseModelKey(opt);
-    if (!parsedKey) continue;
-    parsed.push({ value: opt, label: parsedKey.modelId, provider: parsedKey.provider });
+    if (typeof opt !== "string") continue;
+    // Parsing this sanitized copy is display-only; identity, ordering and deduplication stay raw.
+    const displayKey = parseModelKey(plainText(opt));
+    if (!displayKey) continue;
+    parsed.push({ value: opt, label: displayKey.modelId, provider: displayKey.provider });
   }
 
   // If no sorting requested, return parsed options directly
@@ -122,20 +125,24 @@ export function buildModelOptions(
   const added = new Set<string>();
 
   // Add current model first (even if not in rawOptions)
-  if (currentModel) {
-    const currentParsed = parseModelKey(currentModel);
-    if (currentParsed) {
-      current.push({ value: currentModel, label: currentParsed.modelId, provider: currentParsed.provider });
+  if (typeof currentModel === "string" && currentModel) {
+    const currentDisplayKey = parseModelKey(plainText(currentModel));
+    if (currentDisplayKey) {
+      current.push({
+        value: currentModel,
+        label: currentDisplayKey.modelId,
+        provider: currentDisplayKey.provider,
+      });
       added.add(currentModel);
     }
   }
 
   // Add configured models in their original order
   for (const modelId of configuredModels ?? []) {
-    if (added.has(modelId)) continue;
-    const parsedKey = parseModelKey(modelId);
-    if (parsedKey) {
-      configured.push({ value: modelId, label: parsedKey.modelId, provider: parsedKey.provider });
+    if (typeof modelId !== "string" || added.has(modelId)) continue;
+    const displayKey = parseModelKey(plainText(modelId));
+    if (displayKey) {
+      configured.push({ value: modelId, label: displayKey.modelId, provider: displayKey.provider });
       added.add(modelId);
     }
   }
@@ -185,8 +192,8 @@ export function buildSettingsListTheme(theme: {
 }): SettingsListTheme {
   return {
     label: (text, selected) => (selected ? theme.fg("accent", text) : text),
-    value: (text, selected) => (selected ? theme.fg("accent", text) : theme.fg("muted", text)),
-    description: (text) => theme.fg("dim", text),
+    value: (text, selected) => (selected ? theme.fg("accent", plainText(text)) : theme.fg("muted", plainText(text))),
+    description: (text) => theme.fg("dim", plainText(text)),
     // Use "→ " (2 chars) to match non-selected prefix "  " (2 spaces)
     // This prevents menu items from shifting left/right when cursor moves
     cursor: theme.fg("accent", "→ "),
@@ -278,7 +285,7 @@ export function buildSelectListTheme(theme: {
   return {
     selectedPrefix: () => theme.fg("accent", "→ "),
     selectedText: (text) => theme.fg("accent", text),
-    description: (text) => theme.fg("muted", text),
+    description: (text) => theme.fg("muted", plainText(text)),
     scrollInfo: (text) => theme.fg("dim", text),
     noMatch: (text) => theme.fg("dim", text),
   };

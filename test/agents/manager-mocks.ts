@@ -130,6 +130,7 @@ export interface MockAgentSession {
   isStreaming: boolean;
   steer: Mock<(text: string, images?: ImageContent[]) => Promise<void>>;
   abort: Mock<() => Promise<void>>;
+  clearQueue: Mock<AgentSession["clearQueue"]>;
   model?: FakeSessionModel;
 }
 
@@ -147,6 +148,7 @@ export function mockAgentSession(options: MockAgentSessionOptions = {}): MockAge
     isStreaming: options.isStreaming ?? false,
     steer: vi.fn<(text: string, images?: ImageContent[]) => Promise<void>>(async () => {}),
     abort: vi.fn(async () => {}),
+    clearQueue: vi.fn(() => ({ steering: [], followUp: [] })),
     model: options.model,
   };
 }

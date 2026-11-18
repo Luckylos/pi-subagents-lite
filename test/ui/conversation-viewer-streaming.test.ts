@@ -1,31 +1,10 @@
-/**
- * conversation-viewer-streaming.test.ts — Streaming lifecycle in the viewer.
- *
- * Simulates pi's real streaming semantics (packages/agent/src/agent-loop.ts):
- *   - "start": an EMPTY partial assistant message is pushed into the live
- *     messages array and a session-level `message_start` is emitted.
- *   - every content event: the LAST array element is REPLACED with a new
- *     partial object (array reference and length stay constant) and a
- *     `message_update` carries the raw assistantMessageEvent (thinking_*,
- *     text_*, toolcall_*).
- *   - "done": the final message is swapped into the last slot and a
- *     session-level `message_end` is emitted (agent-session.ts forwards it
- *     to subscribers as `{ type: "message_end", message }`).
- *   - the TUI renders continuously, so a render follows every event batch.
- *
- * The viewer caches per-message-index render lines keyed on array reference +
- * count + width. None of those change while the partial message mutates, so
- * the in-flight assistant message's cache entry would stay frozen at whatever
- * was on screen when it was first rendered. The streaming accumulators are
- * the only live content, and they are cleared on *_end — so each completed
- * block would vanish from the view until something forced a re-render of that
- * index (for a tool-calling message: the toolResult arriving). These tests pin
- * the fix: completed blocks render from the session transcript the moment they
- * complete, and content only ever accumulates.
- */
+/** Streaming lifecycle with the SDK's separate in-flight assistant state. */
 
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import type { TUI } from "@earendil-works/pi-tui";
+import { Agent } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { assistantMessage } from "../agents/session-messages.js";
 import type { AgentRecord } from "../../src/types.js";
 import type { Theme } from "../../src/ui/types.js";
 import { asAgentSession } from "../pi-boundaries.js";
@@ -86,6 +65,7 @@ interface Msg {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  stopReason?: string;
 }
 
 /** An assistant partial carrying exactly these content blocks. */
@@ -115,41 +95,50 @@ function makeTui(): TUI {
   } as unknown as TUI;
 }
 
-/** Mirrors agent-loop.ts streaming: partial message swapped per delta, array ref/count stable. */
+/** pi-agent-core 1.5.2 appends the assistant only at message_end. */
 class FakeStream {
   subscriber: (event?: unknown) => void = () => {};
+  state: { streamingMessage?: Msg } = {};
   constructor(public messages: Msg[]) {}
-  /** message_start: pi pushes an empty partial assistant message and emits the event. */
   start(): void {
     const empty = msgWith();
-    this.messages.push(empty);
+    this.state.streamingMessage = empty;
     this.subscriber({ type: "message_start", message: empty });
   }
-  /** A content event: replace the last element with the new partial, emit message_update. */
   event(meType: string, partial: Msg, delta?: string): void {
-    this.messages[this.messages.length - 1] = partial;
+    this.state.streamingMessage = partial;
     this.subscriber({ type: "message_update", assistantMessageEvent: { type: meType, delta }, message: partial });
   }
-  /** done: pi swaps the final message into the last slot and emits session-level message_end. */
   end(final: Msg): void {
-    this.messages[this.messages.length - 1] = final;
+    this.state.streamingMessage = undefined;
+    this.messages.push(final);
     this.subscriber({ type: "message_end", message: final });
+  }
+  toolEnd(toolCallId: string, isError: boolean): void {
+    this.subscriber({ type: "tool_execution_end", toolCallId, isError });
+  }
+  toolResult(toolCallId: string, isError: boolean): void {
+    const message: Msg = { role: "toolResult", toolCallId, isError, content: [] };
+    this.messages.push(message);
+    this.subscriber({ type: "message_end", message });
   }
 }
 
 const THINKING = "STEP-ONE-THOUGHT";
 const TEXT = "PART-ONE-TEXT";
 
-function setup(): { stream: FakeStream; render: () => string } {
+function setup(partial?: Msg): { stream: FakeStream; render: () => string } {
   const messages: Msg[] = [{ role: "user", content: "do the thing" }];
   const stream = new FakeStream(messages);
+  stream.state.streamingMessage = partial;
   mockSubscribe.mockImplementation((cb) => {
     stream.subscriber = cb;
     return () => {};
   });
-  const session = asAgentSession({ messages, subscribe: mockSubscribe });
-  const viewer = new ConversationViewer(owner, makeTui(), session as never, makeRecord(session), noopTheme, vi.fn());
-  return { stream, render: () => viewer.render(80).join("\n") };
+  const session = asAgentSession({ messages, state: stream.state, subscribe: mockSubscribe });
+  const theme = { ...noopTheme, bg: (color: string, text: string) => (text.trim() ? `${color}:${text}` : text) };
+  const viewer = new ConversationViewer(owner, makeTui(), session, makeRecord(session), theme, vi.fn());
+  return { stream, render: () => viewer.render(120).join("\n") };
 }
 
 beforeEach(() => {
@@ -157,6 +146,113 @@ beforeEach(() => {
 });
 
 describe("ConversationViewer streaming", () => {
+  it("reads the real SDK partial at text_end and the completed transcript only at message_end", async () => {
+    const stream = createAssistantMessageEventStream();
+    const agent = new Agent({ streamFn: () => stream });
+    const session = asAgentSession({
+      state: agent.state,
+      get messages() {
+        return agent.state.messages;
+      },
+      subscribe: agent.subscribe.bind(agent),
+    });
+    let viewer: ConversationViewer | undefined;
+    const visible: Array<{ completed: number; partial: boolean; occurrences: number }> = [];
+    const part = assistantMessage({ content: [{ type: "text", text: TEXT }] });
+    agent.subscribe((event) => {
+      const blockEnd = event.type === "message_update" && event.assistantMessageEvent.type === "text_end";
+      const messageEnd = event.type === "message_end" && event.message.role === "assistant";
+      if (!blockEnd && !messageEnd) return;
+      // Open after the SDK has already processed earlier streaming events.
+      viewer ??= new ConversationViewer(owner, makeTui(), session, makeRecord(session), noopTheme, vi.fn());
+      visible.push({
+        completed: agent.state.messages.filter((message) => message.role === "assistant").length,
+        partial: !!agent.state.streamingMessage,
+        occurrences: count(viewer.render(120).join("\n"), TEXT),
+      });
+    });
+    const run = agent.prompt("local stub task");
+    stream.push({ type: "start", partial: assistantMessage() });
+    stream.push({ type: "text_delta", contentIndex: 0, delta: TEXT, partial: part });
+    stream.push({ type: "text_end", contentIndex: 0, content: TEXT, partial: part });
+    stream.push({ type: "done", reason: "stop", message: part });
+    stream.end(part);
+    await run;
+    viewer?.dispose();
+    expect(visible).toEqual([
+      { completed: 0, partial: true, occurrences: 1 },
+      { completed: 1, partial: false, occurrences: 1 },
+    ]);
+  });
+  it.each(["aborted", "error"])("opens mid-stream and finalizes %s text once", (stopReason) => {
+    const partial = msgWith({ type: "text", text: TEXT });
+    const { stream, render } = setup(partial);
+    expect(render()).toContain("do the thing");
+    expect(count(render(), TEXT)).toBe(1);
+    stream.event("text_delta", msgWith({ type: "text", text: `${TEXT}-tail` }), "-tail");
+    expect(count(render(), `${TEXT}-tail`)).toBe(1);
+    stream.end({ ...msgWith({ type: "text", text: `${TEXT}-tail` }), stopReason });
+    expect(count(render(), `${TEXT}-tail`)).toBe(1);
+    expect(count(render(), TEXT)).toBe(1);
+  });
+
+  it("projects parallel tool endings by id before reconciling transcript results", () => {
+    const { stream, render } = setup();
+    stream.start();
+    stream.end(
+      msgWith({ type: "toolCall", id: "a", name: "tool-alpha" }, { type: "toolCall", id: "b", name: "tool-beta" }),
+    );
+    const status = (name: string) =>
+      render()
+        .split("\n")
+        .find((line) => line.includes(name));
+    expect(status("tool-alpha")).toContain("toolPendingBg");
+    stream.toolEnd("b", true);
+    expect(status("tool-alpha")).toContain("toolPendingBg");
+    expect(status("tool-beta")).toContain("toolErrorBg");
+    stream.toolEnd("a", false);
+    expect(status("tool-alpha")).toContain("toolSuccessBg");
+    stream.toolResult("a", false);
+    stream.toolResult("b", true);
+    expect(status("tool-alpha")).toContain("toolSuccessBg");
+    expect(status("tool-beta")).toContain("toolErrorBg");
+    expect(count(render(), "tool-alpha")).toBe(1);
+    expect(count(render(), "tool-beta")).toBe(1);
+  });
+  it.each([
+    ["text", "\x1b]0;hidden\nsecret", "\x1b\\"],
+    ["thinking", "\x1b]0;hidden\nsecret", "\x1b\\"],
+    ["text", "\u009fhidden\nsecret", "\u009c"],
+    ["thinking", "\u009fhidden\nsecret", "\u009c"],
+    ["text", "\x1b[?1049", "h"],
+    ["thinking", "\u009b?1049", "h"],
+  ])("hides unfinished %s controls %j across deltas and rebuilds from raw history", (kind, sequence, terminator) => {
+    const { stream, render } = setup();
+    stream.start();
+    render();
+    const prefix = `safe${sequence}`;
+    const partial = (raw: string) =>
+      msgWith(kind === "text" ? { type: "text", text: raw } : { type: "thinking", thinking: raw });
+    stream.event(`${kind}_delta`, partial(prefix), prefix);
+    const pending = render();
+    expect(pending).toContain("safe");
+    expect(pending).not.toContain("hidden");
+    expect(pending).not.toContain("secret");
+    expect(pending).not.toContain("?1049");
+    expect(pending).not.toContain("\x1b");
+    const raw = `${prefix}${terminator}rest\r\nlast\rline`;
+    stream.event(`${kind}_delta`, partial(raw), `${terminator}rest\r\nlast\rline`);
+    expect(render()).toContain("saferest");
+    stream.event(`${kind}_end`, partial(raw));
+    stream.end(partial(raw));
+    const finished = render();
+    expect(finished).toContain("saferest");
+    expect(finished).toContain("last");
+    expect(finished).toContain("line");
+    expect(finished).not.toContain("\x1b");
+    expect(finished).not.toContain("\r");
+    expect(stream.messages.at(-1)).toEqual(partial(raw));
+  });
   it("control: streamed blocks stay visible while deltas arrive", () => {
     const { stream, render } = setup();
     stream.start();

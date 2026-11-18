@@ -11,13 +11,27 @@ import type { ExtensionOwner } from "../shell.ts";
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentRecord } from "../types.ts";
+import type { AgentLifecycle, AgentRecord } from "../types.ts";
 import { SHORT_ID_LENGTH } from "../types.ts";
 import { getManager, getStore } from "../shell.ts";
 
+export function displayAgentStatus(lifecycle: AgentLifecycle): AgentLifecycle["status"] | "stopping" {
+  return lifecycle.phase === "stopping" ? "stopping" : lifecycle.status;
+}
+
+export function canRequestStop(record: AgentRecord): boolean {
+  const { phase, status } = record.lifecycle;
+  return phase ? phase === "queued" || phase === "running" : status === "running" || status === "queued";
+}
+
+export function stopRequestedText(record: AgentRecord): string {
+  const id = record.id.slice(0, SHORT_ID_LENGTH);
+  return record.lifecycle.phase === "stopping" ? `Stop requested for ${id} — stopping.` : `Stop requested for ${id}.`;
+}
+
 function formatAgent(record: AgentRecord): string {
   const shortId = record.id.slice(0, SHORT_ID_LENGTH);
-  return `${shortId} (${record.display.type}) ${record.lifecycle.status}`;
+  return `${shortId} (${record.display.type}) ${displayAgentStatus(record.lifecycle)}`;
 }
 
 /** In-progress agents are always shown; every other status is settled (issue constraints). */

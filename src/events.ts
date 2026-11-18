@@ -9,6 +9,7 @@ import { createConfigIO } from "./config/config-io.ts";
 import type { ExtensionOwner } from "./shell.ts";
 import { AgentManager } from "./agents/agent-manager.ts";
 import { AgentWidget, type UICtx } from "./ui/agent-widget.ts";
+import { requestRunStop } from "./ui/message-composer.ts";
 import { ConversationViewer } from "./ui/conversation-viewer.ts";
 import { SpawnCoordinator } from "./spawn/spawn-coordinator.ts";
 import { toolCallListener } from "./agents/tool-execution.ts";
@@ -49,6 +50,7 @@ export function ensureManagerAndWidget(owner: ExtensionOwner): void {
 
     const coordinator = new SpawnCoordinator(owner, newManager);
     setCoordinator(owner, coordinator);
+    newManager.setOnClear((id) => coordinator.onAgentClear(id));
 
     newManager.setOnComplete((record) => {
       if (owner.manager !== newManager) return;
@@ -110,6 +112,8 @@ async function openViewer(owner: ExtensionOwner, ctx: ExtensionContext, record: 
   const widget = getWidget(owner);
   if (!widget) return;
   const manager = getManager(owner);
+  const session = record.execution.session;
+  if (!manager) return;
 
   try {
     widget.setViewerOpen(true);
@@ -118,13 +122,13 @@ async function openViewer(owner: ExtensionOwner, ctx: ExtensionContext, record: 
       const viewer = new ConversationViewer(
         owner,
         tui,
-        record.execution.session!,
+        session,
         record,
         theme,
         done,
-        () => manager?.abort(record.id, "user"),
+        (target) => requestRunStop(owner, record, target).text,
         kb,
-        (msg: string) => manager?.steer(record.id, msg),
+        (msg: string) => manager.submitMessage(record.id, msg),
       );
       viewer.setModelDisplayStyle(getStore(owner).agent.modelDisplayStyle);
       return viewer;
@@ -232,7 +236,16 @@ function disposeSession(owner: ExtensionOwner): Promise<void> {
 export function setupEventListeners(pi: ExtensionAPI, owner: ExtensionOwner): void {
   pi.on("tool_call", (event, ctx) => toolCallListener(owner, event, ctx));
 
-  pi.on("turn_start", async (_event, ctx) => {
+  const observe = (_event: unknown, ctx: ExtensionContext) => {
+    getCoordinator(owner)?.observeCompletionNotifications(ctx);
+  };
+  pi.on("context", observe);
+  pi.on("turn_end", observe);
+  pi.on("agent_end", observe);
+  pi.on("agent_settled", observe);
+  pi.on("session_tree", observe);
+  pi.on("turn_start", async (event, ctx) => {
+    observe(event, ctx);
     getWidget(owner)?.setUICtx(ctx.ui as unknown as UICtx);
   });
 

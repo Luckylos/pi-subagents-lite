@@ -113,6 +113,31 @@ describe("showDebugMenu — SelectList migration", () => {
     vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => undefined);
   });
 
+  it("sanitizes debug display copies while retaining the raw model briefing", async () => {
+    const raw = "A\u009b?1049hB\x1b]0;hidden\x07C";
+    const config: AgentConfig = {
+      name: raw,
+      displayName: raw,
+      description: raw,
+      model: raw,
+      registeredTools: [raw],
+      systemPrompt: "",
+    };
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue([raw]);
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValue([raw]);
+    vi.mocked(owner.registry.getAgentConfig).mockReturnValue(config);
+    const ctx = createMockCtx();
+    await showDebugMenu(owner, ctx);
+    await selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "Available agent types:\n\n  ABC\n    ABC\n  Model: ABC\n  Tools: ABC\n",
+      "info",
+    );
+    await selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
+    expect(mockModules.mockPiInstance.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining(raw));
+    expect(config.description).toBe(raw);
+  });
+
   it("uses ctx.ui.custom (not ctx.ui.select)", async () => {
     const ctx = createMockCtx();
     await showDebugMenu(owner, ctx);

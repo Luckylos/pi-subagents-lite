@@ -13,7 +13,8 @@
  * to `closeMenu` for SelectList (SettingsList gets its own at construction).
  */
 
-import { type Component, isFocusable } from "@earendil-works/pi-tui";
+import { type Component, type SettingItem, isFocusable } from "@earendil-works/pi-tui";
+import { plainText } from "../../sanitize.ts";
 import { installSeparatorSkip } from "../helpers.ts";
 
 export interface SettingsListWrapperTheme {
@@ -54,7 +55,7 @@ export class SettingsListWrapper implements Component {
 
   constructor(settingsList: Component, options: SettingsListWrapperOptions) {
     this.settingsList = settingsList;
-    this.title = options.title;
+    this.title = plainText(options.title);
     this.theme = options.theme;
     this.separatorChar = options.separatorChar ?? "─";
     this.passthroughKeys = options.passthroughKeys ?? false;
@@ -143,6 +144,30 @@ export class SettingsListWrapper implements Component {
     this.settingsList.handleInput?.(data);
   }
 
+  /** Supply display copies before pi-tui truncates values or wraps descriptions. */
+  private renderList(width: number): string[] {
+    const list = this.settingsList as Component & { items?: SettingItem[]; filteredItems?: SettingItem[] };
+    if (!list.items?.every((item) => typeof item.currentValue === "string")) {
+      return list.render(width);
+    }
+    const { items, filteredItems } = list;
+    const displayCopy = (item: SettingItem): SettingItem => ({
+      ...item,
+      currentValue: plainText(item.currentValue),
+      description: item.description === undefined ? undefined : plainText(item.description),
+    });
+    // Keep labels (including themed section headers), ids and selectable values intact.
+    // Only synchronous layout sees these copies; input/submenus/onChange use raw items.
+    list.items = items.map(displayCopy);
+    list.filteredItems = filteredItems?.map(displayCopy);
+    try {
+      return list.render(width);
+    } finally {
+      list.items = items;
+      list.filteredItems = filteredItems;
+    }
+  }
+
   render(width: number): string[] {
     const lines: string[] = [];
 
@@ -157,7 +182,7 @@ export class SettingsListWrapper implements Component {
     // SettingsList content — strip the hint line that pi-tui always appends
     // (empty line + "Enter/Space to change · Esc to cancel"). Descriptions
     // already explain what each item does, so the hint is redundant.
-    const settingsLines = this.settingsList.render(width);
+    const settingsLines = this.renderList(width);
     const hintPattern = /Enter\/Space|Esc to cancel/;
     if (settingsLines.length >= 2 && hintPattern.test(settingsLines[settingsLines.length - 1] ?? "")) {
       lines.push(...settingsLines.slice(0, -2));

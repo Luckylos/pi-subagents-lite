@@ -17,7 +17,7 @@ import type { AgentManager } from "../src/agents/agent-manager.js";
 import type { SystemPromptMode } from "../src/agents/types.js";
 import type { ConfigStore, RawConcurrency } from "../src/config/config-store.js";
 import type { SessionModelOverrides, SubagentsConfig } from "../src/models/model-precedence.js";
-import type { SpawnIntent } from "../src/spawn/spawn-coordinator.js";
+import type { SpawnCoordinator, SpawnIntent } from "../src/spawn/spawn-coordinator.js";
 import type { SpawnOptions } from "../src/agents/agent-manager.js";
 import type { SelectOption } from "../src/ui/searchable-select.js";
 import type { Theme } from "../src/ui/types.js";
@@ -47,8 +47,9 @@ const hoisted = vi.hoisted(() => {
     setConcurrency: vi.fn(),
     listAgents: vi.fn<AgentManager["listAgents"]>(() => []),
     getRecord: vi.fn(),
+    getRuns: vi.fn<AgentManager["getRuns"]>(() => []),
     abort: vi.fn(),
-    steer: vi.fn(),
+    submitMessage: vi.fn<AgentManager["submitMessage"]>(),
     spawn: vi.fn<AgentManager["spawn"]>(() => "agent-id-123"),
     clear: vi.fn(),
   };
@@ -163,8 +164,9 @@ export function resetConfig(): void {
   mockModules.mockManager.setConcurrency.mockReset();
   mockModules.mockManager.listAgents.mockReset();
   mockModules.mockManager.getRecord.mockReset();
+  mockModules.mockManager.getRuns.mockReset().mockReturnValue([]);
   mockModules.mockManager.abort.mockReset();
-  mockModules.mockManager.steer.mockReset();
+  mockModules.mockManager.submitMessage.mockReset();
   mockModules.mockManager.spawn.mockReset();
   mockModules.mockManager.clear.mockReset();
   mockModules.mockPiExec.mockReset();
@@ -212,10 +214,10 @@ vi.mock("../src/ui/format.js", async () => {
   // in row labels instead of a hand-copied shape.
   const actual = await vi.importActual<typeof import("../src/ui/format.js")>("../src/ui/format.js");
   return {
+    ...actual,
     getDisplayName: vi.fn((_owner: import("../src/shell.js").ExtensionOwner, t: string) => t),
     agentBulletPrefix: vi.fn(() => ""),
     agentColoredText: vi.fn((text: string) => text),
-    formatMs: actual.formatMs,
   };
 });
 
@@ -695,8 +697,13 @@ vi.mock("../src/shell.js", async () =>
             }
             return { agentId: id, record };
           }),
+          getCompletionNotification: vi.fn<SpawnCoordinator["getCompletionNotification"]>(() => ({
+            status: "unavailable",
+            canRetry: false,
+          })),
+          observeCompletionNotifications: vi.fn<SpawnCoordinator["observeCompletionNotifications"]>(),
+          retryCompletionNotification: vi.fn<SpawnCoordinator["retryCompletionNotification"]>(() => "unavailable"),
           isBackground: vi.fn(() => false),
-          scheduleNudge: vi.fn(),
           onAgentComplete: vi.fn(),
           dispose: vi.fn(),
         })),

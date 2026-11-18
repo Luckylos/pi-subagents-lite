@@ -23,7 +23,12 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { SelectItem, SelectList } from "@earendil-works/pi-tui";
+import type { SelectItem, SelectList, TUI } from "@earendil-works/pi-tui";
+
+/** Assert the viewer's partial terminal fixture at the private TUI class boundary. */
+export function asTui<S extends object>(fake: S): TUI & S {
+  return fake as TUI & S;
+}
 
 /** A partial resource fixture crosses the private-class boundary once here. */
 export function asExtensionOwner<S extends object>(fake: S): ExtensionOwner & S {

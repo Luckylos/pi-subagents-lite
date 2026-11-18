@@ -22,6 +22,7 @@ import {
   statusIcon,
   type StatsVisibility,
 } from "./format.ts";
+import { plainText } from "./sanitize.ts";
 import { agentColorAnsi } from "../agent-color.ts";
 import type { LiveView } from "../types.ts";
 
@@ -555,7 +556,7 @@ export class AgentWidget {
         };
       }
       case "error": {
-        const errMsg = error ? `: ${error.slice(0, 60)}` : "";
+        const errMsg = error ? `: ${plainText(error).slice(0, 60)}` : "";
         return { icon, statusText: theme.fg("error", ` error${errMsg}`) };
       }
       default:
@@ -587,7 +588,7 @@ export class AgentWidget {
     const statsLine = statsParts.join("·");
     const tagPart = this.modelThinkingHeaderTag(a, theme);
 
-    return `${icon} ${theme.fg("dim", name)}${tagPart}  ${theme.fg("dim", a.display.description)}  ${wrapInDim(theme, statsLine)}${statusText}`;
+    return `${icon} ${theme.fg("dim", name)}${tagPart}  ${theme.fg("dim", plainText(a.display.description))}  ${wrapInDim(theme, statsLine)}${statusText}`;
   }
 
   /** Build the dim-styled model/thinking tag for the header line, or "" when it belongs on the metadata line. */
@@ -717,7 +718,8 @@ export class AgentWidget {
       const name = getDisplayName(this.owner, a.display.type);
       const bg = this.getLiveView(a.id);
       const statsLine = this.buildStatsLine(a, theme);
-      const activity = bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…";
+      const stopping = a.lifecycle.phase === "stopping";
+      const activity = stopping ? "stopping" : bg ? describeActivity(bg.activeTools, bg.responseText) : "thinking…";
       const coloredFrame = this.coloredFrame(frame, a.display.type || undefined, theme);
 
       if (this.isCompact()) {
@@ -725,15 +727,17 @@ export class AgentWidget {
         // Truncate description to preserve stats visibility; activity fills remainder
         // and gets cut by truncate() (which cuts from the right).
         const tagPart = this.modelThinkingHeaderTag(a, theme);
-        const fixedParts = `  ${coloredFrame} ${theme.bold(name)}${tagPart}  `;
+        const stoppingPart = stopping ? theme.fg("warning", " stopping") : "";
+        const fixedParts = `  ${coloredFrame} ${theme.bold(name)}${tagPart}${stoppingPart}  `;
         const fixedWidth = visibleWidth(fixedParts);
         const statsWidth = visibleWidth(`  ${statsLine}`);
         const availableForDesc = Math.max(0, w - fixedWidth - statsWidth);
 
-        const finalDesc = truncateToWidth(a.display.description, availableForDesc);
+        const finalDesc = truncateToWidth(plainText(a.display.description), availableForDesc);
 
         // Activity gets full text; truncate() will cut from the right if line exceeds width.
-        const headerLine = `${fixedParts}${finalDesc}  ${statsLine}  ${theme.fg("dim", activity)}`.trimEnd();
+        const activityPart = stopping ? "" : `  ${theme.fg("dim", activity)}`;
+        const headerLine = `${fixedParts}${finalDesc}  ${statsLine}${activityPart}`.trimEnd();
         blocks.push({
           header: truncate(headerLine),
           metadataLines: [],
@@ -745,7 +749,7 @@ export class AgentWidget {
         const fixedParts = `  ${coloredFrame} ${theme.bold(name)}${tagPart}    ${statsLine}`;
         const fixedWidth = visibleWidth(fixedParts);
         const availableWidth = w - fixedWidth;
-        const truncatedDesc = truncateToWidth(a.display.description, Math.max(0, availableWidth));
+        const truncatedDesc = truncateToWidth(plainText(a.display.description), Math.max(0, availableWidth));
         const headerLine = `  ${coloredFrame} ${theme.bold(name)}${tagPart}  ${truncatedDesc}  ${statsLine}`;
         const metadataLines: string[] = [];
         const line = this.buildMetadataLine(a, "  │ ", theme, truncate);
@@ -757,7 +761,7 @@ export class AgentWidget {
           agentColorAnsi(this.owner, a.display.type || undefined),
           () => theme.fg("dim", connectorPrefix),
         );
-        metadataLines.push(truncate(coloredConnector + theme.fg("dim", activity)));
+        metadataLines.push(truncate(coloredConnector + theme.fg(stopping ? "warning" : "dim", activity)));
         blocks.push({
           header: truncate(headerLine),
           metadataLines,
@@ -952,7 +956,7 @@ export class AgentWidget {
     const blocks: RenderBlock[] = [];
     for (const a of queued) {
       const name = getDisplayName(this.owner, a.display.type);
-      const desc = a.display.description;
+      const desc = plainText(a.display.description);
       const header = `  ${theme.fg("muted", "◦")} ${theme.fg("dim", name)}  ${theme.fg("dim", desc)}`;
       blocks.push({ header: truncate(header), metadataLines: [] });
     }

@@ -37,6 +37,7 @@ import { SettingsListWrapper } from "./wrappers/settings-list.ts";
 import { getStore } from "../../shell.ts";
 import type { RawConcurrency } from "../../config/config-store.ts";
 import type { SelectOption } from "../searchable-select.ts";
+import { plainText } from "../sanitize.ts";
 import type { Theme } from "../types.ts";
 
 export async function showConcurrencySettingsMenu(
@@ -165,7 +166,7 @@ export async function showConcurrencySettingsMenu(
       const limit = providerLimits[provider];
       items.push({
         id: `provider:${provider}`,
-        label: provider,
+        label: plainText(provider),
         currentValue: `${limit} slots${limitTag("providers", provider)}`,
         description: `Concurrent slots reserved for agents using the ${provider} provider.`,
         submenu: limitSubmenu(
@@ -191,7 +192,7 @@ export async function showConcurrencySettingsMenu(
         currentValue: "",
         description: "Cap how many agents run at once for a single provider.",
         submenu: addPickThenValueSubmenu(
-          providers.map((o) => ({ value: o, label: o })),
+          providers.map((o) => ({ value: o, label: plainText(o) })),
           (provider, target, parsed) => {
             store.mutate.concurrency.setProvider(provider, parsed, target);
             ctx.ui.notify(`${provider} concurrency set to ${parsed} (${target})`, "info");
@@ -212,7 +213,7 @@ export async function showConcurrencySettingsMenu(
       const limit = models[modelKey];
       items.push({
         id: `model:${modelKey}`,
-        label: modelKey,
+        label: plainText(modelKey),
         currentValue: `${limit} slots${limitTag("models", modelKey)}`,
         description: `Concurrent slots reserved for agents using the ${modelKey} model.`,
         submenu: limitSubmenu(

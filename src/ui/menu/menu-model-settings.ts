@@ -20,6 +20,7 @@ import { SettingsList, type SettingItem } from "@earendil-works/pi-tui";
 
 import type { Theme } from "../types.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, createSearchableSelect, headerItem } from "./helpers.ts";
+import { plainText } from "../sanitize.ts";
 import { agentBulletPrefix } from "../format.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createClearAllSubmenu, type AvailableLevels, type TargetChoice } from "./submenus/target-select.ts";
@@ -177,7 +178,7 @@ export async function showModelSettingsMenu(
         const thinkingLabel = formatDisplayedThinking({ level: row.thinking, source: row.source });
         items.push({
           id: `type:${row.type}`,
-          label: `${agentBulletPrefix(owner, row.type)}${row.type}`,
+          label: `${agentBulletPrefix(owner, row.type)}${plainText(row.type)}`,
           // SettingsList truncates the value with no ellipsis, so the row carries no
           // reserved padding: an empty tag contributes no space.
           currentValue: [thinkingLabel, row.tag].filter(Boolean).join(" "),
@@ -204,7 +205,7 @@ export async function showModelSettingsMenu(
           createSearchableSelect(
             nonOverridden.map((typeName) => ({
               value: typeName,
-              label: `${agentBulletPrefix(owner, typeName)}${typeName}`,
+              label: `${agentBulletPrefix(owner, typeName)}${plainText(typeName)}`,
             })),
             {
               onSelect: (typeName) => {

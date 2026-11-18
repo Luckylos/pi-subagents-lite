@@ -4,9 +4,9 @@
 
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import type { MarkdownTheme, TUI } from "@earendil-works/pi-tui";
-import type { AgentRecord } from "../../src/types.js";
+import type { AgentRecord, AgentSubmissionResult, SubagentRun } from "../../src/types.js";
 import type { Theme } from "../../src/ui/types.js";
-import { asAgentSession } from "../pi-boundaries.js";
+import { asAgentSession, asExtensionOwner } from "../pi-boundaries.js";
 
 // --- Mocks ---
 
@@ -39,6 +39,9 @@ vi.mock("@earendil-works/pi-tui", () => ({
       if (data === "\x1b") this.onEscape?.();
       else if (data === "\r") this.onSubmit?.(this.text);
       else this.text += data;
+    }
+    setValue(value: string) {
+      this.text = value;
     }
     render(_w: number): string[] {
       return ["> " + this.text];
@@ -149,11 +152,28 @@ interface TestMessage {
   isError?: boolean;
 }
 
-function makeMockSession(messages: TestMessage[] = []) {
-  return asAgentSession({
-    messages,
-    subscribe: mockSubscribe,
-  });
+function makeMockSession(messages: TestMessage[] = [], state: { streamingMessage?: TestMessage } = {}) {
+  return asAgentSession({ messages, state, subscribe: mockSubscribe });
+}
+
+function makeTargetOwner(record: AgentRecord, phase: SubagentRun["phase"]) {
+  let runId = "run-1";
+  const getRuns = (): readonly SubagentRun[] => [
+    {
+      id: runId,
+      agentId: record.id,
+      sequence: 1,
+      phase: record.lifecycle.phase ?? phase,
+      acceptedAt: 1,
+      completion: Promise.resolve(),
+    },
+  ];
+  return {
+    owner: asExtensionOwner({ ...owner, manager: { getRecord: () => record, getRuns } }),
+    changeRun: () => {
+      runId = "run-2";
+    },
+  };
 }
 
 function makeMockRecord(overrides: Partial<AgentRecord> = {}): AgentRecord {
@@ -259,7 +279,8 @@ describe("ConversationViewer", () => {
         return () => {};
       });
 
-      const session = makeMockSession([{ role: "user", content: "hi" }]);
+      const state: { streamingMessage?: TestMessage } = {};
+      const session = makeMockSession([{ role: "user", content: "hi" }], state);
       const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
       const tui = makeTui();
 
@@ -277,6 +298,7 @@ describe("ConversationViewer", () => {
 
       // Rapid deltas coalesce into one render: both fire before the debounce
       // window elapses, so only a single requestRender follows.
+      state.streamingMessage = { role: "assistant", content: [{ type: "text", text: "hello world!" }] };
       subscriber!({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " world" } });
       subscriber!({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "!" } });
       vi.runAllTimers();
@@ -402,6 +424,120 @@ describe("ConversationViewer", () => {
   });
 
   describe("steering", () => {
+    it.each(["running", "settled"] as const)(
+      "rejects a stale %s draft even when the replacement has the same phase",
+      async (phase) => {
+        const session = makeMockSession();
+        const record = makeMockRecord({
+          lifecycle: { status: phase === "running" ? "running" : "completed", phase, startedAt: 1, started: true },
+          execution: { settled: phase === "settled", settlementCount: 0, session },
+        });
+        const target = makeTargetOwner(record, phase);
+        const submit = vi.fn<(message: string) => Promise<AgentSubmissionResult>>();
+        const viewer = new ConversationViewer(
+          target.owner,
+          makeTui(),
+          session,
+          record,
+          noopTheme,
+          vi.fn(),
+          undefined,
+          undefined,
+          submit,
+        );
+        viewer.handleInput("\r");
+        viewer.handleInput(" inside draft ");
+        target.changeRun();
+        viewer.handleInput("\r");
+        await Promise.resolve();
+        const output = viewer.render(150).join("\n");
+        expect(output).toContain(">  inside draft ");
+        expect(output).toContain(
+          `${phase === "running" ? "Message" : "Continue"} not accepted: The run changed while you were composing. Reopen the action and try again.`,
+        );
+        expect(submit).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps a dismissed pending draft and ignores a late response after the viewer closes", async () => {
+      const session = makeMockSession();
+      const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
+      const { owner: viewOwner } = makeTargetOwner(record, "running");
+      let finish!: (result: AgentSubmissionResult) => void;
+      const pending = new Promise<AgentSubmissionResult>((resolve) => {
+        finish = resolve;
+      });
+      const submit = vi.fn<(message: string) => Promise<AgentSubmissionResult>>().mockReturnValue(pending);
+      const done = vi.fn();
+      const viewer = new ConversationViewer(
+        viewOwner,
+        makeTui(),
+        session,
+        record,
+        noopTheme,
+        done,
+        undefined,
+        undefined,
+        submit,
+      );
+      viewer.handleInput("\r");
+      viewer.handleInput(" draft ");
+      viewer.handleInput("\r");
+      viewer.handleInput("\x1b");
+      viewer.handleInput("\r");
+      expect(viewer.render(120).join("\n")).toContain(">  draft ");
+      viewer.handleInput("\r");
+      expect(submit).toHaveBeenCalledOnce();
+      viewer.handleInput("\x1b");
+      viewer.handleInput("q");
+      const renderCount = mockRequestRender.mock.calls.length;
+      finish({ accepted: true, agentId: record.id, runId: "run-1", delivery: "steer" });
+      await pending;
+      expect(done).toHaveBeenCalledOnce();
+      expect(viewer.render(120)).toEqual([]);
+      expect(mockRequestRender).toHaveBeenCalledTimes(renderCount);
+    });
+    it("keeps the exact Continue draft pending and on rejection, then clears on acceptance", async () => {
+      let rejectAdmission!: (value: AgentSubmissionResult) => void;
+      const rejected = new Promise<AgentSubmissionResult>((resolve) => {
+        rejectAdmission = resolve;
+      });
+      const submit = vi
+        .fn<(message: string) => Promise<AgentSubmissionResult>>()
+        .mockReturnValueOnce(rejected)
+        .mockResolvedValueOnce({ accepted: true, agentId: "abc12345", runId: "next", delivery: "continuation" });
+      const session = makeMockSession();
+      const record = makeMockRecord({
+        lifecycle: { status: "completed", startedAt: 1, completedAt: 2, started: true },
+        execution: { settled: true, settlementCount: 1, session },
+      });
+      const viewer = new ConversationViewer(
+        makeTargetOwner(record, "settled").owner,
+        makeTui(),
+        session,
+        record,
+        noopTheme,
+        vi.fn(),
+        undefined,
+        undefined,
+        submit,
+      );
+      viewer.handleInput("\r");
+      viewer.handleInput("  keep going  ");
+      viewer.handleInput("\r");
+      viewer.handleInput("\r");
+      expect(submit.mock.calls).toEqual([["  keep going  "]]);
+      expect(viewer.render(120).join("\n")).toContain("Submitting…");
+      rejectAdmission({ accepted: false, reason: "capacity", message: "Full \x1b]0;secret\x07 now." });
+      await rejected;
+      const output = viewer.render(120).join("\n");
+      expect(output).toContain(">   keep going  ");
+      expect(output).toContain("Continue not accepted: Full  now.");
+      expect(output).not.toContain("secret");
+      viewer.handleInput("\r");
+      await Promise.resolve();
+      expect(viewer.render(120).join("\n")).not.toContain("keep going");
+    });
     it("opens composer on Enter when steerable", () => {
       const onSteer = vi.fn();
       const done = vi.fn();
@@ -431,8 +567,10 @@ describe("ConversationViewer", () => {
       expect(text).toContain("Enter send · Esc cancel");
     });
 
-    it("sends steer message on composer submit", () => {
-      const onSteer = vi.fn();
+    it("sends steer message on composer submit", async () => {
+      const onSteer = vi
+        .fn()
+        .mockResolvedValue({ accepted: true, agentId: "abc12345", runId: "run-1", delivery: "steer" });
       const done = vi.fn();
       const session = makeMockSession();
       const record = makeMockRecord({
@@ -442,7 +580,7 @@ describe("ConversationViewer", () => {
       const tui = makeTui();
 
       const viewer = new ConversationViewer(
-        owner,
+        makeTargetOwner(record, "running").owner,
         tui,
         session,
         record,
@@ -457,12 +595,15 @@ describe("ConversationViewer", () => {
       viewer.handleInput("\r"); // submit
 
       expect(onSteer).toHaveBeenCalledWith("do this thing");
+      await Promise.resolve();
       // Submitting closes the composer — the hint row is gone from the render.
       expect(viewer.render(80).join("\n")).not.toContain("Enter send · Esc cancel");
     });
 
     it("offers continue (not steer) for a settled agent with a session", () => {
-      const onSteer = vi.fn();
+      const onSteer = vi
+        .fn()
+        .mockResolvedValue({ accepted: true, agentId: "abc12345", runId: "run-2", delivery: "continuation" });
       const done = vi.fn();
       const session = makeMockSession();
       const record = makeMockRecord({
@@ -472,7 +613,7 @@ describe("ConversationViewer", () => {
       const tui = makeTui();
 
       const viewer = new ConversationViewer(
-        owner,
+        makeTargetOwner(record, "settled").owner,
         tui,
         session,
         record,
@@ -682,6 +823,37 @@ describe("ConversationViewer", () => {
   });
 
   describe("render", () => {
+    it("shows stopping in its existing header and disarms message and stop actions", () => {
+      const session = makeMockSession([{ role: "user", content: "still visible" }]);
+      const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
+      record.lifecycle.phase = "running";
+      const { owner: viewOwner } = makeTargetOwner(record, "running");
+      const stop = vi.fn();
+      const submit = vi.fn<(message: string) => Promise<AgentSubmissionResult>>();
+      const viewer = new ConversationViewer(
+        viewOwner,
+        makeTui(),
+        session,
+        record,
+        noopTheme,
+        vi.fn(),
+        stop,
+        undefined,
+        submit,
+      );
+      const lines = viewer.render(120).length;
+      viewer.handleInput("s");
+      record.lifecycle.phase = "stopping";
+      viewer.handleInput("s");
+      viewer.handleInput("\r");
+      const view = viewer.render(120);
+      expect(view).toHaveLength(lines);
+      expect(view[1]).toContain("stopping");
+      expect(view.join("\n")).toContain("still visible");
+      expect(view.join("\n")).not.toMatch(/Enter steer|Enter continue|s stop|s again|Enter send/);
+      expect(stop).not.toHaveBeenCalled();
+      expect(submit).not.toHaveBeenCalled();
+    });
     it("renders border frame", () => {
       const session = makeMockSession();
       const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
@@ -914,7 +1086,8 @@ describe("ConversationViewer", () => {
         return () => {};
       });
 
-      const session = makeMockSession([{ role: "user", content: "x".repeat(3000) }]);
+      const state: { streamingMessage?: TestMessage } = {};
+      const session = makeMockSession([{ role: "user", content: "x".repeat(3000) }], state);
       const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
       const viewer = new ConversationViewer(owner, makeTui(), session, record, noopTheme, vi.fn());
 
@@ -926,6 +1099,7 @@ describe("ConversationViewer", () => {
 
       // Streaming text arrives (5 rendered lines) without a new session message,
       // so only the streaming suffix changes.
+      state.streamingMessage = { role: "assistant", content: [{ type: "text", text: "a\nb\nc\nd\ne" }] };
       subscriber!({
         type: "message_update",
         assistantMessageEvent: { type: "text_delta", delta: "a\nb\nc\nd\ne" },
@@ -1127,7 +1301,9 @@ describe("ConversationViewer", () => {
         return () => {};
       });
 
-      const session = makeMockSession();
+      const session = makeMockSession([], {
+        streamingMessage: { role: "assistant", content: [{ type: "thinking", thinking: "Streaming thought..." }] },
+      });
       const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
       const tui = makeTui();
 
@@ -1161,7 +1337,9 @@ describe("ConversationViewer", () => {
         return () => {};
       });
 
-      const session = makeMockSession();
+      const session = makeMockSession([], {
+        streamingMessage: { role: "assistant", content: [{ type: "thinking", thinking: "Streaming thought..." }] },
+      });
       const record = makeMockRecord({ execution: { settled: false, settlementCount: 0, session } });
       const tui = makeTui();
 

@@ -24,7 +24,7 @@ import { findModelInRegistry, GIT_EXEC_TIMEOUT_MS } from "../utils.ts";
 import { DEFAULT_AGENTS } from "./default-agents.ts";
 import { buildAgentPrompt, type PromptExtras } from "../prompt/prompts.ts";
 import { preloadSkills, loadSkillMeta } from "../prompt/skill-loader.ts";
-import { type EnvInfo, type RunCallbacks, type RunTunables, SHORT_ID_LENGTH } from "../types.ts";
+import { type EnvInfo, type RunTunables, SHORT_ID_LENGTH } from "../types.ts";
 import type { SubagentType, SystemPromptMode } from "./types.ts";
 import { getStore } from "../shell.ts";
 import { withChildExtensionLoad } from "../child-load-context.ts";
@@ -98,7 +98,7 @@ export function resetPackageNameCache() {
   packageNameCache.clear();
 }
 
-interface RunOptions extends RunTunables, RunCallbacks {
+interface RunOptions extends RunTunables, SessionPromptOptions {
   /** ExtensionAPI instance — used for pi.exec() for git detection. */
   pi: ExtensionAPI;
   /** Manager-assigned id; suffixes session name to disambiguate parallel spawns (e.g. `Explore#a1b2c3d4`). */
@@ -109,8 +109,6 @@ interface RunOptions extends RunTunables, RunCallbacks {
    * resources (untrusted cross-repo target). Absent/true = load them.
    */
   projectTrusted?: boolean;
-  /** Parent abort signal — when aborted, the subagent is also stopped. */
-  signal?: AbortSignal;
   /** Extra tools bound into the child session at creation (e.g. MessageParent); frontmatter gating still applies. */
   customTools?: ToolDefinition[];
 }

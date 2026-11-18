@@ -236,6 +236,14 @@ describe("showSpawnAgentMenu — wizard flow", () => {
     expect(settingsListCalls[0].options?.enableSearch).toBe(true);
   });
 
+  it("sanitizes type labels without changing picker ids", async () => {
+    const type = "A\u009b?1049hB\x1b]0;hidden\x07C";
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValueOnce([type]);
+    await completeWizard(createMockWizardCtx([undefined]));
+    expect(settingsListCalls[0].items[0].id).toBe(type);
+    expect(settingsListCalls[0].items[0].label).toBe("ABC");
+  });
+
   it("includes bullet prefix in type selection labels", async () => {
     const ctx = createMockWizardCtx([undefined]);
     await completeWizard(ctx);
@@ -1056,6 +1064,21 @@ function setupExecMock(
 describe("showSpawnAgentMenu — worktree submenu", () => {
   beforeEach(() => {
     setupMocks();
+  });
+
+  it("sanitizes worktree labels and badges while retaining the raw selected path", async () => {
+    const hostile = "A\u009b?1049hB\x1b]0;hidden\x07C";
+    const path = `/test/${hostile}`;
+    setupExecMock({ inGitRepo: true, worktrees: [{ path, branch: hostile }] });
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    const item = settingsListCalls[1].items.find((i) => i.id === "worktree")!;
+    const done = vi.fn();
+    item.submenu!("Inherits parent cwd", done);
+    const picker = selectDialogInstances.at(-1)!;
+    expect(picker.items[1]).toEqual({ value: path, label: "/test/ABC", provider: "ABC" });
+    picker.callbacks.onSelect(path);
+    expect(done).toHaveBeenCalledWith(hostile);
   });
 
   it("shows 'Inherits parent cwd' when in git repo", async () => {

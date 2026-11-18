@@ -78,7 +78,7 @@ describe("AgentManager session disposal", () => {
     expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
   });
 
-  it("disposes a run's session that settles after its record vanished (cleared mid-setup)", async () => {
+  it("disposes a run's session that settles after owner disposal during setup", async () => {
     manager = new AgentManager(owner, onComplete);
     const deferred = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(deferred.promise);
@@ -87,13 +87,14 @@ describe("AgentManager session disposal", () => {
     const gate = manager.getRecord(id)!.execution.promise!;
 
     controller.abort();
-    manager.clear(id);
+    expect(manager.clear(id)).toBe(false);
+    const disposing = manager.dispose();
     expect(manager.getRecord(id)).toBeUndefined();
 
     const lateSession = mockAgentSession();
     deferred.resolve(mockRunResult({ session: lateSession }));
     await gate;
-    await manager.dispose();
+    await disposing;
 
     expect(lateSession.dispose).toHaveBeenCalledTimes(1);
     expect(lateSession.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
