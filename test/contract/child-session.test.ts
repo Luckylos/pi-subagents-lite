@@ -709,6 +709,59 @@ describe("contract: child session announced on the parent's event bus", () => {
   });
 });
 
+describe("contract: untrusted target prompt resources", () => {
+  it("keeps target cwd and global resources while omitting both plugin and SDK project resources", async () => {
+    const workspace = makeWorkspace("untrusted-resources");
+    const agentDir = getAgentDir();
+    const skill = (root: string, name: string, content: string) => {
+      const dir = path.join(root, name);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${content}\n---\n${content}`);
+    };
+    fs.writeFileSync(path.join(workspace.project, "AGENTS.md"), "TARGET-CONTEXT");
+    fs.writeFileSync(path.join(agentDir, "AGENTS.md"), "GLOBAL-CONTEXT");
+    skill(path.join(agentDir, "skills"), "global-skill", "GLOBAL-SKILL");
+    skill(path.join(workspace.project, ".pi", "skills"), "target-skill", "TARGET-SKILL");
+    skill(path.join(workspace.project, ".agents", "skills"), "ancestor-skill", "ANCESTOR-SKILL");
+    workspace.writeProbeExtension();
+    const type = "contract-scoped-resources";
+    owner.registry.registerAgents(
+      new Map([
+        [
+          type,
+          {
+            name: type,
+            description: "Scoped resources",
+            systemPrompt: "test prompt",
+            includeContextFiles: true,
+            preloadSkills: ["global-skill", "target-skill"],
+            skills: ["global-skill", "ancestor-skill"],
+          },
+        ],
+      ]),
+    );
+    for (const trusted of [true, false]) {
+      const { session } = await createChildSession(owner, parentCtx(workspace.project), type, {
+        pi: stubPi(),
+        cwd: workspace.project,
+        projectTrusted: trusted,
+      });
+      try {
+        const prompt = session.systemPrompt;
+        expect(session.sessionManager.getCwd()).toBe(workspace.project);
+        expect(prompt).toContain("GLOBAL-CONTEXT");
+        expect(prompt).toContain("GLOBAL-SKILL");
+        for (const text of ["TARGET-CONTEXT", "TARGET-SKILL", "ANCESTOR-SKILL"]) {
+          expect(prompt.includes(text), text).toBe(trusted);
+        }
+        expect(registryOf(session).includes("probe_deferred")).toBe(trusted);
+      } finally {
+        await disposeChildSession(session);
+      }
+    }
+  });
+});
+
 describe("contract: spawn-bound MessageParent obeys frontmatter tool gating", () => {
   const messageParent = () => createParentMessageTool({ deliver: () => true, runKey: () => 0 });
 

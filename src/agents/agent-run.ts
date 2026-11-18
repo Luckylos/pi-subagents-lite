@@ -1,18 +1,31 @@
 import { randomUUID } from "node:crypto";
-import type { SubagentRun, SubagentRunOutcome, SubagentRunPhase } from "../types.ts";
+import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentSubmissionResult,
+  RunNotificationBinding,
+  RunResultStats,
+  SubagentRun,
+  SubagentRunOutcome,
+  SubagentRunPhase,
+  SubagentRunResult,
+} from "../types.ts";
+
+const QUEUE_CLEANUP_FAILED = "The previous run's message queue could not be cleared. This subagent cannot continue.";
+const RUN_SETTLING = "The subagent is finishing its previous run. Retry after settlement.";
 
 /** The manager's sole mutable owner for one execution and its two wait gates. */
 export class AgentRun {
   readonly id = randomUUID();
   readonly controller = new AbortController();
   readonly acceptedAt = Date.now();
-  phase: SubagentRunPhase;
+  private currentPhase: SubagentRunPhase;
   startedAt?: number;
-  stopRequestedAt?: number;
-  outcome?: SubagentRunOutcome;
-  promptState?: "started" | "finished";
-  executionFinished = false;
-  queueCleanupFailed = false;
+  private stopRequestedAt?: number;
+  private terminalResult?: SubagentRunResult;
+  private promptState?: "started" | "finished";
+  private executionFinished = false;
+  private queueCleanupFailed = false;
+  private pendingSteers?: string[];
   private callbacks = new Set<Promise<void>>();
   readonly parentWait: Promise<string>;
   readonly completion: Promise<void>;
@@ -23,8 +36,9 @@ export class AgentRun {
     readonly agentId: string,
     readonly sequence: number,
     queued = false,
+    readonly notification?: RunNotificationBinding,
   ) {
-    this.phase = queued ? "queued" : "running";
+    this.currentPhase = queued ? "queued" : "running";
     this.parentWait = new Promise((resolve) => {
       this.resolveParent = resolve;
     });
@@ -33,15 +47,105 @@ export class AgentRun {
     });
   }
 
+  get phase(): SubagentRunPhase {
+    return this.currentPhase;
+  }
+
+  get outcome(): SubagentRunResult | undefined {
+    return this.terminalResult;
+  }
+
+  start(): void {
+    this.currentPhase = "running";
+    this.startedAt = Date.now();
+  }
+
+  requestStop(): boolean {
+    if (this.phase !== "queued" && this.phase !== "running") return false;
+    this.stopRequestedAt = Date.now();
+    this.currentPhase = "stopping";
+    this.pendingSteers = undefined;
+    return true;
+  }
+
+  get acceptsCallbacks(): boolean {
+    return !this.executionFinished && (this.phase === "running" || this.phase === "stopping");
+  }
+
+  recordPromptState(state: "started" | "finished"): void {
+    this.promptState = state;
+  }
+
+  finishExecution(): void {
+    this.executionFinished = true;
+    this.currentPhase = this.stopRequestedAt !== undefined ? "stopping" : "settling";
+  }
+
+  admitMessage(
+    message: string,
+    session: AgentSession | undefined,
+    published: boolean,
+  ): AgentSubmissionResult | Promise<AgentSubmissionResult> | { continuationSession: AgentSession } {
+    switch (this.phase) {
+      case "stopping":
+        return {
+          accepted: false,
+          reason: "stopping",
+          message: "The subagent is still stopping. Wait for execution to settle.",
+        };
+      case "queued":
+        return { accepted: false, reason: "queued", message: "The subagent is queued and has not started." };
+      case "settling":
+        return { accepted: false, reason: "settling", message: RUN_SETTLING };
+      case "running":
+        if (session) return this.steer(session, message);
+        (this.pendingSteers ??= []).push(message);
+        return { accepted: true, agentId: this.agentId, runId: this.id, delivery: "pending_steer" };
+      case "settled":
+        if (!published) return { accepted: false, reason: "settling", message: RUN_SETTLING };
+        if (this.queueCleanupFailed) return { accepted: false, reason: "unavailable", message: QUEUE_CLEANUP_FAILED };
+        if (!session || session.isStreaming)
+          return { accepted: false, reason: "unavailable", message: "The subagent session is unavailable or busy." };
+        return { continuationSession: session };
+    }
+  }
+
+  flushPendingSteers(getSession: () => AgentSession | undefined): void {
+    if (this.controller.signal.aborted) return;
+    for (const message of this.pendingSteers ?? []) {
+      const session = getSession();
+      if (session) void this.steer(session, message);
+    }
+    this.pendingSteers = undefined;
+  }
+
+  private async steer(session: AgentSession, message: string): Promise<AgentSubmissionResult> {
+    if (this.isPromptClosed(session.isStreaming)) return { accepted: false, reason: "settling", message: RUN_SETTLING };
+    try {
+      await this.trackCallback(session.steer(message));
+      // Input hooks can outlive both the prompt and the stop request.
+      if (this.controller.signal.aborted || this.isPromptClosed(session.isStreaming)) {
+        return {
+          accepted: false,
+          reason: this.controller.signal.aborted ? "stopping" : "settling",
+          message: "The run ended before the message could be delivered. Retry after settlement.",
+        };
+      }
+      return { accepted: true, agentId: this.agentId, runId: this.id, delivery: "steer" };
+    } catch {
+      return { accepted: false, reason: "delivery_failed", message: "The session refused the message." };
+    }
+  }
+
   /** The SDK stays streaming through tools, but clears it before publishing agent_settled. */
-  isPromptClosed(isStreaming: boolean): boolean {
+  private isPromptClosed(isStreaming: boolean): boolean {
     // Before startup, a bound session can already queue steering for this run.
     return (
       this.executionFinished || this.promptState === "finished" || (this.promptState === "started" && !isStreaming)
     );
   }
 
-  trackCallback<T>(work: Promise<T>): Promise<T> {
+  private trackCallback<T>(work: Promise<T>): Promise<T> {
     const done = work.then(
       () => {},
       () => {},
@@ -51,8 +155,21 @@ export class AgentRun {
     return work;
   }
 
-  async drainCallbacks(): Promise<void> {
+  private async drainCallbacks(): Promise<void> {
     while (this.callbacks.size > 0) await Promise.all(this.callbacks);
+  }
+
+  async finishSettlement(getSession: () => AgentSession | undefined, publish: () => void): Promise<void> {
+    await this.drainCallbacks();
+    try {
+      // Read after draining: owner teardown can detach the session while we wait.
+      getSession()?.clearQueue();
+    } catch {
+      // Completion and capacity release still proceed. Reuse does not.
+      this.queueCleanupFailed = true;
+    }
+    this.pendingSteers = undefined;
+    publish();
   }
 
   openParent(value = ""): void {
@@ -60,15 +177,38 @@ export class AgentRun {
     this.resolveParent = undefined;
   }
 
-  settle(outcome: SubagentRunOutcome): void {
-    if (this.outcome) return;
-    this.outcome = Object.freeze({
+  settle(
+    outcome: SubagentRunOutcome,
+    display: Pick<SubagentRunResult, "type" | "description" | "worktreePath" | "outputFile">,
+    stats: RunResultStats,
+  ): SubagentRunResult | undefined {
+    if (this.terminalResult) return undefined;
+    const error = this.queueCleanupFailed
+      ? outcome.error
+        ? `${outcome.error}\n${QUEUE_CLEANUP_FAILED}`
+        : QUEUE_CLEANUP_FAILED
+      : outcome.error;
+    const result: SubagentRunResult = Object.freeze({
       ...outcome,
+      type: display.type,
+      description: display.description,
+      worktreePath: display.worktreePath,
+      outputFile: display.outputFile,
+      agentId: this.agentId,
+      runId: this.id,
+      sequence: this.sequence,
+      started: this.startedAt !== undefined,
+      elapsedMs: outcome.completedAt - (this.startedAt ?? this.acceptedAt),
+      stats,
+      status: this.stopRequestedAt !== undefined ? "stopped" : outcome.status,
+      ...(error !== undefined && { error }),
       stopDetail: outcome.stopDetail ? Object.freeze({ ...outcome.stopDetail }) : undefined,
     });
-    this.phase = "settled";
-    this.openParent(outcome.result);
+    this.terminalResult = result;
+    this.currentPhase = "settled";
+    this.openParent(result.result);
     this.resolveCompletion();
+    return result;
   }
 
   snapshot(): SubagentRun {

@@ -20,7 +20,8 @@ import {
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { canRequestStop } from "../agents/agent-status.ts";
-import { captureRunAction, messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "./message-composer.ts";
+import { messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "./message-composer.ts";
+import { captureRunAction, type RunActionTarget } from "./run-actions.ts";
 import type { AgentRecord, AgentSubmissionResult } from "../types.ts";
 import { getSessionContextPercent } from "../agents/usage.ts";
 import { extractText } from "../prompt/context.ts";
@@ -88,11 +89,11 @@ export class ConversationViewer implements Component {
   private toolResults = new Map<string, ToolResultStatus>();
 
   /** Two-press confirm guard for the stop key, so a stray key can't kill the agent. */
-  private stopArmed: ReturnType<typeof captureRunAction> | undefined;
+  private stopArmed: RunActionTarget | undefined;
   private stopFeedback: { text: string; phase: AgentRecord["lifecycle"]["phase"] } | undefined;
   private keys: ViewerKeys;
   private composer: MessageComposer | undefined;
-  private draft: { composer: MessageComposer; target: ReturnType<typeof captureRunAction> } | undefined;
+  private draft: { composer: MessageComposer; target: RunActionTarget } | undefined;
   /** Debounce timer for streaming renders — avoids fighting the TUI's 16ms loop. */
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -107,7 +108,7 @@ export class ConversationViewer implements Component {
     private theme: Theme,
     private done: (result: undefined) => void,
     /** Abort the agent shown here. Omitted -> no stop affordance (e.g. read-only history). */
-    private onStop?: (target: ReturnType<typeof captureRunAction>) => string | void,
+    private onStop?: (target: RunActionTarget) => string | void,
     /** User keybindings from `ctx.ui.custom()`. Omitted -> hardcoded defaults. */
     keybindings?: ViewerKeybindings,
     /** Send a steering message to the agent. Omitted -> no compose affordance. */

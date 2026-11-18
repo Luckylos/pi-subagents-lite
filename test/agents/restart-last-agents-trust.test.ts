@@ -211,15 +211,14 @@ describe("restart with a trusted or same-repo worktree_path", () => {
     expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", "/repo-b-resolved/.pi/agents");
   });
 
-  it("keeps target discovery off when loadExtensionsImplicitly is disabled (behavior unchanged)", async () => {
+  it("discovers trusted agent definitions when implicit extension loading is disabled", async () => {
     storeState.loadExtensionsImplicitly = false;
     validatedTarget({ sameRepo: true });
 
     await handleRestartLastAgents(owner, commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }])));
 
-    // The spawn itself stays trusted; only the worktree type scan is gated.
     expect(lastSpawnIntent().projectTrusted).toBe(true);
-    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined);
+    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", "/repo-b-resolved/.pi/agents");
   });
 });
 

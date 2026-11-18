@@ -9,10 +9,9 @@ import { createConfigIO } from "./config/config-io.ts";
 import type { ExtensionOwner } from "./shell.ts";
 import { AgentManager } from "./agents/agent-manager.ts";
 import { AgentWidget, type UICtx } from "./ui/agent-widget.ts";
-import { requestRunStop } from "./ui/message-composer.ts";
+import { requestRunStop } from "./ui/run-actions.ts";
 import { ConversationViewer } from "./ui/conversation-viewer.ts";
 import { SpawnCoordinator } from "./spawn/spawn-coordinator.ts";
-import { toolCallListener } from "./agents/tool-execution.ts";
 import { invalidateAgentRow, cleanupInvalidations } from "./ui/renderer.ts";
 import { registerAgentTool } from "./registration.ts";
 import {
@@ -52,10 +51,10 @@ export function ensureManagerAndWidget(owner: ExtensionOwner): void {
     setCoordinator(owner, coordinator);
     newManager.setOnClear((id) => coordinator.onAgentClear(id));
 
-    newManager.setOnComplete((record) => {
+    newManager.setOnComplete((result, notification) => {
       if (owner.manager !== newManager) return;
-      coordinator.onAgentComplete(record);
-      invalidateAgentRow(owner, record.id);
+      coordinator.onAgentComplete(result, notification);
+      invalidateAgentRow(owner, result.agentId);
       getWidget(owner)?.update();
     });
   }
@@ -234,8 +233,6 @@ function disposeSession(owner: ExtensionOwner): Promise<void> {
 }
 
 export function setupEventListeners(pi: ExtensionAPI, owner: ExtensionOwner): void {
-  pi.on("tool_call", (event, ctx) => toolCallListener(owner, event, ctx));
-
   const observe = (_event: unknown, ctx: ExtensionContext) => {
     getCoordinator(owner)?.observeCompletionNotifications(ctx);
   };

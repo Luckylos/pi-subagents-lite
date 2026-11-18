@@ -460,8 +460,12 @@ describe("AgentManager", () => {
     const id = spawnForeground("task");
     const record = manager.getRecord(id)!;
 
-    await expect(manager.steer(id, "early")).resolves.toBe(true);
-    expect(record.execution.pendingSteers).toEqual(["early"]);
+    await expect(manager.submitMessage(id, "early")).resolves.toEqual({
+      accepted: true,
+      agentId: id,
+      runId: manager.getRuns(id)[0].id,
+      delivery: "pending_steer",
+    });
 
     const session = mockAgentSession();
     const delivered = () => session.steer.mock.calls.map(([message]) => message);
@@ -541,9 +545,9 @@ describe("AgentManager", () => {
 
   it("increments settlementCount on every settlement, before notifying", async () => {
     const observedCounts: number[] = [];
-    manager = new AgentManager(owner, (record) => {
-      onComplete(record);
-      observedCounts.push(record.execution.settlementCount);
+    manager = new AgentManager(owner, (result, binding) => {
+      onComplete(result, binding);
+      observedCounts.push(manager.getRecord(result.agentId)!.execution.settlementCount);
     });
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const id = spawnForeground("first task");
@@ -563,9 +567,8 @@ describe("AgentManager", () => {
 
     const record = manager.getRecord(id)!;
     expect(record.execution.settlementCount).toBe(3);
-    // The completion callback observes the incremented count, so the
-    // coordinator can tell a continuation settlement from the first one.
     expect(observedCounts).toEqual([1, 2, 3]);
+    expect(onComplete.mock.calls.map(([result]) => result.sequence)).toEqual([1, 2, 3]);
   });
 
   it("keeps settlementCount at 0 for a never-started queued stop", async () => {
@@ -578,10 +581,11 @@ describe("AgentManager", () => {
     expect(record2.lifecycle.status).toBe("queued");
 
     manager.abort(id2, "user");
-    // The direct notify path (never-started) carries the untouched counter.
-    const observed = onComplete.mock.calls.map((c) => c[0]);
-    const stopCall = observed.find((r) => r.id === id2)!;
-    expect(stopCall.execution.settlementCount).toBe(0);
+    expect(record2.execution.settlementCount).toBe(0);
+    expect(onComplete).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ agentId: id2, sequence: 1, status: "stopped", started: false }),
+      undefined,
+    );
 
     firstRun.resolve(mockRunResult());
   });

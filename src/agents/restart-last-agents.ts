@@ -11,11 +11,10 @@ import type { ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-c
 import type { UICtx } from "../ui/agent-widget.ts";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { getCoordinator, getManager, getPiInstance, getStore, getWidget } from "../shell.ts";
-import { parseThinkingChoice, findModelInRegistry } from "../utils.ts";
+import { parseModelKey, parseThinkingChoice } from "../utils.ts";
 
-import { computeSpawnTarget, surfaceSpawnTargetWarnings } from "../spawn/spawn-target.ts";
+import { prepareResolvedSpawn, resolveSpawnSelection, toolModelChoice } from "../spawn/spawn-resolution.ts";
 import { prepareSpawnIntent } from "../spawn/spawn-preparation.ts";
-import { resolveThinkingLevel } from "../models/thinking-resolution.ts";
 
 /** Extracted parameters from a historical Agent tool call. */
 export interface AgentCallParams {
@@ -24,6 +23,8 @@ export interface AgentCallParams {
   agent?: string;
   worktree_path?: string;
   model?: string;
+  /** Older callers could persist the listener's inferred model and display key. */
+  _modelOverride?: string;
   thinking?: string;
   run_in_background?: boolean;
   max_turns?: number;
@@ -94,71 +95,52 @@ async function resolveAndSpawn(
 ): Promise<{ restarted: string } | { skipped: string }> {
   const type = call.agent || "general-purpose";
   const description = agentCallDescription(call);
-  const key = `${type}::${description}`;
-
-  if (running.has(key)) {
+  if (running.has(`${type}::${description}`)) {
     return { skipped: skippedCallLabel(call, "already running") };
   }
 
-  // Same spawn-target computation as a live Agent tool call: path validation
-  // plus the project-trust decision, one shared definition. A historical
-  // target without a worktree_path is a trusted non-target (no validation,
-  // no gate). Invalid targets skip with the self-correctable error; untrusted
-  // ones still spawn with their project resources and agent types ignored.
-  const target = await computeSpawnTarget(owner, ctx, call.worktree_path);
-  surfaceSpawnTargetWarnings(ctx.ui, target);
-  if (!target.ok) {
-    return { skipped: skippedCallLabel(call, target.error) };
+  const generation = owner.generation;
+  const store = getStore(owner);
+  let spawn: ReturnType<typeof prepareResolvedSpawn>;
+  try {
+    const selection = await resolveSpawnSelection(owner, ctx, type, call.worktree_path);
+    if (owner.generation !== generation || getCoordinator(owner) !== coordinator) {
+      return { skipped: skippedCallLabel(call, "Subagents session changed before restart") };
+    }
+    if (running.has(`${selection.type}::${description}`)) {
+      return { skipped: skippedCallLabel(call, "already running") };
+    }
+    // Pi saves original arguments. The old render marker matched the ID of
+    // an injected model. Restart recomputed that model and replayed the stored
+    // Thinking value, whose provenance is ambiguous in legacy records.
+    const recordedModel = parseModelKey(call.model);
+    const inferredModel = recordedModel && recordedModel.modelId === call._modelOverride;
+    spawn = prepareResolvedSpawn(
+      store,
+      ctx,
+      selection,
+      toolModelChoice(inferredModel ? undefined : call.model),
+      parseThinkingChoice(call.thinking),
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const reason = /^(?:Unknown|Ambiguous) agent type:/.test(message) ? "unknown type" : message;
+    return { skipped: skippedCallLabel(call, reason) };
   }
-
-  // The target's .pi/agents/ types load only when trusted, and only when the
-  // user has not disabled implicit extension loading — same gate as before,
-  // now keyed off the validated path instead of the raw argument.
-  const targetAgentsDir =
-    target.projectTrusted && target.resolvedPath && getStore(owner).agent.loadExtensionsImplicitly !== false
-      ? `${target.resolvedPath}/.pi/agents`
-      : undefined;
-  const resolution = await owner.registry.resolveTypeOrDiscover(type, targetAgentsDir);
-  if (resolution.kind === "not-found" || resolution.kind === "ambiguous") {
-    return { skipped: skippedCallLabel(call, "unknown type") };
-  }
-
-  const resolvedType = resolution.key;
-  const agentConfig = owner.registry.getAgentConfig(resolvedType);
-  const maxTurns = call.max_turns ?? agentConfig?.maxTurns ?? getStore(owner).agent.defaultMaxTurns;
-  const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
-  const effectiveModelStr = getStore(owner).modelFor(resolvedType, parentModelId, agentConfig);
-  const model = effectiveModelStr ? findModelInRegistry(effectiveModelStr, ctx.modelRegistry, ctx.model) : undefined;
-  const modelKey = model ? `${model.provider}/${model.id}` : undefined;
-  // Explicit > frontmatter only: per-model and defaultThinking are owned by
-  // the spawn runner, whose chain keeps per-model above defaultThinking. A
-  // `parent` value resolves against this session's own level, so a replay
-  // follows the session replaying it rather than a frozen historical level.
-  const thinkingLevel = resolveThinkingLevel({
-    explicit: parseThinkingChoice(call.thinking),
-    frontmatter: agentConfig?.thinkingLevel,
-    parentLevel: ctx.thinkingLevel,
-  });
 
   await coordinator!.spawn(
     pi!,
     ctx,
     prepareSpawnIntent({
-      type: resolvedType,
+      ...spawn,
       prompt: call.prompt,
       description,
-      model,
-      modelKey,
-      maxTurns,
-      thinkingLevel,
-      graceTurns: getStore(owner).agent.graceTurns,
-      worktreePath: target.resolvedPath,
-      worktreeLabel: target.worktreeLabel,
-      projectTrusted: target.projectTrusted,
+      maxTurns: call.max_turns ?? spawn.agentConfig?.maxTurns ?? store.agent.defaultMaxTurns,
+      graceTurns: store.agent.graceTurns,
       runInBackground: true,
     }),
   );
-  return { restarted: `${resolvedType}: ${description}` };
+  return { restarted: `${spawn.type}: ${description}` };
 }
 
 /**

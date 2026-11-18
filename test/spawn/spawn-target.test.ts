@@ -144,7 +144,7 @@ describe("computeSpawnTarget — validation plus trust", () => {
 
     await computeSpawnTarget(owner, fakeCtx({ cwd: "/ctx/cwd" }), "/repo-b");
 
-    expect(mockCreateSubagentTrustDeps).toHaveBeenCalledWith(expect.any(String), "/session/cwd");
+    expect(mockCreateSubagentTrustDeps).toHaveBeenCalledWith(expect.any(String), "/session/cwd", "/repo-b-resolved");
   });
 
   it("collects validator warnings into the result instead of notifying", async () => {

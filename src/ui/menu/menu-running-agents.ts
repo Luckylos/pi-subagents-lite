@@ -25,19 +25,13 @@ import {
   type Component,
   type SelectItem,
 } from "@earendil-works/pi-tui";
-import type { AgentRecord, SubagentRun, SubagentRunOutcome } from "../../types.ts";
+import type { AgentRecord, SubagentRun, SubagentRunResult } from "../../types.ts";
 import type { CompletionNotificationState } from "../../spawn/spawn-coordinator.ts";
 import { SHORT_ID_LENGTH } from "../../types.ts";
 import { ConversationViewer } from "../conversation-viewer.ts";
 import { canRequestStop, displayAgentStatus } from "../../agents/agent-status.ts";
-import {
-  captureRunAction,
-  messageIntent,
-  MessageComposer,
-  requestRunStop,
-  STALE_RUN_REASON,
-  submitToRun,
-} from "../message-composer.ts";
+import { messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "../message-composer.ts";
+import { captureRunAction, requestRunClear, requestRunStop } from "../run-actions.ts";
 import { getDisplayName, agentBulletPrefix, formatMs } from "../format.ts";
 import { SEPARATOR_ID, buildSelectListTheme, createDelegatingComponent, installSeparatorSkip } from "./helpers.ts";
 import { getCoordinator, getManager, getStore } from "../../shell.ts";
@@ -178,7 +172,7 @@ async function showTextViewer(
   );
 }
 
-type TerminalRun = SubagentRun & { readonly outcome: SubagentRunOutcome };
+type TerminalRun = SubagentRun & { readonly outcome: SubagentRunResult };
 
 const EMPTY_RUN_RESULT = "No output was produced for this run.";
 const RETRY_WARNING =
@@ -210,7 +204,7 @@ function showRunHistory(
   if (runs.length === 0) return back();
   const items = runs.map((run) => ({
     value: run.id,
-    label: `Run ${run.sequence} · ${run.outcome.status} · ${formatMs(run.outcome.completedAt - (run.startedAt ?? run.acceptedAt))}`,
+    label: `Run ${run.sequence} · ${run.outcome.status} · ${formatMs(run.outcome.elapsedMs)}`,
   }));
   const list = new SelectList(items, 10, buildSelectListTheme(theme));
   if (selectedRunId !== undefined) {
@@ -314,10 +308,10 @@ function buildRunPage(
 
 /**
  * Build a SelectList of actions for a single agent (view result/error/snapshot,
- * steer, stop) for use as a submenu inside a delegating component.
+ * steer, stop, clear) for use as a submenu inside a delegating component.
  * @param done — return to the parent agent list (cancel / no actions).
  * @param setActive — swap the delegating component's active child (steer input).
- * @param onClose — close the entire menu (stop).
+ * @param onClose — close the entire menu after an accepted Stop or Clear.
  */
 export function buildAgentActionsList(
   owner: ExtensionOwner,
@@ -328,6 +322,7 @@ export function buildAgentActionsList(
   setActive: (c: Component) => void,
   onClose: () => void,
   refresh = () => {},
+  onClearStale = () => {},
 ): SelectList {
   const items: SelectItem[] = [];
   const shortId = record.id.slice(0, SHORT_ID_LENGTH);
@@ -405,12 +400,13 @@ export function buildAgentActionsList(
       setActive(component);
     } else if (item.value === "stop") {
       const result = requestRunStop(owner, record, target);
-      ctx.ui.notify(result.text, result.accepted ? "info" : "warning");
-      if (result.accepted) onClose();
-    } else if (item.value === "clear" && !isActive(record)) {
-      getManager(owner)?.clear(record.id);
-      ctx.ui.notify(`Cleared ${shortId}`, "info");
-      onClose();
+      ctx.ui.notify(result.text, result.outcome === "accepted" ? "info" : "warning");
+      if (result.outcome === "accepted") onClose();
+    } else if (item.value === "clear") {
+      const result = requestRunClear(record, target);
+      ctx.ui.notify(result.text, result.outcome === "accepted" ? "info" : "warning");
+      if (result.outcome === "accepted") onClose();
+      else if (result.outcome === "stale") onClearStale();
     }
   };
   list.onCancel = () => {
@@ -421,13 +417,17 @@ export function buildAgentActionsList(
 }
 
 export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
-  const agents = getManager(owner)?.listAgents() ?? [];
-  if (agents.length === 0) {
+  const generation = owner.generation;
+  const manager = getManager(owner);
+  const isCurrentRoster = () => owner.generation === generation && getManager(owner) === manager;
+  const initialAgents = manager?.listAgents() ?? [];
+  if (initialAgents.length === 0) {
     ctx.ui.notify("No agents have been spawned this session", "info");
     return;
   }
   await ctx.ui.custom((tui, theme, _kb, done) => {
-    const buildAgentItems = (stoppableCount: number): SelectItem[] => {
+    let agents = isCurrentRoster() ? initialAgents : [];
+    const buildAgentItems = (stoppableCount: number, finishedCount: number, completedCount: number): SelectItem[] => {
       // One timestamp for every row: rows stay mutually consistent instead of
       // skewing by a millisecond per Date.now() call.
       const now = Date.now();
@@ -461,13 +461,10 @@ export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: Extensio
         items.push({ value: SEPARATOR_ID, label: " " });
         items.push({ value: "__stop-all", label: `Stop ${stoppableCount} running agent(s)` });
       }
-      const finished = agents.filter((r) => !isActive(r));
-      if (finished.length > 0) {
+      if (finishedCount > 0) {
         // One group: "Clear done" (only when completed agents exist) above "Clear all".
-        // completed is always a subset of finished, so the group is [Clear done, Clear all]
-        // or [Clear all] — never [Clear done] alone.
         items.push({ value: SEPARATOR_ID, label: " " });
-        if (finished.some((r) => r.lifecycle.status === "completed")) {
+        if (completedCount > 0) {
           items.push({ value: "__clear-done", label: "Clear done" });
         }
         items.push({ value: "__clear-all", label: "Clear all" });
@@ -479,7 +476,11 @@ export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: Extensio
       const stoppable = agents
         .filter(canRequestStop)
         .map((record) => ({ record, target: captureRunAction(owner, record) }));
-      const items = buildAgentItems(stoppable.length);
+      const finished = agents
+        .filter((record) => !isActive(record))
+        .map((record) => ({ record, target: captureRunAction(owner, record) }));
+      const completed = finished.filter(({ record }) => record.lifecycle.status === "completed");
+      const items = buildAgentItems(stoppable.length, finished.length, completed.length);
       const list = new SelectList(items, 15, buildSelectListTheme(theme));
       installSeparatorSkip(list);
       const selected = previous?.getSelectedItem?.()?.value;
@@ -488,7 +489,7 @@ export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: Extensio
       list.onSelect = (item) => {
         if (item.value === "__stop-all") {
           const accepted = stoppable.filter(
-            ({ record, target }) => requestRunStop(owner, record, target).accepted,
+            ({ record, target }) => requestRunStop(owner, record, target).outcome === "accepted",
           ).length;
           const allAccepted = accepted === stoppable.length;
           const suffix = allAccepted ? "" : " Some requests were not accepted.";
@@ -499,13 +500,23 @@ export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: Extensio
           if (allAccepted) close();
         } else if (item.value === "__clear-all" || item.value === "__clear-done") {
           const onlyDone = item.value === "__clear-done";
-          const records = agents.filter(
-            (record) => !isActive(record) && (!onlyDone || record.lifecycle.status === "completed"),
-          );
-          for (const record of records) getManager(owner)?.clear(record.id);
-          ctx.ui.notify(`Cleared ${records.length} ${onlyDone ? "completed" : "finished"} agent(s)`, "info");
-          close();
-        } else {
+          const targets = onlyDone ? completed : finished;
+          const accepted = targets.filter(
+            ({ record, target }) => requestRunClear(record, target).outcome === "accepted",
+          ).length;
+          const rejected = targets.length - accepted;
+          const kind = onlyDone ? "completed" : "finished";
+          if (rejected === 0) {
+            ctx.ui.notify(`Cleared ${accepted} ${kind} agent(s)`, "info");
+            close();
+          } else {
+            ctx.ui.notify(
+              `Cleared ${accepted} of ${targets.length} ${kind} agent(s). ${rejected} not accepted.`,
+              "warning",
+            );
+            refreshRoster();
+          }
+        } else if (isCurrentRoster()) {
           const record = agents.find((r) => r.id === item.value);
           if (record) openActions(record);
         }
@@ -535,6 +546,18 @@ export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: Extensio
       done(undefined);
     }
 
+    function rebuildRoster(): void {
+      displayedRoster = rosterKey();
+      agentList = makeAgentList(agentList);
+      delegator.setActive(agentList);
+    }
+
+    function refreshRoster(): void {
+      agents = isCurrentRoster() ? (manager?.listAgents() ?? []) : [];
+      actions = undefined;
+      rebuildRoster();
+    }
+
     function openActions(record: AgentRecord): void {
       const list = buildAgentActionsList(
         owner,
@@ -552,20 +575,20 @@ export async function showRunningAgentsMenu(owner: ExtensionOwner, ctx: Extensio
         () => {
           if (!closed) tui.requestRender?.();
         },
+        () => {
+          if (isCurrentRoster() && manager?.getRecord(record.id) === record) openActions(record);
+          else refreshRoster();
+        },
       );
       actions = { record, key: phaseKey(record), list };
       delegator.setActive(list);
     }
 
     function refreshActions(): void {
+      if (!isCurrentRoster()) return;
       const active = delegator.getActive();
       if (active === agentList) {
-        const key = rosterKey();
-        if (key !== displayedRoster) {
-          displayedRoster = key;
-          agentList = makeAgentList(agentList);
-          delegator.setActive(agentList);
-        }
+        if (rosterKey() !== displayedRoster) rebuildRoster();
       } else if (actions && active === actions.list && phaseKey(actions.record) !== actions.key) {
         openActions(actions.record);
       }

@@ -18,6 +18,7 @@ import type {
   SubagentRun,
 } from "../../../src/types.js";
 import type { Theme } from "../../../src/ui/types.js";
+import { captureResultStats } from "../../../src/agents/agent-result.js";
 import type { Component, SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
 
 /** The mocked SelectList surface the tests drive: the items the menu built
@@ -141,7 +142,20 @@ function makeRecord(overrides: RecordOverrides = {}): AgentRecord {
       acceptedAt: startedAt,
       startedAt,
       completion: Promise.resolve(),
-      outcome: { status, completedAt: completedAt ?? startedAt, result: record.result, error: record.error },
+      outcome: {
+        runId: `${record.id}-run-1`,
+        agentId: record.id,
+        sequence: 1,
+        type: record.display.type,
+        description: record.display.description,
+        started: true,
+        status,
+        completedAt: completedAt ?? startedAt,
+        elapsedMs: (completedAt ?? startedAt) - startedAt,
+        result: record.result,
+        error: record.error,
+        stats: captureResultStats(record),
+      },
     };
     mockModules.mockManager.getRuns.mockReturnValue([run]);
   }
@@ -168,7 +182,13 @@ function registerTargets(...records: AgentRecord[]): void {
         sequence: 1,
         acceptedAt: record.lifecycle.startedAt,
         completion: Promise.resolve(),
-        phase: record.lifecycle.phase ?? (record.lifecycle.status === "queued" ? "queued" : "running"),
+        phase:
+          record.lifecycle.phase ??
+          (record.lifecycle.status === "queued"
+            ? "queued"
+            : record.lifecycle.status === "running"
+              ? "running"
+              : "settled"),
       },
     ];
   });
@@ -252,7 +272,16 @@ describe("buildAgentActionsList — actions submenu", () => {
       ...first,
       id: "separate-run-id",
       sequence: 2,
-      outcome: { status: "error", completedAt: first.startedAt! + 12_000, error: "error" },
+      outcome: {
+        ...first.outcome!,
+        runId: "separate-run-id",
+        sequence: 2,
+        status: "error",
+        completedAt: first.startedAt! + 12_000,
+        elapsedMs: 12_000,
+        result: undefined,
+        error: "error",
+      },
     };
     mockModules.mockManager.getRuns.mockReturnValue([first, second]);
     const coordinator = getCoordinator(owner)!;
@@ -956,7 +985,7 @@ describe("clear actions for finished agents", () => {
     selectListCalls = [];
     vi.clearAllMocks();
     mockModules.mockManager.listAgents.mockReset().mockReturnValue([]);
-    mockModules.mockManager.clear.mockReset();
+    mockModules.mockManager.clear.mockReset().mockReturnValue(true);
     mockModules.mockManager.abort.mockReset();
   });
 
@@ -998,10 +1027,12 @@ describe("clear actions for finished agents", () => {
   it("clears the record through the manager when Clear is selected", async () => {
     const ctx = createMockCtx();
     const onClose = vi.fn();
+    const record = makeRecord();
+    registerTargets(record);
     const list = buildAgentActionsList(
       owner,
       ctx,
-      makeRecord(),
+      record,
       noopTheme,
       () => {},
       () => {},
@@ -1036,14 +1067,16 @@ describe("clear actions for finished agents", () => {
   });
 
   it("Clear all removes every terminal record and leaves active ones", async () => {
-    mockModules.mockManager.listAgents.mockReturnValue([
+    const agents = [
       makeRecord({ id: "agent-1" }), // completed
       makeRecord({ id: "agent-2", lifecycle: { status: "stopped", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-3", lifecycle: { status: "error", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-4", lifecycle: { status: "turn_limited", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-5", lifecycle: { status: "aborted", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-6", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
-    ]);
+    ];
+    registerTargets(...agents);
+    mockModules.mockManager.listAgents.mockReturnValue(agents);
     const ctx = createMockCtx();
     await showRunningAgentsMenu(owner, ctx);
 
@@ -1083,14 +1116,16 @@ describe("clear actions for finished agents", () => {
   });
 
   it("Clear done removes only completed records", async () => {
-    mockModules.mockManager.listAgents.mockReturnValue([
+    const agents = [
       makeRecord({ id: "agent-1" }), // completed
       makeRecord({ id: "agent-2", lifecycle: { status: "stopped", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-3", lifecycle: { status: "error", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-4", lifecycle: { status: "turn_limited", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-5", lifecycle: { status: "aborted", startedAt: Date.now() - 20000 }, result: "" }),
       makeRecord({ id: "agent-6", lifecycle: { status: "running", startedAt: Date.now() - 20000 }, result: "" }),
-    ]);
+    ];
+    registerTargets(...agents);
+    mockModules.mockManager.listAgents.mockReturnValue(agents);
     const ctx = createMockCtx();
     await showRunningAgentsMenu(owner, ctx);
 

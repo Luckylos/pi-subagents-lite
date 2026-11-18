@@ -3,7 +3,7 @@ import { getPiInstance, getSessionCtx, getWidget } from "../shell.ts";
 import { SHORT_ID_LENGTH } from "../types.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentRecord, LiveView, ToolActivity } from "../types.ts";
+import type { AgentRecord, LiveView, RunNotificationBinding, SubagentRunResult, ToolActivity } from "../types.ts";
 import type { AgentManager, SpawnOptions } from "../agents/agent-manager.ts";
 import { type SpawnIntent } from "./spawn-preparation.ts";
 export type { SpawnIntent } from "./spawn-preparation.ts";
@@ -20,12 +20,9 @@ import { createParentMessageTool } from "../agents/parent-message.ts";
  * spawn-coordinator.ts — Spawn-and-track coordination for subagents.
  *
  * Single entry point for both LLM tool and menu spawn paths.
- * Owns: Nudge system (schedule/batch/emit), background agent tracking. Live-view
- * state rides on the record (attached here at spawn) so continuations re-feed it.
- * Delegates concurrency and record lifecycle to AgentManager (peers, not ownership).
- *
- * Decision refs: D3 (forward events to live-view), D4 (stats on record only),
- * D6 (Nudge owned here), D2 (peers with AgentManager).
+ * Connects parent delivery and the manager's run lifecycle. Live-view state
+ * rides on the record so continuations re-feed it. CompletionNotifications
+ * owns the formatting and delivery of each run's notification.
  */
 
 // --- Types ---
@@ -36,7 +33,6 @@ export interface SpawnResult {
 }
 
 export class SpawnCoordinator {
-  private readonly backgroundAgentIds = new Set<string>();
   private readonly notifications: CompletionNotifications;
   private readonly generation: number;
   private readonly parentSessionId: string | undefined;
@@ -79,9 +75,13 @@ export class SpawnCoordinator {
     // SpawnConfig fields pass through unchanged; only the intent-only fields
     // (type/prompt/runInBackground/signal/parentMessages) are handled explicitly.
     const { type, prompt, runInBackground, signal, parentMessages, ...config } = intent;
+    const parent = this.currentParent();
+    const sessionId = this.parentSessionId;
+    const sameParent = parent && sessionId && readParentSessionId(ctx) === sessionId;
     const spawnOptions: SpawnOptions = {
       ...config,
       isBackground: runInBackground,
+      notificationOwner: sameParent ? { ownerGeneration: this.generation, parentSessionId: sessionId } : undefined,
       signal,
       ...liveViewCallbacks,
     };
@@ -89,7 +89,7 @@ export class SpawnCoordinator {
     // MessageParent is bound at session creation, before the id exists, so its
     // closures read the id once spawn returns (ADR-0013: background only).
     let spawnedId: string | undefined;
-    if (runInBackground && parentMessages) {
+    if (sameParent && runInBackground && parentMessages) {
       spawnOptions.customTools = [
         createParentMessageTool({
           deliver: (text) => spawnedId !== undefined && this.deliverParentMessage(spawnedId, text),
@@ -101,15 +101,8 @@ export class SpawnCoordinator {
     const agentId = this.manager.spawn(pi, ctx, type, prompt, spawnOptions);
     spawnedId = agentId;
     const record = this.manager.getRecord(agentId)!;
-    // Spawn-time state rides on the record so it survives settlement: the
-    // live view is re-fed by continuations, and the ctx keeps the UI-notify
-    // fallback reachable for any later nudge (continuations included).
+    // The live view is re-fed by continuations.
     record.execution.liveView = liveView;
-    record.execution.spawnCtx = ctx;
-    if (runInBackground) this.backgroundAgentIds.add(agentId);
-    // Already-aborted spawns can settle synchronously inside manager.spawn,
-    // before the background classification and fallback ctx are attached.
-    this.onAgentComplete(record);
 
     // Ensure widget timer is running so it displays the new agent
     // (menu path calls this explicitly, but tool path doesn't)
@@ -128,17 +121,9 @@ export class SpawnCoordinator {
     return this.manager.getRecord(id)?.execution.liveView;
   }
 
-  isBackground(agentId: string): boolean {
-    return this.backgroundAgentIds.has(agentId);
-  }
-
-  /** Called synchronously on settlement, before another run can replace the record projection. */
-  onAgentComplete(record: AgentRecord): void {
-    if (!record.execution.spawnCtx || !this.currentParent()) return;
-    const run = this.manager.getRuns(record.id).at(-1);
-    if (run?.outcome) {
-      this.notifications.record(record, run, run.outcome, run.sequence > 1 || this.isBackground(record.id));
-    }
+  /** Publish only the originating run's result, with its spawn-time delivery binding. */
+  onAgentComplete(result: SubagentRunResult, binding?: RunNotificationBinding): void {
+    if (binding) this.notifications.record(result, binding);
   }
 
   getCompletionNotification(runId: string): CompletionNotificationState {
@@ -158,14 +143,12 @@ export class SpawnCoordinator {
   }
 
   onAgentClear(agentId: string): void {
-    this.backgroundAgentIds.delete(agentId);
     this.notifications.clearAgent(agentId);
   }
 
   dispose(): void {
     this.disposed = true;
     this.notifications.dispose();
-    this.backgroundAgentIds.clear();
   }
 
   // ── Private ──

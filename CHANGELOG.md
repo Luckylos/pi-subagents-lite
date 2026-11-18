@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.2] - 2026-11-18
+
 ### Added
 
 - Added `GLOSSARY.md`, recording ConversationViewer overlay terminology and distinguishing Subagent identity, individual runs, continuations, run results, completion notifications and receipts, stop requests, and settled runs.
@@ -15,9 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The Agent tool, Spawn menu, and Restart resolve the target and agent type before selecting the model and Thinking. Restart replays recorded choices and recomputes omitted defaults. Untrusted targets can still be used as working directories with project resources excluded. See ADR-0016.
+
 - Stopping a subagent during SDK startup preserves the stop request. A stopping run keeps its concurrency slot until it settles. Settlement clears unconsumed steering and follow-up input before continuation.
-- Background completion messages use the original run result even when a continuation starts before the notification is sent. Unconfirmed notifications are not resent automatically.
+- Run message admission and settlement now share a single owner, preserving the existing behavior for Stop, steering, and continuation.
+- Each subagent settlement captures an immutable run result with its own elapsed time and lifetime token and cost totals. Completion notifications use that result and the parent session bound at spawn, including for runs that stop before starting and concurrent parent sessions.
+- Unconfirmed completion notifications can be retried explicitly. Automatic retries are disabled.
 - The conversation viewer keeps partial text and tool results visible across SDK streaming events. Continue and Steer preserve the draft when submission is rejected.
+- Clear only removes a subagent if the settled run shown when the action was presented is still its latest run. Rejected Clear requests no longer report success; bulk Clear reports the accepted and rejected counts and refreshes the roster if any requests were rejected.
 - Custom conversation, tool and completion displays, result/error viewers, activity widgets and related agent menus now remove terminal control sequences and Unicode bidi/annotation controls from display copies. CRLF and CR become newlines; unfinished control strings and CSI tails stay hidden during streaming. Session/model data and output logs retain their original content, while theme colors and normal Markdown links remain available.
 - Settings menus sanitize complete description/value display copies before layout and complete model keys before parsing labels, preserving raw selections and styled headers. Complete and unfinished CSI sequences also consume embedded DEL bytes.
 - Background subagent completion notifications retain the parent session's bound API when the SDK reloads the extension factory with an uninitialized runtime. The next `session_start` takes ownership before asynchronous setup.

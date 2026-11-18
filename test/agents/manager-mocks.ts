@@ -10,7 +10,7 @@
 import { vi, type Mock } from "vite-plus/test";
 import type { AgentSession, AgentSessionEventListener } from "@earendil-works/pi-coding-agent";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { AgentRecord } from "../../src/types.js";
+import type { AgentManager } from "../../src/agents/agent-manager.js";
 
 let uuidCounter = 0;
 
@@ -111,8 +111,7 @@ vi.mock("../../src/shell.js", async () =>
   ),
 );
 
-/** Mirrors AgentManager's private OnAgentComplete callback signature. */
-export type OnAgentComplete = (record: AgentRecord) => void;
+export type OnAgentComplete = Parameters<AgentManager["setOnComplete"]>[0];
 
 /** The model subset of a fake session — what src reads (provider/id/name). */
 export interface FakeSessionModel {

@@ -38,8 +38,13 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       const count = await owner.registry.discoverNewAgents(worktreeDir);
       expect(count).toBeGreaterThanOrEqual(1);
 
-      expect(owner.registry.resolveType("feature-reviewer")).toEqual({ kind: "resolved", key: "feature-reviewer" });
-      expect(owner.registry.getAgentConfig("feature-reviewer")?.description).toBe("Reviews feature branches");
+      expect(owner.registry.resolveType("feature-reviewer", worktreeDir)).toEqual({
+        kind: "resolved",
+        key: "feature-reviewer",
+      });
+      expect(owner.registry.getAgentConfig("feature-reviewer", worktreeDir)?.description).toBe(
+        "Reviews feature branches",
+      );
     } finally {
       cleanupProject();
       cleanupWt();
@@ -65,7 +70,7 @@ describe("discoverNewAgents — worktree-local agent types", () => {
     }
   });
 
-  it("worktree-discovered types stay in the session-wide registry when a later discovery runs without the worktree", async () => {
+  it("keeps worktree-discovered types out of the parent registry", async () => {
     const { dir: projectDir, cleanup: cleanupProject } = tempDirWithFiles([], "project-agents");
     const { dir: worktreeDir, cleanup: cleanupWt } = tempDirWithFiles(
       [{ name: "wt-agent.md", content: makeAgentMd({ name: "wt-agent", description: "WT agent" }) }],
@@ -76,14 +81,14 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       owner.registry.setAgentScanDirs("", projectDir);
       owner.registry.registerAgents(new Map());
 
-      // First discovery with worktree
       await owner.registry.discoverNewAgents(worktreeDir);
-      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
+      expect(owner.registry.resolveType("wt-agent", worktreeDir)).toEqual({ kind: "resolved", key: "wt-agent" });
 
-      // Second discovery WITHOUT worktree — should still be in registry
       const count = await owner.registry.discoverNewAgents();
-      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
-      expect(count).toBe(0); // No new agents (already known)
+      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "not-found" });
+      expect(owner.registry.getAvailableTypes()).not.toContain("wt-agent");
+      expect(owner.registry.resolveType("wt-agent", worktreeDir)).toEqual({ kind: "resolved", key: "wt-agent" });
+      expect(count).toBe(0);
     } finally {
       cleanupProject();
       cleanupWt();
@@ -107,7 +112,7 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       const count = await owner.registry.discoverNewAgents(worktreeDir);
 
       expect(owner.registry.resolveType("project-agent")).toEqual({ kind: "resolved", key: "project-agent" });
-      expect(owner.registry.resolveType("wt-agent")).toEqual({ kind: "resolved", key: "wt-agent" });
+      expect(owner.registry.resolveType("wt-agent", worktreeDir)).toEqual({ kind: "resolved", key: "wt-agent" });
       expect(count).toBeGreaterThanOrEqual(2);
     } finally {
       cleanupProject();
@@ -150,7 +155,7 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       owner.registry.registerAgents(new Map());
 
       await owner.registry.discoverNewAgents(worktreeDir);
-      const config = owner.registry.getAgentConfig("wt-agent");
+      const config = owner.registry.getAgentConfig("wt-agent", worktreeDir);
       expect(config).toBeDefined();
       expect(config!.extensions).toEqual(["read", "bash"]);
       expect(config!.thinkingLevel).toBe("high");
@@ -173,7 +178,7 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       owner.registry.registerAgents(new Map());
 
       await owner.registry.discoverNewAgents(worktreeDir);
-      const config = owner.registry.getAgentConfig("max-thinker");
+      const config = owner.registry.getAgentConfig("max-thinker", worktreeDir);
       expect(config).toBeDefined();
       expect(config!.thinkingLevel).toBe("max");
     } finally {
@@ -223,7 +228,7 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       // Second discovery with worktree — should NOT override the already-registered agent
       const count = await owner.registry.discoverNewAgents(worktreeDir);
       expect(count).toBe(0); // "shared" is already known
-      expect(owner.registry.getAgentConfig("shared")?.description).toBe("From project");
+      expect(owner.registry.getAgentConfig("shared", worktreeDir)?.description).toBe("From project");
     } finally {
       cleanupProject();
       cleanupWt();
@@ -242,7 +247,10 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       owner.registry.registerAgents(new Map());
 
       await owner.registry.discoverNewAgents(worktreeDir);
-      expect(owner.registry.resolveType("feature-reviewer")).toEqual({ kind: "resolved", key: "Feature-Reviewer" });
+      expect(owner.registry.resolveType("feature-reviewer", worktreeDir)).toEqual({
+        kind: "resolved",
+        key: "Feature-Reviewer",
+      });
     } finally {
       cleanupProject();
       cleanupWt();
@@ -262,7 +270,10 @@ describe("discoverNewAgents — worktree-local agent types", () => {
       owner.registry.registerAgents(new Map());
 
       await owner.registry.discoverNewAgents(worktreeDir);
-      expect(owner.registry.resolveType("EXPLORE")).toEqual({ kind: "ambiguous", candidates: ["Explore", "explore"] });
+      expect(owner.registry.resolveType("EXPLORE", worktreeDir)).toEqual({
+        kind: "ambiguous",
+        candidates: ["Explore", "explore"],
+      });
     } finally {
       cleanupProject();
       cleanupWt();

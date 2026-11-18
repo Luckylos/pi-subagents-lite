@@ -18,12 +18,16 @@ const NEVER_STARTED_STOP_NOTES: Record<StopInitiator, string> = {
   agent: "STOPPED BY YOU before the agent started — the task was NOT attempted",
   watchdog: "STOPPED BY WATCHDOG before the agent started — the task was NOT attempted",
 };
-function watchdogStopDetail(lifecycle: AgentLifecycle): WatchdogStopDetail | undefined {
+type ResultStatus = Pick<AgentLifecycle, "status" | "started" | "stoppedBy" | "stopDetail">;
+
+function watchdogStopDetail(lifecycle: Pick<ResultStatus, "stoppedBy" | "stopDetail">): WatchdogStopDetail | undefined {
   return lifecycle.stoppedBy === "watchdog" ? lifecycle.stopDetail : undefined;
 }
 
 /** Watchdog stop detail: which check fired, offending tool + elapsed for tool kills. Undefined for non-watchdog stops. */
-export function formatStopReason(lifecycle: AgentLifecycle): string | undefined {
+export function formatStopReason(
+  lifecycle: Pick<ResultStatus, "status" | "stoppedBy" | "stopDetail">,
+): string | undefined {
   if (lifecycle.status !== "stopped") return undefined;
   const detail = watchdogStopDetail(lifecycle);
   if (!detail) return undefined;
@@ -33,7 +37,7 @@ export function formatStopReason(lifecycle: AgentLifecycle): string | undefined 
 }
 
 /** Generic stop note; never-started records report the task was not attempted. */
-function stopNote(lifecycle: AgentLifecycle): string {
+function stopNote(lifecycle: ResultStatus): string {
   const initiator = lifecycle.stoppedBy ?? "agent";
   // === false: lifecycles without the marker (older test fixtures) read as started.
   return lifecycle.started === false ? NEVER_STARTED_STOP_NOTES[initiator] : STOP_NOTES[initiator];
@@ -46,7 +50,7 @@ export function formatWatchdogSummary(lifecycle: AgentLifecycle): string | undef
   return detail.kind === "tool" ? `watchdog: ${detail.toolName} >${formatMs(detail.elapsedMs)}` : "watchdog: idle";
 }
 
-export function getStatusNote(lifecycle: AgentLifecycle): string {
+export function getStatusNote(lifecycle: ResultStatus): string {
   const note =
     lifecycle.status === "stopped"
       ? // A stopped agent with no recorded initiator reads as an agent stop.

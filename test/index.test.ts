@@ -6,7 +6,6 @@
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from "vite-plus/test";
 import { createMockExtensionAPI, loadExtension, shellMock, type MockExtensionAPI } from "./fixtures";
-import type { CustomToolCallEvent } from "@earendil-works/pi-coding-agent";
 import type { ResolveModelOptions } from "../src/models/model-precedence.js";
 import { registerAgentTool } from "../src/registration.js";
 import { asExtensionAPI } from "./pi-boundaries.js";
@@ -15,12 +14,6 @@ import { withChildExtensionLoad } from "../src/child-load-context.js";
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   DynamicBorder: class {},
   getAgentDir: () => "/home/test/.pi/agent",
-}));
-
-// The Agent tool_call listener reads pi's per-model thinking level when the
-// call carries no explicit thinking; keep the settings read out of this file.
-vi.mock("../src/pi-settings.js", () => ({
-  getPiModelThinkingLevel: vi.fn(() => undefined),
 }));
 
 vi.mock("@earendil-works/pi-tui", () => ({
@@ -349,55 +342,6 @@ describe("tool registration", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  Listener Guards                                                   */
-/* ------------------------------------------------------------------ */
-
-describe("tool_call listener — guards", () => {
-  const toolCallHandler = () => api.listeners.find((l) => l.event === "tool_call")?.handler;
-
-  it("does not mutate event.input.model for non-Agent tools", async () => {
-    expect(toolCallHandler()).toBeDefined();
-    const event: CustomToolCallEvent = {
-      type: "tool_call",
-      toolName: "bash",
-      toolCallId: "call_123",
-      input: { command: "echo hello" },
-    };
-    const result = await toolCallHandler()!(event, {});
-
-    expect(event.input.model).toBeUndefined();
-    expect(result).toBeUndefined();
-  });
-
-  it("sets event.input.model for Agent tool calls", async () => {
-    const ctx = {
-      model: { provider: "test", id: "parent-model" },
-      modelRegistry: {
-        find: vi.fn((p: string, i: string) => ({ provider: p, id: i })),
-        getAvailable: vi.fn(() => []),
-      },
-    };
-
-    const event: CustomToolCallEvent = {
-      type: "tool_call",
-      toolName: "Agent",
-      toolCallId: "call_789",
-      input: {
-        prompt: "do something",
-        description: "test",
-        agent: "Explore",
-      },
-    };
-
-    const result = await toolCallHandler()!(event, ctx);
-
-    expect(event.input.model).toBeDefined();
-    expect(typeof event.input.model).toBe("string");
-    expect(result).toBeUndefined();
-  });
-});
-
-/* ------------------------------------------------------------------ */
 /*  Command Registration                                              */
 /* ------------------------------------------------------------------ */
 
@@ -413,8 +357,8 @@ describe("command registration", () => {
 /* ------------------------------------------------------------------ */
 
 describe("event listener registration", () => {
-  it("registers tool_call listener", () => {
-    expect(api.listeners.some((l) => l.event === "tool_call")).toBe(true);
+  it("leaves Agent arguments untouched before execution", () => {
+    expect(api.listeners.some((l) => l.event === "tool_call")).toBe(false);
   });
 
   it("registers session_start listener", () => {

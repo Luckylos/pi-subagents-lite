@@ -12,16 +12,24 @@ _Avoid_: run, task
 One independently identified execution of a Subagent, from its accepted initial or continuation request to its terminal outcome. A continuation is a new run of the same Subagent.
 _Avoid_: agent lifetime, conversation
 
+**Spawn target**:
+The working directory selected for a new Subagent and the trust decision that governs its project resources.
+_Avoid_: parent directory, agent type
+
+**Restart**:
+A request to create a new Subagent from a recorded Agent tool call.
+_Avoid_: continuation, reopen
+
 **Continuation**:
 A request to start a new Subagent run within an existing Subagent conversation.
 _Avoid_: new Subagent, reopened run
 
 **Subagent run result**:
-The terminal outcome and output of one Subagent run, distinct from the Subagent's current activity.
+The terminal outcome and output of one Subagent run, with its statistics captured at settlement. Token and cost totals cover the Subagent through that run, and elapsed time covers that run alone.
 _Avoid_: current agent state, latest result
 
 **Completion notification (Nudge)**:
-A message to the parent reporting the terminal outcome of a particular Subagent run.
+A message to the owning parent session reporting the result of a particular Subagent run.
 _Avoid_: live status update, Parent message
 
 **Completion notification receipt**:
@@ -35,6 +43,10 @@ _Avoid_: stopped run, completed cancellation
 **Settled Subagent run**:
 A Subagent run whose execution and run-owned callbacks have finished.
 _Avoid_: stop request accepted, final text received
+
+**Clear**:
+An explicit request to remove a settled Subagent and its retained run history from the owning session.
+_Avoid_: clear one run, stop
 
 **ConversationViewer overlay**:
 A live, scrollable view of a subagent conversation, including its messages and tool calls.

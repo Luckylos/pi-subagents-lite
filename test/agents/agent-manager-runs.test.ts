@@ -143,6 +143,32 @@ describe("Subagent run ownership", () => {
     await flush();
   });
 
+  it("rejects continuation during completion publication and accepts it afterwards", async () => {
+    const first = makeResolvablePromise();
+    const second = makeResolvablePromise();
+    const session = mockAgentSession();
+    const submissions: ReturnType<AgentManager["submitMessage"]>[] = [];
+    manager = new AgentManager(owner, (result) => {
+      if (submissions.length === 0) submissions.push(manager.submitMessage(result.agentId, "too early"));
+    });
+    mockModules.mockRunAgent.mockReturnValue(first.promise);
+    mockModules.mockContinueAgentSession.mockReturnValue(second.promise);
+    const id = spawn("first");
+    const run = manager.getRuns(id)[0];
+    first.resolve(mockRunResult({ session }));
+    await run.completion;
+
+    expect(submissions).toHaveLength(1);
+    expect(await submissions[0]).toMatchObject({ accepted: false, reason: "settling" });
+    expect(mockModules.mockContinueAgentSession).not.toHaveBeenCalled();
+    expect(await manager.submitMessage(id, "after publication")).toMatchObject({
+      accepted: true,
+      delivery: "continuation",
+    });
+    second.resolve(mockRunResult({ session }));
+    await manager.getRuns(id)[1].completion;
+  });
+
   it("returns structured delivery_failed when the SDK rejects a steer asynchronously", async () => {
     manager = new AgentManager(owner);
     const run = makeResolvablePromise();
@@ -236,7 +262,7 @@ describe("Subagent run ownership", () => {
         expect(await record.execution.promise).toBe("");
         expect(session.clearQueue).toHaveBeenCalledTimes(1);
         expect(phaseAtCleanup).toHaveReturnedWith("queued");
-        expect(completed).toHaveBeenCalledExactlyOnceWith(record);
+        expect(completed).toHaveBeenCalledExactlyOnceWith(manager.getRuns(id)[0].outcome, undefined);
         expect(record.execution.settled).toBe(true);
         expect(record.execution.settlementCount).toBe(1);
         expect(record.execution.session).toBe(session);

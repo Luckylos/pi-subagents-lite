@@ -5,10 +5,7 @@ import type { ExtensionOwner } from "../shell.ts";
  * Combines the two spawn-target primitives (worktree-validator,
  * project-trust) into one silent computation: path validation plus the
  * project-trust decision. computeSpawnTarget is that decision, defined once
- * and consumed by the live Agent tool path, the tool-call listener, and the
- * restart path. surfaceSpawnTargetWarnings is its user-facing half — the one
- * notify policy (prefix, level, untrusted-project warning) shared by every
- * consumer that surfaces warnings.
+ * and consumed by the live Agent tool, Spawn menu, and Restart.
  */
 
 import { getAgentDir, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -26,8 +23,7 @@ export type SpawnTarget =
  * the project-trust decision, silently — warnings are collected into the
  * result, not notified. Callers own the consequences (execution throws or
  * proceeds; the restart path reports skips) and surface the warnings through
- * surfaceSpawnTargetWarnings; the tool-call listener consumes the trust
- * decision without notifying.
+ * surfaceSpawnTargetWarnings.
  *
  * The raw value comes from unchecked tool arguments and replayed history, so
  * anything that is not a non-blank string counts as omitted — the convention
@@ -41,7 +37,7 @@ export async function computeSpawnTarget(
   // Non-strings and empty/whitespace → omitted: nothing to validate, nothing
   // to gate.
   if (typeof rawWorktreePath !== "string" || rawWorktreePath.trim() === "") {
-    return { ok: true, projectTrusted: true, warnings: [] };
+    return { ok: true, projectTrusted: ctx.isProjectTrusted?.() ?? true, warnings: [] };
   }
   const warnings: string[] = [];
   try {
@@ -58,11 +54,15 @@ export async function computeSpawnTarget(
     // Cross-repo targets are gated by pi's trust framework. Same-repo paths
     // are never gated; an untrusted target still spawns but with its project
     // resources ignored and a warning surfaced.
-    const projectTrusted = resolveSubagentTrust({
-      targetPath: resolvedPath,
-      sameRepo: validation.sameRepo === true,
-      deps: createSubagentTrustDeps(getAgentDir(), parentCwd),
-    });
+    const sameRepo = validation.sameRepo === true;
+    const projectTrusted =
+      sameRepo && ctx.isProjectTrusted?.() === false
+        ? false
+        : resolveSubagentTrust({
+            targetPath: resolvedPath,
+            sameRepo,
+            deps: createSubagentTrustDeps(getAgentDir(), parentCwd, validation.worktreeRoot),
+          });
     return {
       ok: true,
       resolvedPath,

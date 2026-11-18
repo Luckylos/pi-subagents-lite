@@ -12,6 +12,8 @@
  * call site.
  */
 
+import { existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import {
   hasTrustRequiringProjectResources,
   ProjectTrustStore,
@@ -35,10 +37,25 @@ export interface SubagentTrustDeps {
  * trust decisions are stored; parentCwd is the parent session's working dir
  * (source of the global defaultProjectTrust setting).
  */
-export function createSubagentTrustDeps(agentDir: string, parentCwd: string): SubagentTrustDeps {
+const CONTEXT_FILES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
+
+function hasPluginProjectResources(cwd: string, worktreeRoot: string): boolean {
+  if ([".pi/agents", ".pi/subagents-lite.json"].some((file) => existsSync(join(cwd, file)))) return true;
+  const root = resolve(worktreeRoot);
+  let dir = resolve(cwd);
+  while (true) {
+    if (CONTEXT_FILES.some((file) => existsSync(join(dir, file)))) return true;
+    const parent = dirname(dir);
+    if (dir === root || parent === dir) return false;
+    dir = parent;
+  }
+}
+
+export function createSubagentTrustDeps(agentDir: string, parentCwd: string, worktreeRoot?: string): SubagentTrustDeps {
   const trustStore = new ProjectTrustStore(agentDir);
   return {
-    hasTrustRequiringProjectResources,
+    hasTrustRequiringProjectResources: (cwd) =>
+      hasTrustRequiringProjectResources(cwd) || hasPluginProjectResources(cwd, worktreeRoot ?? cwd),
     getTrustDecision: (cwd) => trustStore.get(cwd),
     getDefaultProjectTrust: () => SettingsManager.create(parentCwd, agentDir).getDefaultProjectTrust(),
   };

@@ -36,6 +36,8 @@ export interface RegisterAgentsOptions {
 /** A factory's registry, including its discovery directories and pending-scan epoch. */
 export class AgentRegistry {
   private agents = new Map<string, AgentConfig>();
+  private targetAgents = new Map<string, Map<string, AgentConfig>>();
+  private disableDefaultAgents = false;
   private userAgentDir = "";
   private projectAgentDir = "";
   private sharedAgentDir = "";
@@ -44,11 +46,15 @@ export class AgentRegistry {
   reset(): void {
     this.generation++;
     this.agents.clear();
+    this.targetAgents.clear();
+    this.disableDefaultAgents = false;
     this.userAgentDir = this.projectAgentDir = this.sharedAgentDir = "";
   }
 
   registerAgents(userAgents: Map<string, AgentConfig>, options?: RegisterAgentsOptions): void {
     this.agents.clear();
+    this.targetAgents.clear();
+    this.disableDefaultAgents = options?.disableDefaultAgents ?? false;
     if (!options?.disableDefaultAgents) {
       for (const [name, config] of DEFAULT_AGENTS) this.agents.set(name, config);
     }
@@ -57,6 +63,7 @@ export class AgentRegistry {
 
   setAgentScanDirs(userDir: string, projectDir: string, sharedDir?: string): void {
     this.generation++;
+    this.targetAgents.clear();
     this.userAgentDir = userDir;
     this.projectAgentDir = projectDir;
     this.sharedAgentDir = sharedDir ?? "";
@@ -74,8 +81,10 @@ export class AgentRegistry {
 
   async discoverNewAgents(worktreeDir?: string, options?: RegisterAgentsOptions): Promise<number> {
     const generation = this.generation;
-    const merged = await this.scanAndMerge(options);
-    const worktreeAgents = worktreeDir ? await scanAgentFilesInDir(worktreeDir, "project") : [];
+    const [merged, worktreeAgents] = await Promise.all([
+      this.scanAndMerge(options ?? { disableDefaultAgents: this.disableDefaultAgents }),
+      worktreeDir ? scanAgentFilesInDir(worktreeDir, "project") : [],
+    ]);
     if (generation !== this.generation) return 0;
     let count = 0;
     for (const [name, config] of merged) {
@@ -85,39 +94,45 @@ export class AgentRegistry {
       }
     }
     if (worktreeDir) {
-      const wtMerged = mergeAgents(new Map(), [], [], worktreeAgents);
-      for (const [name, config] of wtMerged) {
-        if (!this.agents.has(name)) {
-          this.agents.set(name, config);
-          count++;
-        }
+      const previous = this.targetAgents.get(worktreeDir);
+      const scoped = mergeAgents(new Map(), [], [], worktreeAgents);
+      for (const name of scoped.keys()) {
+        if (!this.agents.has(name) && !previous?.has(name)) count++;
       }
+      this.targetAgents.set(worktreeDir, scoped);
     }
     return count;
   }
 
-  resolveType(name: string): TypeResolution {
+  resolveType(name: string, worktreeDir?: string): TypeResolution {
     if (!name) return { kind: "not-found" };
-    if (this.agents.has(name)) return { kind: "resolved", key: name };
+    const scoped = worktreeDir ? this.targetAgents.get(worktreeDir) : undefined;
+    if (this.agents.has(name) || scoped?.has(name)) return { kind: "resolved", key: name };
     const lower = name.toLowerCase();
-    const candidates = [...this.agents.keys()].filter((key) => key.toLowerCase() === lower);
+    const candidates = [...new Set([...this.agents.keys(), ...(scoped?.keys() ?? [])])].filter(
+      (key) => key.toLowerCase() === lower,
+    );
     if (candidates.length === 1) return { kind: "resolved", key: candidates[0] };
     if (candidates.length > 1) return { kind: "ambiguous", candidates };
     return { kind: "not-found" };
   }
 
   async resolveTypeOrDiscover(type: string, worktreeDir?: string): Promise<TypeResolution> {
-    let resolution = this.resolveType(type);
-    if (resolution.kind === "not-found") {
+    const resolution = this.resolveType(type);
+    if (worktreeDir || resolution.kind === "not-found") {
       await this.discoverNewAgents(worktreeDir);
-      resolution = this.resolveType(type);
+      return this.resolveType(type, worktreeDir);
     }
     return resolution;
   }
 
-  getAgentConfig(name: string): AgentConfig | undefined {
-    const resolution = this.resolveType(name);
-    return resolution.kind === "resolved" ? this.agents.get(resolution.key) : undefined;
+  getAgentConfig(name: string, worktreeDir?: string): AgentConfig | undefined {
+    const resolution = this.resolveType(name, worktreeDir);
+    if (resolution.kind !== "resolved") return undefined;
+    return (
+      this.agents.get(resolution.key) ??
+      (worktreeDir ? this.targetAgents.get(worktreeDir)?.get(resolution.key) : undefined)
+    );
   }
 
   getVisibleAgentInfos(): VisibleAgentInfo[] {
@@ -134,8 +149,13 @@ export class AgentRegistry {
     return [...this.agents.keys()];
   }
 
-  getConfig(type: string, loadSkillsImplicitly = true, loadExtensionsImplicitly = true): ResolvedAgentConfig {
-    return resolveConfig(this, type, loadSkillsImplicitly, loadExtensionsImplicitly);
+  getConfig(
+    type: string,
+    loadSkillsImplicitly = true,
+    loadExtensionsImplicitly = true,
+    selected?: AgentConfig,
+  ): ResolvedAgentConfig {
+    return resolveConfig(this, type, loadSkillsImplicitly, loadExtensionsImplicitly, selected);
   }
 }
 
@@ -373,8 +393,13 @@ function resolveConfig(
   type: string,
   loadSkillsImplicitly: boolean = true,
   loadExtensionsImplicitly: boolean = true,
+  selected?: AgentConfig,
 ): ResolvedAgentConfig {
-  const config = findActiveConfig(registry, type);
+  const config = selected
+    ? selected.hidden === true
+      ? registry.getAgentConfig("general-purpose")
+      : selected
+    : findActiveConfig(registry, type);
   if (config) {
     const { skills, extensions, registeredTools, ...rest } = config;
     const defaults = applyGlobalDefaults(skills, extensions, loadSkillsImplicitly, loadExtensionsImplicitly);

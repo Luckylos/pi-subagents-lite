@@ -119,6 +119,35 @@ describe("runAgent — runtime thinking resolution", () => {
   });
 });
 
+describe("runAgent — the SDK-selected initial model", () => {
+  it.each([
+    [undefined, true],
+    ["low", false],
+  ] as const)(
+    "consults the initial model's per-model setting %s before the deferred default",
+    async (perModel, applyDefault) => {
+      resetMocks();
+      fakePi.exec.mockResolvedValue({ code: 0, stdout: "true" });
+      const setThinkingLevel = vi.fn();
+      const session = { ...createMockSession(), model: SPAWN_MODEL, setThinkingLevel };
+      session.getActiveToolNames.mockReturnValue([]);
+      mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
+      const settings = mockSettingsManager(perModel);
+
+      await runAgent(owner, fakeCtx({ model: undefined }), "test-agent", "task", {
+        pi: fakePi,
+        agentConfig: defaultAgentConfig,
+        deferredDefaultThinking: "high",
+      });
+
+      expect(sessionOpts()).not.toHaveProperty("thinkingLevel");
+      expect(settings.getModelThinkingLevel).toHaveBeenCalledWith(SPAWN_MODEL.provider, SPAWN_MODEL.id);
+      if (applyDefault) expect(setThinkingLevel).toHaveBeenCalledExactlyOnceWith("high");
+      else expect(setThinkingLevel).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("runAgent — the `parent` value", () => {
   beforeEach(() => {
     resetMocks();

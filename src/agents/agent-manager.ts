@@ -6,7 +6,7 @@ import type { ExtensionOwner } from "../shell.ts";
  */
 
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.ts";
 import type { SessionPromptOptions } from "./session-run.ts";
 import { disposeChildSession } from "./session-teardown.ts";
@@ -19,6 +19,9 @@ import {
   type AgentSubmissionRejection,
   type SubagentRun,
   type SubagentRunStatus,
+  type SubagentRunOutcome,
+  type SubagentRunResult,
+  type RunNotificationBinding,
   type AgentRecord,
   type AgentStatus,
   type RunCallbacks,
@@ -28,7 +31,8 @@ import {
 } from "../types.ts";
 import type { SubagentType } from "./types.ts";
 
-import { addUsage, getLifetimeTotal, getSessionContextPercent } from "./usage.ts";
+import { addUsage, getLifetimeTotal } from "./usage.ts";
+import { captureResultStats } from "./agent-result.ts";
 import { errorMessage, toSingleLine } from "../utils.ts";
 import { DEFAULT_GRACE_TURNS } from "../config/config-io.ts";
 
@@ -44,8 +48,6 @@ const DISPOSE_QUEUED_MESSAGE = "Agent manager disposed before the queued agent c
 const AGENT_ID_PREFIX_LENGTH = 17;
 
 const DEFAULT_CONCURRENCY_LIMIT = 4;
-
-const QUEUE_CLEANUP_FAILED = "The previous run's message queue could not be cleared. This subagent cannot continue.";
 
 /** Whether the agent status is terminal (no longer running or queued). */
 function isTerminalStatus(status: AgentStatus): boolean {
@@ -70,7 +72,7 @@ export interface ConcurrencyConfig {
   models?: Record<string, number>;
 }
 
-type OnAgentComplete = (record: AgentRecord) => void;
+type OnAgentComplete = (result: SubagentRunResult, notification?: RunNotificationBinding) => void;
 type OnAgentStart = (record: AgentRecord) => void;
 
 interface ConcurrencySlot {
@@ -89,6 +91,8 @@ interface SpawnArgs {
 
 export interface SpawnOptions extends SpawnConfig, RunCallbacks {
   isBackground?: boolean;
+  /** Parent scope supplied by the owner-bound coordinator. */
+  notificationOwner?: Pick<RunNotificationBinding, "ownerGeneration" | "parentSessionId">;
   /** Extra tools bound into this agent's child session at creation (e.g. MessageParent). */
   customTools?: ToolDefinition[];
   /** Parent abort signal — when aborted, the subagent is also stopped. */
@@ -269,7 +273,14 @@ export class AgentManager {
     };
     this.agents.set(id, record);
 
-    this.acceptRun(record, queued);
+    const notification =
+      options.notificationOwner &&
+      Object.freeze({
+        ...options.notificationOwner,
+        spawnCtx: ctx,
+        required: options.isBackground === true,
+      });
+    this.acceptRun(record, queued, notification);
 
     // Parent interrupt binding: registered before the queued early-return so
     // queued subagents are covered too. An already-aborted signal never starts
@@ -310,8 +321,7 @@ export class AgentManager {
       this.activeLeases.add(concurrencySlot);
       this.runLeases.set(run, concurrencySlot);
     }
-    run.phase = "running";
-    run.startedAt = Date.now();
+    run.start();
     this.projectRun(record, run);
 
     record.lifecycle.status = "running";
@@ -323,7 +333,7 @@ export class AgentManager {
     this.watchdog.start(id);
 
     // Output transcript: agent frontmatter overrides the global setting (default false).
-    const agentConfig = this.owner.registry.getAgentConfig(type);
+    const agentConfig = options.agentConfig ?? this.owner.registry.getAgentConfig(type);
     const outputTranscript = agentConfig?.outputTranscript ?? getStore(this.owner).agent.outputTranscript;
     if (outputTranscript) {
       record.execution.outputLog = new AgentOutputLog(
@@ -340,6 +350,8 @@ export class AgentManager {
     const promise = runAgent(this.owner, ctx, type, prompt, {
       pi,
       agentId: id,
+      agentConfig: options.agentConfig,
+      deferredDefaultThinking: options.deferredDefaultThinking,
       model: options.model,
       maxTurns: options.maxTurns,
       maxTokens: options.maxTokens,
@@ -356,13 +368,7 @@ export class AgentManager {
       onSessionCreated: (session) => {
         if (!this.isCurrentRun(record, run)) return;
         record.execution.session = session;
-        // Flush any steers that arrived before the session was ready
-        if (!run.controller.signal.aborted && record.execution.pendingSteers?.length) {
-          for (const msg of record.execution.pendingSteers) {
-            void this.deliverSteer(record, run, msg);
-          }
-          record.execution.pendingSteers = undefined;
-        }
+        run.flushPendingSteers(() => record.execution.session);
         if (record.execution.outputLog) {
           record.execution.outputLog.attach(session);
         }
@@ -379,57 +385,47 @@ export class AgentManager {
     let error: string | undefined;
     const settled = runPromise
       .then(({ responseText, session, aborted, turnLimited, modelError }) => {
-        run.executionFinished = true;
-        run.phase = run.stopRequestedAt !== undefined ? "stopping" : "settling";
+        run.finishExecution();
         this.projectRun(record, run);
         status = aborted ? "aborted" : modelError ? "error" : turnLimited ? "turn_limited" : "completed";
         result = responseText;
         if (modelError) error = formatModelError(record.display.type, session?.model, modelError);
         record.execution.session = session;
-        record.stats.contextPercent = getSessionContextPercent(session);
         return responseText;
       })
       .catch((err) => {
-        run.executionFinished = true;
-        run.phase = run.stopRequestedAt !== undefined ? "stopping" : "settling";
+        run.finishExecution();
         this.projectRun(record, run);
         status = "error";
         error = errorMessage(err);
         return "";
       })
-      .finally(async () => {
-        await run.drainCallbacks();
-        // The SDK may leave steering or follow-up messages behind on any exit.
-        // Both the prompt (including its wrap-up steer) and live steers have
-        // drained, so clear their remaining messages before reuse.
-        try {
-          record.execution.session?.clearQueue();
-        } catch {
-          // Keep the transcript and execution outcome, but never reuse a queue
-          // we could not verify was cleared. Settlement must still release capacity.
-          run.queueCleanupFailed = true;
-          error = error ? `${error}\n${QUEUE_CLEANUP_FAILED}` : QUEUE_CLEANUP_FAILED;
-        }
-        record.execution.pendingSteers = undefined;
-        record.execution.settlementCount++;
-        this.finalizeOutput(record);
-        this.releaseLease(run);
-        if (!this.agents.has(record.id)) this.releaseSession(record);
-        this.detachParentBinding(record);
-        run.settle({
-          status: run.stopRequestedAt !== undefined ? "stopped" : status,
-          result,
-          error,
-          completedAt: Date.now(),
-          stoppedBy: record.lifecycle.stoppedBy,
-          stopDetail: record.lifecycle.stopDetail,
-        });
-        this.projectRun(record, run);
-        this.tallyCompletion(record);
-        this.drainQueue();
-        record.execution.settled = true;
-        this.inFlightRuns.delete(settled);
-      });
+      .finally(() =>
+        run.finishSettlement(
+          () => record.execution.session,
+          () => {
+            record.execution.settlementCount++;
+            this.finalizeOutput(record);
+            this.releaseLease(run);
+            this.detachParentBinding(record);
+            const terminal = this.settleRun(record, run, {
+              status,
+              result,
+              error,
+              stoppedBy: record.lifecycle.stoppedBy,
+              stopDetail: record.lifecycle.stopDetail,
+            });
+            if (!this.agents.has(record.id)) this.releaseSession(record);
+            if (terminal) {
+              this.tallyCompletion(record, terminal.stats.lifetimeUsage.cost);
+              this.notifyComplete(terminal, run.notification);
+            }
+            this.drainQueue();
+            record.execution.settled = true;
+            this.inFlightRuns.delete(settled);
+          },
+        ),
+      );
     this.inFlightRuns.add(settled);
   }
 
@@ -455,18 +451,29 @@ export class AgentManager {
     }
   }
 
-  private failStart(record: AgentRecord, error: unknown): void {
+  private settleRun(
+    record: AgentRecord,
+    run: AgentRun,
+    outcome: Omit<SubagentRunOutcome, "completedAt">,
+  ): SubagentRunResult | undefined {
+    const completedAt = Date.now();
+    const stats = captureResultStats(record);
+    const result = run.settle({ ...outcome, completedAt }, record.display, stats);
+    if (result) {
+      record.stats.contextPercent = stats.contextPercent;
+      this.projectRun(record, run);
+    }
+    return result;
+  }
+
+  private failStart(record: AgentRecord, error: unknown): SubagentRunResult | undefined {
     const run = this.currentRun(record);
     this.finalizeOutput(record);
     this.releaseLease(run);
     this.detachParentBinding(record);
-    run.settle({
-      status: run.stopRequestedAt !== undefined ? "stopped" : "error",
-      error: errorMessage(error),
-      completedAt: Date.now(),
-    });
-    this.projectRun(record, run);
+    const result = this.settleRun(record, run, { status: "error", error: errorMessage(error) });
     record.execution.settled = true;
+    return result;
   }
 
   private currentRun(record: AgentRecord): AgentRun {
@@ -476,24 +483,18 @@ export class AgentManager {
   }
 
   private isCurrentRun(record: AgentRecord, run: AgentRun): boolean {
-    return (
-      this.agents.get(record.id) === record &&
-      this.currentRun(record) === run &&
-      !run.executionFinished &&
-      (run.phase === "running" || run.phase === "stopping")
-    );
+    return this.agents.get(record.id) === record && this.currentRun(record) === run && run.acceptsCallbacks;
   }
 
-  private acceptRun(record: AgentRecord, queued = false): AgentRun {
+  private acceptRun(record: AgentRecord, queued = false, notification?: RunNotificationBinding): AgentRun {
     const history = this.runs.get(record) ?? [];
-    const run = new AgentRun(record.id, history.length + 1, queued);
+    const run = new AgentRun(record.id, history.length + 1, queued, notification);
     history.push(run);
     this.runs.set(record, history);
     record.execution.currentRunId = run.id;
     record.execution.abortController = run.controller;
     record.execution.promise = run.parentWait;
     record.execution.settled = false;
-    record.execution.pendingSteers = undefined;
     record.lifecycle.stoppedBy = undefined;
     record.lifecycle.stopDetail = undefined;
     this.projectRun(record, run);
@@ -529,25 +530,23 @@ export class AgentManager {
     binding.signal.removeEventListener("abort", binding.handler);
   }
 
-  private notifyComplete(record: AgentRecord): void {
+  private notifyComplete(result: SubagentRunResult, notification?: RunNotificationBinding): void {
     try {
-      this.onComplete?.(record);
+      this.onComplete?.(result, notification);
     } catch {
       /* ignore */
     }
   }
 
-  private tallyCompletion(record: AgentRecord): void {
+  private tallyCompletion(record: AgentRecord, cost: number): void {
     // Usage is monotonic (addUsage only accumulates), so the delta from the
     // last tally is the cost this run added. The first tally (talliedCost
     // undefined) also counts the agent; continuations never double-count.
-    const cost = record.stats.lifetimeUsage.cost;
     const baseline = record.execution.talliedCost ?? 0;
     this.totalAgentCost += cost - baseline;
     const firstTally = record.execution.talliedCost === undefined;
     record.execution.talliedCost = cost;
     if (firstTally) this.totalAgentCount++;
-    this.notifyComplete(record);
   }
 
   setOnComplete(cb: OnAgentComplete): void {
@@ -582,7 +581,7 @@ export class AgentManager {
   ): SessionPromptOptions {
     return {
       onPromptStateChange: (state) => {
-        if (this.isCurrentRun(record, run)) run.promptState = state;
+        if (this.isCurrentRun(record, run)) run.recordPromptState(state);
       },
       onToolActivity: (activity) => {
         if (!this.isCurrentRun(record, run)) return;
@@ -627,10 +626,11 @@ export class AgentManager {
         started.add(entry.id);
       } catch (err) {
         // Late failure — surface on the record so the user can see it
-        this.failStart(record, err);
+        const run = this.currentRun(record);
+        const terminal = this.failStart(record, err);
         started.add(entry.id);
-        // Failed starts notify the UI but aren't tallied as completed agents
-        this.notifyComplete(record);
+        // Failed starts notify but aren't tallied as completed agents.
+        if (terminal) this.notifyComplete(terminal, run.notification);
       }
     }
     this.queue = this.queue.filter((e) => !started.has(e.id));
@@ -647,57 +647,14 @@ export class AgentManager {
     if (!record) return reject("not_found", "Subagent was not found.");
     if (!message.trim()) return reject("empty_message", "Message is required.");
     if (this.disposed) return reject("unavailable", "The subagent manager is unavailable.");
-    const run = this.currentRun(record);
-    if (run.phase === "stopping")
-      return reject("stopping", "The subagent is still stopping. Wait for execution to settle.");
-    if (run.phase === "queued") return reject("queued", "The subagent is queued and has not started.");
-    if (run.phase === "settling" || (run.phase === "settled" && !record.execution.settled))
-      return reject("settling", "The subagent is finishing its previous run. Retry after settlement.");
-    if (run.phase === "running") {
-      if (!record.execution.session) {
-        (record.execution.pendingSteers ??= []).push(message);
-        return { accepted: true, agentId: id, runId: run.id, delivery: "pending_steer" };
-      }
-      return this.deliverSteer(record, run, message);
-    }
-    if (run.queueCleanupFailed) return reject("unavailable", QUEUE_CLEANUP_FAILED);
-    const session = record.execution.session;
-    if (!session || session.isStreaming) return reject("unavailable", "The subagent session is unavailable or busy.");
+    const admission = this.currentRun(record).admitMessage(message, record.execution.session, record.execution.settled);
+    if (!("continuationSession" in admission)) return admission;
     const modelKey = record.execution.modelKey;
-    if (modelKey) {
-      const slot = this.getSlot(modelKey);
-      if (slot.running >= slot.limit)
-        return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
-    }
-    this.continueSettledAgent(record, message);
-    return { accepted: true, agentId: id, runId: this.currentRun(record).id, delivery: "continuation" };
-  }
-
-  private async deliverSteer(record: AgentRecord, run: AgentRun, message: string): Promise<AgentSubmissionResult> {
-    const session = record.execution.session;
-    if (!session) return { accepted: false, reason: "unavailable", message: "The subagent session is unavailable." };
-    if (run.isPromptClosed(session.isStreaming)) {
-      return {
-        accepted: false,
-        reason: "settling",
-        message: "The subagent is finishing its previous run. Retry after settlement.",
-      };
-    }
-    try {
-      await run.trackCallback(session.steer(message));
-      // An input hook can finish after the SDK prompt closes or Stop is requested.
-      // Report that rejection here and leave queue cleanup to settlement.
-      if (run.controller.signal.aborted || run.isPromptClosed(session.isStreaming)) {
-        return {
-          accepted: false,
-          reason: run.controller.signal.aborted ? "stopping" : "settling",
-          message: "The run ended before the message could be delivered. Retry after settlement.",
-        };
-      }
-      return { accepted: true, agentId: record.id, runId: run.id, delivery: "steer" };
-    } catch {
-      return { accepted: false, reason: "delivery_failed", message: "The session refused the message." };
-    }
+    const slot = modelKey ? this.getSlot(modelKey) : undefined;
+    if (slot && slot.running >= slot.limit)
+      return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
+    const run = this.continueSettledAgent(record, admission.continuationSession, message, slot);
+    return { accepted: true, agentId: id, runId: run.id, delivery: "continuation" };
   }
 
   /** Compatibility adapter for the existing boolean result. */
@@ -705,36 +662,22 @@ export class AgentManager {
     return (await this.submitMessage(id, message)).accepted;
   }
 
-  /**
-   * Continue a settled agent: re-reserve the concurrency slot, reset the
-   * record to running, and prompt the session again. Returns false when the
-   * record cannot be continued (still settling, no session, streaming, or
-   * the model's concurrency slot is full).
-   */
-  private continueSettledAgent(record: AgentRecord, message: string): boolean {
-    // settled flips to true only after the previous run chain's .finally, so
-    // a continuation cannot race the settlement cleanup (slot release, gate).
-    if (!record.execution.settled) return false;
-    const session = record.execution.session;
-    if (!session) return false;
-    // Defensive: a streaming session is mid-response and cannot be prompted.
-    if (session.isStreaming) return false;
-
-    // Re-reserve the concurrency slot (reject when full, don't queue). Skip
-    // entirely when the spawn had no model key — the record never held a slot.
-    let concurrencySlot: ConcurrencySlot | undefined;
-    const modelKey = record.execution.modelKey;
-    if (modelKey) {
-      const slot = this.getSlot(modelKey);
-      if (slot.running >= slot.limit) return false;
-      concurrencySlot = slot;
-      this.activeLeases.add(concurrencySlot);
-    }
-
+  /** Start a continuation after the previous run and model slot both admit it. */
+  private continueSettledAgent(
+    record: AgentRecord,
+    session: AgentSession,
+    message: string,
+    concurrencySlot: ConcurrencySlot | undefined,
+  ): AgentRun {
     // Accept a new run; cumulative conversation statistics carry over.
-    const run = this.acceptRun(record);
-    if (concurrencySlot) this.runLeases.set(run, concurrencySlot);
-    run.startedAt = Date.now();
+    const parent = this.currentRun(record).notification;
+    const notification = parent && Object.freeze({ ...parent, required: true });
+    const run = this.acceptRun(record, false, notification);
+    if (concurrencySlot) {
+      this.activeLeases.add(concurrencySlot);
+      this.runLeases.set(run, concurrencySlot);
+    }
+    run.start();
     this.projectRun(record, run);
     // A stale idle clock from the first run would kill the continuation
     // immediately — restart the watchdog before the new turn begins.
@@ -754,7 +697,7 @@ export class AgentManager {
     // The run proceeds asynchronously; the caller only learns the wiring
     // succeeded. The parent abort binding is deliberately NOT re-attached —
     // the parent turn that spawned the agent is over.
-    return true;
+    return run;
   }
 
   getRecord(id: string): AgentRecord | undefined {
@@ -802,23 +745,19 @@ export class AgentManager {
   /** Abort the session or remove the agent from the queue. Returns false if not running/queued. */
   private stopAgent(record: AgentRecord, stoppedBy?: StopInitiator, stopDetail?: WatchdogStopDetail): boolean {
     const run = this.currentRun(record);
-    if (run.phase !== "queued" && run.phase !== "running") return false;
+    if (!run.requestStop()) return false;
     this.queue = this.queue.filter((q) => q.id !== record.id);
-    run.stopRequestedAt = Date.now();
-    run.phase = "stopping";
     record.lifecycle.stoppedBy = stoppedBy;
     record.lifecycle.stopDetail = stopDetail;
-    record.execution.pendingSteers = undefined;
     // Publish intent before abort: listeners may run synchronously.
     this.projectRun(record, run);
     this.detachParentBinding(record);
     run.openParent();
     run.controller.abort();
     if (!record.lifecycle.started) {
-      run.settle({ status: "stopped", completedAt: Date.now(), stoppedBy, stopDetail });
-      this.projectRun(record, run);
+      const terminal = this.settleRun(record, run, { status: "stopped", stoppedBy, stopDetail });
       record.execution.settled = true;
-      this.notifyComplete(record);
+      if (terminal) this.notifyComplete(terminal, run.notification);
     }
     return true;
   }
@@ -877,8 +816,7 @@ export class AgentManager {
     for (const record of this.agents.values()) {
       const run = this.currentRun(record);
       if (run.phase === "queued") {
-        run.settle({ status: "error", error: DISPOSE_QUEUED_MESSAGE, completedAt: Date.now() });
-        this.projectRun(record, run);
+        this.settleRun(record, run, { status: "error", error: DISPOSE_QUEUED_MESSAGE });
         record.execution.settled = true;
       } else {
         this.stopAgent(record, "user");

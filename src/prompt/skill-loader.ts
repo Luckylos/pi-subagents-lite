@@ -20,7 +20,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { loadSkills, loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, loadSkills, loadSkillsFromDir, type Skill } from "@earendil-works/pi-coding-agent";
 import { isUnsafeName } from "../utils.ts";
 
 export interface PreloadedSkill {
@@ -40,10 +40,10 @@ export interface SkillMeta {
 }
 
 /** Load all skills in precedence order, deduped by canonical path and name (first match wins). */
-export function loadAllSkills(cwd: string): Skill[] {
+export function loadAllSkills(cwd: string, projectTrusted = true): Skill[] {
   const resolvedCwd = resolve(cwd);
 
-  const ancestorsSkills = loadAncestorAgentsSkills(resolvedCwd);
+  const ancestorsSkills = projectTrusted ? loadAncestorAgentsSkills(resolvedCwd) : [];
 
   const homeAgentsResult = loadSkillsFromDir({
     dir: join(homedir(), ".agents", "skills"),
@@ -51,11 +51,12 @@ export function loadAllSkills(cwd: string): Skill[] {
   });
   const homeAgentsSkills = filterRootMdFiles(homeAgentsResult.skills, join(homedir(), ".agents", "skills"));
 
+  const agentDir = getAgentDir();
   const defaultsResult = loadSkills({
     cwd: resolvedCwd,
-    agentDir: join(homedir(), ".pi", "agent"),
-    skillPaths: [],
-    includeDefaults: true,
+    agentDir,
+    skillPaths: projectTrusted ? [] : [join(agentDir, "skills")],
+    includeDefaults: projectTrusted,
   });
 
   // Merge in precedence order: ancestors first, then home, then defaults.
@@ -138,8 +139,8 @@ function canonicalizePath(filePath: string): string {
   }
 }
 
-export function preloadSkills(skillNames: string[], cwd: string): PreloadedSkill[] {
-  const skills = loadAllSkills(cwd);
+export function preloadSkills(skillNames: string[], cwd: string, projectTrusted = true): PreloadedSkill[] {
+  const skills = loadAllSkills(cwd, projectTrusted);
   return skillNames.map((name) => {
     if (isUnsafeName(name)) {
       return { name, description: "", content: `(Skill "${name}" skipped: name contains path traversal characters)` };
@@ -168,8 +169,8 @@ export function preloadSkills(skillNames: string[], cwd: string): PreloadedSkill
  * Load skill metadata only (name, description, location) without full content.
  * Used for the skills whitelist — agent can read full content on-demand.
  */
-export function loadSkillMeta(skillNames: string[], cwd: string): SkillMeta[] {
-  const skills = loadAllSkills(cwd);
+export function loadSkillMeta(skillNames: string[], cwd: string, projectTrusted = true): SkillMeta[] {
+  const skills = loadAllSkills(cwd, projectTrusted);
   return skillNames.map((name) => {
     const match = skills.find((s) => s.name === name);
     if (!match) {

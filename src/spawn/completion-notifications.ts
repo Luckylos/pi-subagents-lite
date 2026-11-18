@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { SHORT_ID_LENGTH, type AgentRecord, type SubagentRunOutcome, type SubagentRun } from "../types.ts";
-import { buildAgentDetails, formatResultContent } from "../agents/tool-execution.ts";
+import { SHORT_ID_LENGTH, type RunNotificationBinding, type SubagentRunResult } from "../types.ts";
+import { formatResultStats, formatTerminalContent } from "../agents/agent-result.ts";
+import { formatStopReason } from "../status-note.ts";
 import { plainText } from "../ui/sanitize.ts";
 
 export type CompletionNotificationStatus = "pending" | "submitted" | "observed" | "not-required" | "unavailable";
@@ -65,50 +66,47 @@ export class CompletionNotifications {
     private readonly currentParent: () => ExtensionContext | null,
   ) {}
 
-  record(record: AgentRecord, run: SubagentRun, outcome: SubagentRunOutcome, required: boolean): void {
-    if (!this.parentSessionId || !this.currentParent() || this.entries.has(run.id)) return;
-    if (!required) {
-      this.entries.set(run.id, { agentId: record.id });
+  record(result: SubagentRunResult, binding: RunNotificationBinding): void {
+    if (
+      binding.ownerGeneration !== this.ownerGeneration ||
+      binding.parentSessionId !== this.parentSessionId ||
+      !this.currentParent() ||
+      this.entries.has(result.runId)
+    )
+      return;
+    if (!binding.required) {
+      this.entries.set(result.runId, { agentId: result.agentId });
       return;
     }
 
-    // Capture stats and text while the completion callback still owns the record projection.
-    const terminalRecord: AgentRecord = {
-      ...record,
-      lifecycle: {
-        ...record.lifecycle,
-        status: outcome.status,
-        started: run.startedAt !== undefined,
-        startedAt: run.startedAt ?? run.acceptedAt,
-        completedAt: outcome.completedAt,
-        stoppedBy: outcome.stoppedBy,
-        stopDetail: outcome.stopDetail,
-      },
-      result: outcome.result,
-      error: outcome.error,
-    };
+    const stopReason = formatStopReason(result);
     const details = Object.freeze({
-      ...buildAgentDetails(terminalRecord, { includeStats: true, includeStatus: true }),
+      type: result.type,
+      description: result.description,
+      ...(result.worktreePath && { worktreePath: result.worktreePath }),
+      status: result.status,
+      outputFile: result.outputFile,
+      ...(stopReason && { stopReason }),
+      ...formatResultStats(result.stats, result.elapsedMs),
       notificationId: randomUUID(),
-      runId: run.id,
-      ownerGeneration: this.ownerGeneration,
-      parentSessionId: this.parentSessionId,
+      runId: result.runId,
+      ownerGeneration: binding.ownerGeneration,
+      parentSessionId: binding.parentSessionId,
     });
-    const headline = `[Subagent "${record.display.type}" ${record.id.slice(0, SHORT_ID_LENGTH)} ${outcome.status}]`;
-    const spawnCtx = record.execution.spawnCtx;
-    const fallbackText = plainText(`[Subagent "${record.display.type}" ${outcome.status}] Result available`);
+    const headline = `[Subagent "${result.type}" ${result.agentId.slice(0, SHORT_ID_LENGTH)} ${result.status}]`;
+    const fallbackText = plainText(`[Subagent "${result.type}" ${result.status}] Result available`);
     const notification: Notification = {
       message: Object.freeze({
         customType: "subagent-result",
         display: true,
-        content: `${headline}\n\n${formatResultContent(terminalRecord)}`,
+        content: `${headline}\n\n${formatTerminalContent(result)}`,
         details,
       }),
       status: "pending",
       submitting: false,
-      notifyOnSynchronousFailure: () => spawnCtx?.ui.notify(fallbackText, "info"),
+      notifyOnSynchronousFailure: () => binding.spawnCtx.ui.notify(fallbackText, "info"),
     };
-    this.entries.set(run.id, { agentId: record.id, notification });
+    this.entries.set(result.runId, { agentId: result.agentId, notification });
     this.pending.add(notification);
     this.timer ??= setTimeout(() => this.flush(), NUDGE_DELAY_MS);
   }

@@ -2,8 +2,8 @@
  * index.ts — Local subagents extension entry point.
  *
  * Stealth tool registration: all tools register at init with no description,
- * promptSnippet, or promptGuidelines; the model param is injected via the
- * tool_call listener. Config lives in ConfigStore (loaded from
+ * promptSnippet, or promptGuidelines. The Agent executor resolves the model
+ * and Thinking after resolving its target and type. Config lives in ConfigStore (loaded from
  * ~/.pi/agent/subagents-lite.json at session_start); tool execution and
  * menus read/write through it.
  */

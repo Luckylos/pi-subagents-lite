@@ -12,6 +12,7 @@ import type { ExtensionCommandContext, SessionMessageEntry } from "@earendil-wor
 import type { JsonObject, ToolCall } from "@earendil-works/pi-ai";
 import { fakeCtx, shellMock } from "../fixtures.js";
 import { asCommandContext } from "../pi-boundaries.js";
+import { defaultModel } from "../mock-utils.js";
 import type { AgentRecord, ThinkingChoice, ThinkingLevel } from "../../src/types.js";
 import type { SpawnIntent, SpawnResult } from "../../src/spawn/spawn-coordinator.js";
 import type { AgentConfig } from "../../src/agents/types.js";
@@ -98,7 +99,7 @@ function historyWithCall(args: JsonObject, parentLevel?: ThinkingLevel): Extensi
       ],
     },
   } as SessionMessageEntry;
-  const ctx = asCommandContext(fakeCtx({ thinkingLevel: parentLevel }));
+  const ctx = asCommandContext(fakeCtx({ model: { ...defaultModel()!, reasoning: true }, thinkingLevel: parentLevel }));
   vi.mocked(ctx.sessionManager.getEntries).mockReturnValue([entry]);
   return ctx;
 }
@@ -140,13 +141,13 @@ describe("restart — thinking resolution", () => {
     expect(lastSpawnIntent().thinkingLevel).toBe("high");
   });
 
-  it("defers a config `parent` to the spawn runner instead of freezing the parent level", async () => {
+  it("resolves a configured `parent` against the current parent on restart", async () => {
     storeState.defaultThinking = "parent";
 
     await handleRestartLastAgents(owner, historyWithCall({ prompt: "Do it" }, "minimal"));
 
-    expect(lastSpawnIntent().thinkingLevel).toBeUndefined();
-    expect(lastSpawnIntent().invocation?.thinkingLevel).toBeUndefined();
+    expect(lastSpawnIntent().thinkingLevel).toBe("minimal");
+    expect(lastSpawnIntent().invocation?.thinkingLevel).toBe("minimal");
   });
 });
 

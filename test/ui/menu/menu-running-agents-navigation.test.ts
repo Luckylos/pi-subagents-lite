@@ -164,6 +164,135 @@ describe("running agents keyboard navigation", () => {
   });
 });
 
+describe("running agents Clear actions", () => {
+  it.each(["settled continuation", "record replacement", "owner generation", "manager replacement"] as const)(
+    "rejects a displayed Clear after %s",
+    async (change) => {
+      const record = makeFinishedAgent("agent-1");
+      setLiveAgents([record]);
+      const manager = mockModules.mockManager;
+      manager.clear.mockReturnValue(true);
+      const menu = await openMenu();
+      menu.press(ENTER);
+      expect(menu.selection()).toBe("Clear");
+      const previousManager = owner.manager;
+      const previousGeneration = owner.generation;
+      try {
+        if (change === "settled continuation") {
+          // Same record, phase, status and timestamp: only the latest run ID changed.
+          manager.getRuns.mockReturnValue([run(1, {}), run(2, {})]);
+        } else if (change === "record replacement") {
+          manager.listAgents.mockReturnValue([makeFinishedAgent(record.id, { type: "replacement-agent" })]);
+        } else if (change === "owner generation") {
+          owner.generation++;
+        } else {
+          owner.manager = (await createTestOwner()).manager;
+        }
+        menu.press(ENTER);
+        expect(manager.clear).not.toHaveBeenCalled();
+        expect(menu.closed).not.toHaveBeenCalled();
+        expect(menu.ctx.ui.notify).toHaveBeenCalledWith(
+          "Clear not accepted: The run is no longer eligible. Reopen the action and try again.",
+          "warning",
+        );
+        if (change === "settled continuation") expect(menu.render().join("\n")).toContain("Run history (2)");
+        if (change === "record replacement") expect(menu.selection()).toContain("replacement-agent");
+        if (change === "owner generation" || change === "manager replacement") {
+          expect(menu.render().join("\n")).not.toContain("Clear");
+        }
+      } finally {
+        owner.manager = previousManager;
+        owner.generation = previousGeneration;
+      }
+    },
+  );
+
+  it("keeps detail open on manager refusal and closes it only on acceptance", async () => {
+    setLiveAgents([makeFinishedAgent("agent-1")]);
+    const clear = mockModules.mockManager.clear;
+    clear.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const menu = await openMenu();
+    menu.press(ENTER);
+    expect(menu.selection()).toBe("Clear");
+    menu.press(ENTER);
+    expect(clear.mock.calls).toEqual([["agent-1"]]);
+    expect(menu.ctx.ui.notify).toHaveBeenNthCalledWith(
+      1,
+      "Clear not accepted: The manager refused the request.",
+      "warning",
+    );
+    expect(menu.closed).not.toHaveBeenCalled();
+    expect(menu.selection()).toBe("Clear");
+    menu.press(ENTER);
+    expect(clear.mock.calls).toEqual([["agent-1"], ["agent-1"]]);
+    expect(menu.ctx.ui.notify).toHaveBeenNthCalledWith(2, "Cleared agent-1", "info");
+    expect(menu.closed).toHaveBeenCalledOnce();
+  });
+
+  describe.each([
+    { action: "Clear done", keys: [UP, UP], kind: "completed" },
+    { action: "Clear all", keys: [UP], kind: "finished" },
+  ])("$action", ({ action, keys, kind }) => {
+    it("attempts only the displayed targets, counts actual outcomes and refreshes after partial acceptance", async () => {
+      const records = [
+        makeFinishedAgent("agent-1", { type: "accepted-agent" }),
+        makeFinishedAgent("agent-2", { type: "stale-agent" }),
+        makeFinishedAgent("agent-3", { type: "refused-agent" }),
+        makeRunningAgent("agent-4", { type: "newly-finished-agent" }),
+      ];
+      setLiveAgents(records);
+      const manager = mockModules.mockManager;
+      const initialRuns = new Map(records.map(({ id }) => [id, manager.getRuns(id)]));
+      manager.clear.mockImplementation((id: string) => {
+        if (id !== "agent-1") return false;
+        manager.listAgents.mockReturnValue(records.slice(1));
+        return true;
+      });
+      const menu = await openMenu();
+      menu.press(...keys);
+      expect(menu.selection()).toBe(action);
+      manager.getRuns.mockImplementation((id) =>
+        id === "agent-2" ? [run(1, {}), run(2, {})] : (initialRuns.get(id) ?? []),
+      );
+      records[3].lifecycle.status = "completed";
+      menu.press(ENTER);
+      expect(manager.clear.mock.calls).toEqual([["agent-1"], ["agent-3"]]);
+      expect(menu.ctx.ui.notify).toHaveBeenCalledWith(`Cleared 1 of 3 ${kind} agent(s). 2 not accepted.`, "warning");
+      expect(menu.closed).not.toHaveBeenCalled();
+      const refreshed = menu.render().join("\n");
+      expect(refreshed).not.toContain("accepted-agent");
+      expect(refreshed).toContain("stale-agent");
+      expect(refreshed).toContain("refused-agent");
+      expect(refreshed).toContain("newly-finished-agent");
+      expect(menu.selection()).toBe(action);
+    });
+
+    it("keeps the roster open when no displayed target is accepted", async () => {
+      setLiveAgents([makeFinishedAgent("agent-1")]);
+      mockModules.mockManager.clear.mockReturnValue(false);
+      const menu = await openMenu();
+      menu.press(...keys, ENTER);
+      expect(mockModules.mockManager.clear.mock.calls).toEqual([["agent-1"]]);
+      expect(menu.ctx.ui.notify).toHaveBeenCalledWith(`Cleared 0 of 1 ${kind} agent(s). 1 not accepted.`, "warning");
+      expect(menu.closed).not.toHaveBeenCalled();
+      expect(menu.selection()).toBe(action);
+    });
+
+    it("closes when every displayed target is accepted", async () => {
+      const stopped = makeFinishedAgent("agent-3");
+      stopped.lifecycle.status = "stopped";
+      setLiveAgents([makeFinishedAgent("agent-1"), makeFinishedAgent("agent-2"), stopped, makeRunningAgent("agent-4")]);
+      mockModules.mockManager.clear.mockReturnValue(true);
+      const menu = await openMenu();
+      menu.press(...keys, ENTER);
+      const expected = action === "Clear done" ? [["agent-1"], ["agent-2"]] : [["agent-1"], ["agent-2"], ["agent-3"]];
+      expect(mockModules.mockManager.clear.mock.calls).toEqual(expected);
+      expect(menu.ctx.ui.notify).toHaveBeenCalledWith(`Cleared ${expected.length} ${kind} agent(s)`, "info");
+      expect(menu.closed).toHaveBeenCalledOnce();
+    });
+  });
+});
+
 describe("running agents message composition", () => {
   async function openContinue() {
     const record = makeFinishedAgent("agent-1");
@@ -261,7 +390,24 @@ function run(sequence: number, outcome?: Partial<SubagentRunOutcome>): SubagentR
     acceptedAt: 1_000,
     startedAt: 2_000,
     completion: Promise.resolve(),
-    outcome: outcome && { status: "completed", completedAt: 14_000, ...outcome },
+    outcome: outcome && {
+      runId: `stable-id-${sequence}`,
+      agentId: "agent-1",
+      sequence,
+      type: "general-purpose",
+      description: "Test agent",
+      started: true,
+      status: "completed",
+      completedAt: 14_000,
+      elapsedMs: (outcome.completedAt ?? 14_000) - 2_000,
+      stats: {
+        lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+        toolUses: 0,
+        contextPercent: null,
+        compactionCount: 0,
+      },
+      ...outcome,
+    },
   };
 }
 

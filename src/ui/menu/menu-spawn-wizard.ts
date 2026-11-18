@@ -12,21 +12,20 @@ import type { ExtensionOwner } from "../../shell.ts";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsList, SelectList, type SettingItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
-import type { ThinkingLevel } from "../../types.ts";
+import type { ThinkingChoice } from "../../types.ts";
 import type { Theme } from "../types.ts";
 
-import { findModelInRegistry } from "../../utils.ts";
+import { parseThinkingChoice } from "../../utils.ts";
 import { agentBulletPrefix } from "../format.ts";
+import { formatDisplayedThinking, THINKING_CHOICE_TAIL } from "../../models/thinking-resolution.ts";
 import {
-  clampThinkingToModel,
-  formatDisplayedThinking,
-  PARENT_THINKING_CHOICE,
-  PI_DEFAULT_CHOICE,
-  resolveDisplayedThinking,
-  THINKING_CHOICE_TAIL,
-  type DisplayedThinking,
-} from "../../models/thinking-resolution.ts";
-import { getPiDefaultThinkingLevel, getPiModelThinkingLevels } from "../../pi-settings.ts";
+  resolveSpawn,
+  resolveSpawnChoices,
+  resolveSpawnSelection,
+  SpawnModelUnavailableError,
+  type SpawnModelChoice,
+  type SpawnSelection,
+} from "../../spawn/spawn-resolution.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, buildSelectListTheme, createSearchableSelect } from "./helpers.ts";
 import { plainText } from "../sanitize.ts";
 import { DEFAULT_GRACE_TURNS } from "../../config/config-io.ts";
@@ -240,105 +239,39 @@ export async function showSpawnAgentMenu(
   const menuGeneration = owner.generation;
   const menuSession = session;
   const menuCoordinator = getCoordinator(owner);
-  const parentModelId = session?.model ? `${session.model.provider}/${session.model.id}` : "";
-  const effectiveModelStr = store.modelFor(selectedType, parentModelId, agentConfig);
+  const isCurrentMenu = () => owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator;
+  let selection: SpawnSelection | undefined;
+  try {
+    selection = await resolveSpawnSelection(owner, ctx, selectedType, undefined, { preview: true });
+  } catch (err) {
+    ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+    return;
+  }
+  if (!isCurrentMenu()) return;
 
-  let currentModelStr = effectiveModelStr || "";
-
-  // Thinking states, each named by the picker entry that sets it. `default`
-  // sends no explicit value so the chain decides at the spawn's target cwd; the
-  // other two pin one, `following` re-read from the parent session per rebuild.
-  type WizardThinking = { kind: "default" } | { kind: "picked"; level: ThinkingLevel } | { kind: "following" };
-  let thinkingState: WizardThinking = { kind: "default" };
-
-  /** Record the user's pick from the thinking submenu. */
+  let modelChoice: SpawnModelChoice = { kind: "default" };
+  let thinkingChoice: ThinkingChoice | undefined;
   const setThinkingChoice = (choice: string) => {
-    if (choice === PI_DEFAULT_CHOICE) thinkingState = { kind: "default" };
-    else if (choice === PARENT_THINKING_CHOICE) thinkingState = { kind: "following" };
-    else thinkingState = { kind: "picked", level: choice as ThinkingLevel };
+    thinkingChoice = parseThinkingChoice(choice);
   };
-
-  /** The wizard's default spawn target: the parent session's cwd. */
-  const parentThinkingCwd = session?.cwd ?? ctx.cwd;
-  // Pi settings snapshot for the thinking display, read at the spawn's target
-  // cwd. A prediction for display only — the session is the source of truth
-  // once it exists. Re-read on every target change, so the `default` state's
-  // prediction always describes the cwd the spawn would resolve in.
-  let modelThinkingLevels = getPiModelThinkingLevels(parentThinkingCwd);
-  let piDefaultThinking = getPiDefaultThinkingLevel(parentThinkingCwd);
-
-  /** Re-read the pi settings snapshot for a new spawn target cwd. */
-  const refreshThinkingSnapshot = (cwd: string) => {
-    modelThinkingLevels = getPiModelThinkingLevels(cwd);
-    piDefaultThinking = getPiDefaultThinkingLevel(cwd);
-  };
-
-  /**
-   * The model a spawn would use: the wizard's pick, or, when it sends no model,
-   * the chain `agent-runner.initSession` walks for an omitted one — the agent
-   * file's model first, then the parent session's.
-   */
-  const currentModel = () =>
-    findModelInRegistry(
-      currentModelStr || agentConfig.model,
-      session?.modelRegistry ?? ctx.modelRegistry,
-      session?.model,
-    );
-
-  /** pi's per-model entry for the model a spawn would use. */
-  const perModelThinking = (): ThinkingLevel | undefined => {
-    const model = currentModel();
-    return model ? modelThinkingLevels[`${model.provider}/${model.id}`] : undefined;
-  };
-
-  /**
-   * The parent session's live level, clamped to the model a spawn would use.
-   * Read from the extension context, the source every runtime resolution of
-   * `parent` uses; a stored session context can lag behind it.
-   */
-  const followedThinking = (): ThinkingLevel | undefined => {
-    const level = ctx.thinkingLevel;
-    if (!level) return undefined;
-    return clampThinkingToModel(currentModel(), level);
-  };
-
-  /** The chain prediction for the model a spawn would use, clamped to it. */
-  const derivedThinking = (): DisplayedThinking =>
-    resolveDisplayedThinking(
-      {
-        frontmatter: agentConfig.thinkingLevel,
-        perModel: perModelThinking(),
-        defaultThinking: store.agent.defaultThinking,
-        parentLevel: ctx.thinkingLevel,
-      },
-      piDefaultThinking,
-      currentModel(),
-    );
-
-  /**
-   * The level the spawn sends as its explicit param, clamped to the model a
-   * spawn would use. Read per rebuild, so a model change re-clamps without the
-   * state storing a model-specific level. On `default` nothing is sent: the
-   * derived value is only a display prediction read at the parent cwd, and
-   * passing it would shadow the spawn target's own per-model entry (worktree
-   * targets carry their own .pi/settings.json), so the runner resolves
-   * frontmatter, per-model and defaultThinking at the actual target cwd.
-   */
-  const spawnThinkingLevel = (): ThinkingLevel | undefined => {
-    if (thinkingState.kind === "picked") return clampThinkingToModel(currentModel(), thinkingState.level);
-    if (thinkingState.kind === "following") return followedThinking();
-    return undefined;
-  };
-
-  /** What the thinking row shows: the level the spawn sends, annotated unless the user picked it. */
-  const thinkingDisplay = (): string => {
-    const level = spawnThinkingLevel();
-    if (level) {
-      return thinkingState.kind === "picked" ? level : formatDisplayedThinking({ level, source: "parent" });
+  const preview = () => {
+    if (!selection) return undefined;
+    try {
+      return resolveSpawnChoices(store, ctx, selection, modelChoice, thinkingChoice);
+    } catch {
+      // The picker can still replace an unavailable selection. Launch reports its error.
+      return undefined;
     }
-    // `default`, and `following` with no parent level to pin: the row reports
-    // what the chain decides, which is what the spawn then runs.
-    return formatDisplayedThinking(derivedThinking());
+  };
+
+  const thinkingDisplay = (choices: ReturnType<typeof preview>): string => {
+    if (!choices) return "";
+    if (choices.explicitThinkingLevel !== undefined) {
+      return thinkingChoice === "parent"
+        ? formatDisplayedThinking({ level: choices.explicitThinkingLevel, source: "parent" })
+        : choices.explicitThinkingLevel;
+    }
+    return formatDisplayedThinking(choices.displayThinking());
   };
 
   let currentMaxTurns: number | undefined = agentConfig.maxTurns ?? store.agent.defaultMaxTurns;
@@ -348,10 +281,32 @@ export async function showSpawnAgentMenu(
   let currentWorktreePath: string | undefined;
   let currentWorktreeLabel = "Inherits parent cwd";
   let currentDescription = prompt.length > 50 ? prompt.slice(0, 50) : prompt;
+  let optionsClosed = false;
+  let launchPending = false;
+  let previewSequence = 0;
+  const updateTargetPreview = async (path: string | undefined) => {
+    const sequence = ++previewSequence;
+    selection = undefined;
+    try {
+      const updated = await resolveSpawnSelection(owner, ctx, selectedType, path, { preview: true });
+      if (sequence !== previewSequence || !isCurrentMenu()) return;
+      selection = updated;
+    } catch {
+      // Leave the preview empty when a target disappeared or fails validation.
+      if (sequence !== previewSequence || !isCurrentMenu()) return;
+    }
+    rebuild?.(buildItems());
+  };
 
   const buildItems = (): SettingItem[] => {
     const fmtNum = (v: number | undefined) => (v != null ? String(v) : "(not set)");
-    const displayModel = currentModelStr || "(inherits parent)";
+    const choices = preview();
+    const displayModel =
+      modelChoice.kind === "explicit"
+        ? modelChoice.name
+        : modelChoice.kind === "parent"
+          ? "(inherits parent)"
+          : (choices?.modelKey ?? "(inherits parent)");
     const items: SettingItem[] = [
       {
         id: "spawn",
@@ -359,89 +314,91 @@ export async function showSpawnAgentMenu(
         currentValue: "",
         description: "Spawn the agent with current settings",
         submenu: (_v, done) => {
+          if (launchPending || optionsClosed) {
+            done();
+            return undefined as any;
+          }
+          launchPending = true;
           const gtItem = items.find((i) => i.id === "graceTurns");
           const bgItem = items.find((i) => i.id === "background");
           const descItem = items.find((i) => i.id === "description");
           const promptItem = items.find((i) => i.id === "prompt");
 
-          const thinking = spawnThinkingLevel();
           const maxTurns = currentMaxTurns;
           const maxTokens = currentMaxTokens;
           const graceTurns = Number(gtItem?.currentValue ?? DEFAULT_GRACE_TURNS);
           const background = bgItem?.currentValue === "ON";
           const description = descItem?.currentValue ?? currentDescription;
           const spawnPrompt = promptItem?.currentValue ?? prompt;
-
-          // Resolve model
-          let model: ReturnType<typeof findModelInRegistry> = undefined;
-          let modelKey: string | undefined;
-          if (currentModelStr) {
-            const registry = session?.modelRegistry ?? ctx.modelRegistry;
-            model = findModelInRegistry(currentModelStr, registry, undefined);
-            if (!model) {
-              ctx.ui.notify(`Model not found: ${currentModelStr}`, "error");
-              done();
-              return undefined as any;
-            }
-            modelKey = `${model.provider}/${model.id}`;
-          }
+          const worktreePath = currentWorktreePath;
+          const worktreeLabel = currentWorktreeLabel;
+          const chosenModel = modelChoice;
+          const chosenThinking = thinkingChoice;
+          const validateModelBeforeClosing = chosenModel.kind === "explicit";
 
           const doSpawn = async () => {
             if (!menuCoordinator || !menuSession) {
               ctx.ui.notify("Subagents session has not started", "error");
               return;
             }
-            if (owner.generation !== menuGeneration || getCoordinator(owner) !== menuCoordinator) {
+            if (!isCurrentMenu()) {
               ctx.ui.notify("Subagents session changed before spawn", "warning");
               return;
             }
-            if (currentWorktreePath) {
-              await owner.registry.discoverNewAgents(`${currentWorktreePath}/.pi/agents`);
-            }
-            if (owner.generation !== menuGeneration || getCoordinator(owner) !== menuCoordinator) {
-              ctx.ui.notify("Subagents session changed during agent discovery", "warning");
-              return;
-            }
-
-            const widget = getWidget(owner);
-            if (widget) {
-              widget.setUICtx(ctx.ui as unknown as import("../agent-widget.ts").UICtx);
-              widget.ensureTimer();
-            }
-
             try {
+              const spawn = await resolveSpawn(owner, ctx, selectedType, worktreePath, chosenModel, chosenThinking);
+              if (!isCurrentMenu()) {
+                ctx.ui.notify("Subagents session changed during agent discovery", "warning");
+                return;
+              }
+              if (validateModelBeforeClosing) {
+                if (optionsClosed) return;
+                doneRef();
+              }
+              const widget = getWidget(owner);
+              if (widget) {
+                widget.setUICtx(ctx.ui as unknown as import("../agent-widget.ts").UICtx);
+                widget.ensureTimer();
+              }
               await menuCoordinator.spawn(
                 getPiInstance(owner),
-                menuSession,
+                ctx,
                 prepareSpawnIntent({
-                  type: selectedType,
+                  ...spawn,
                   prompt: spawnPrompt,
                   description,
-                  model,
-                  modelKey,
                   maxTurns,
                   maxTokens,
-                  thinkingLevel: thinking,
                   graceTurns,
-                  worktreePath: currentWorktreePath,
-                  worktreeLabel: currentWorktreePath ? currentWorktreeLabel : undefined,
+                  worktreeLabel: spawn.worktreePath ? worktreeLabel : undefined,
                   runInBackground: background,
                   parentMessages: store.agent.parentMessages,
                   includeRunModeInInvocation: true,
                 }),
               );
 
-              if (!background && owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator) {
-                getWidget(owner)?.update();
-              }
+              if (!background && isCurrentMenu()) getWidget(owner)?.update();
             } catch (err) {
+              if (!isCurrentMenu()) {
+                ctx.ui.notify("Subagents session changed during agent discovery", "warning");
+                return;
+              }
+              if (err instanceof SpawnModelUnavailableError) {
+                ctx.ui.notify(err.message, "error");
+                return;
+              }
+              if (validateModelBeforeClosing) doneRef();
               ctx.ui.notify(`Spawn failed: ${err instanceof Error ? err.message : String(err)}`, "error");
             }
           };
 
           done();
-          doneRef();
-          doSpawn().catch(() => {});
+          if (!validateModelBeforeClosing) doneRef();
+          void doSpawn()
+            .finally(() => {
+              launchPending = false;
+            })
+            .catch(() => {});
           return undefined as any;
         },
       },
@@ -461,9 +418,8 @@ export async function showSpawnAgentMenu(
           projectOffered: store.projectTargetOffered,
           theme,
           onSet: (_target, model) => {
-            currentModelStr = model === "(inherits parent)" || model === null ? "" : model;
-            // Every thinking state resolves its level through currentModel(), so
-            // the rebuilt row and the spawn value already reflect the new model.
+            modelChoice =
+              model === "(inherits parent)" || model === null ? { kind: "parent" } : { kind: "explicit", name: model };
             rebuild?.(buildItems());
           },
         }),
@@ -497,11 +453,9 @@ export async function showSpawnAgentMenu(
                     onSelect: (value) => {
                       const wt = value === "Inherits parent cwd" ? undefined : worktrees.find((w) => w.path === value);
                       currentWorktreePath = wt?.path;
-                      // Derived tracks the spawn target: re-read pi's settings
-                      // there so the prediction shown on `pi default` follows
-                      // the project the runner will resolve in.
-                      refreshThinkingSnapshot(currentWorktreePath ?? parentThinkingCwd);
-                      done(wt ? (wt.branch ?? "detached") : "Inherits parent cwd");
+                      currentWorktreeLabel = wt ? (wt.branch ?? "detached") : "Inherits parent cwd";
+                      void updateTargetPreview(currentWorktreePath);
+                      done(currentWorktreeLabel);
                     },
                     onCancel: () => done(),
                   },
@@ -514,9 +468,9 @@ export async function showSpawnAgentMenu(
       {
         id: "thinkingLevel",
         label: "Thinking level",
-        currentValue: thinkingDisplay(),
+        currentValue: thinkingDisplay(choices),
         description: "Set the reasoning effort level",
-        submenu: createThinkingLevelSubmenu(currentModel, theme, setThinkingChoice),
+        submenu: createThinkingLevelSubmenu(() => preview()?.model, theme, setThinkingChoice),
       },
       {
         id: "maxTokens",
@@ -583,7 +537,10 @@ export async function showSpawnAgentMenu(
 
   await ctx.ui.custom((_tui, t, _kb, done) => {
     theme = t;
-    doneRef = () => done(undefined);
+    doneRef = () => {
+      optionsClosed = true;
+      done(undefined);
+    };
 
     const items = buildItems();
     const onChange = (id: string, newValue: string) => {

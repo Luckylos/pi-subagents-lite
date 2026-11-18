@@ -25,7 +25,7 @@ import { DEFAULT_AGENTS } from "./default-agents.ts";
 import { buildAgentPrompt, type PromptExtras } from "../prompt/prompts.ts";
 import { preloadSkills, loadSkillMeta } from "../prompt/skill-loader.ts";
 import { type EnvInfo, type RunTunables, SHORT_ID_LENGTH } from "../types.ts";
-import type { SubagentType, SystemPromptMode } from "./types.ts";
+import type { AgentConfig, SubagentType, SystemPromptMode } from "./types.ts";
 import { getStore } from "../shell.ts";
 import { withChildExtensionLoad } from "../child-load-context.ts";
 import { BUILTIN_EXTENSION_FACTORIES } from "./builtin-extensions.ts";
@@ -104,6 +104,9 @@ interface RunOptions extends RunTunables, SessionPromptOptions {
   /** Manager-assigned id; suffixes session name to disambiguate parallel spawns (e.g. `Explore#a1b2c3d4`). */
   agentId?: string;
   cwd?: string;
+  /** Snapshot of the definition chosen by Spawn, including when the run was queued. */
+  agentConfig?: AgentConfig;
+  deferredDefaultThinking?: RunTunables["thinkingLevel"];
   /**
    * Trust state for the target project. False = ignore the target's project
    * resources (untrusted cross-repo target). Absent/true = load them.
@@ -209,6 +212,7 @@ function resolveSystemPromptSources(
   cwd: string,
   notify: (msg: string) => void,
   agentConfig: ReturnType<ExtensionOwner["registry"]["getAgentConfig"]>,
+  projectTrusted: boolean,
 ): {
   mode: SystemPromptMode;
   extras: Pick<PromptExtras, "parentSystemPrompt" | "customSystemPrompt" | "contextFiles">;
@@ -246,7 +250,17 @@ function resolveSystemPromptSources(
 
   if (includeContextFiles) {
     try {
-      extras.contextFiles = loadProjectContextFiles({ cwd, agentDir: getAgentDir() });
+      const agentDir = getAgentDir();
+      if (projectTrusted) {
+        extras.contextFiles = loadProjectContextFiles({ cwd, agentDir });
+      } else {
+        // The SDK's standalone helper walks cwd's ancestors without a trust
+        // check. Isolate the user instructions from that project search.
+        extras.contextFiles = loadProjectContextFiles({
+          cwd: path.parse(path.resolve(agentDir)).root,
+          agentDir,
+        }).filter((file) => path.dirname(file.path) === path.resolve(agentDir));
+      }
     } catch {
       // Non-fatal: context files are supplementary
     }
@@ -263,13 +277,14 @@ function buildPrompt(
   env: EnvInfo,
   systemPromptMode: SystemPromptMode = "replace",
   resolverExtras: Pick<PromptExtras, "parentSystemPrompt" | "customSystemPrompt" | "contextFiles"> = {},
+  projectTrusted = true,
 ): string {
   const extras: PromptExtras = { ...resolverExtras };
   if (Array.isArray(agentConfig?.preloadSkills)) {
-    extras.skillBlocks = preloadSkills(agentConfig.preloadSkills, cwd);
+    extras.skillBlocks = preloadSkills(agentConfig.preloadSkills, cwd, projectTrusted);
   }
   if (Array.isArray(config.skills)) {
-    extras.skillMetas = loadSkillMeta(config.skills, cwd);
+    extras.skillMetas = loadSkillMeta(config.skills, cwd, projectTrusted);
   }
   if (agentConfig) {
     return buildAgentPrompt(agentConfig, cwd, env, extras, systemPromptMode);
@@ -419,19 +434,20 @@ interface SessionSetup {
 
 async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<AgentSession> {
   const { ctx, options, agentConfig, cwd, loader, extToolMap, settingsManager } = setup;
-  const model = options.model ?? findModelInRegistry(agentConfig?.model, ctx.modelRegistry, ctx.model);
-  // Per-model comes from the same trust-gated instance the session is created
-  // with, so the project-trust gate applies to the read identically. When
-  // every source is unset nothing is passed and pi's own fallback applies
-  // (defaultThinkingLevel setting → medium, clamped to the model).
-  const perModelLevel = model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined;
-  const thinkingLevel = resolveThinkingLevel({
-    explicit: options.thinkingLevel,
-    frontmatter: agentConfig?.thinkingLevel,
-    perModel: perModelLevel,
-    defaultThinking: getStore(owner).agent.defaultThinking,
-    parentLevel: ctx.thinkingLevel,
-  });
+  const model = options.agentConfig
+    ? options.model
+    : (options.model ?? findModelInRegistry(agentConfig?.model, ctx.modelRegistry, ctx.model));
+  // Spawn supplies its resolved choices. Direct runner callers still follow
+  // the same chain using the trust-gated SDK settings instance.
+  const thinkingLevel = options.agentConfig
+    ? options.thinkingLevel
+    : resolveThinkingLevel({
+        explicit: options.thinkingLevel,
+        frontmatter: agentConfig?.thinkingLevel,
+        perModel: model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined,
+        defaultThinking: getStore(owner).agent.defaultThinking,
+        parentLevel: ctx.thinkingLevel,
+      });
   const agentDir = getAgentDir();
   const sessionOpts: Parameters<typeof createAgentSession>[0] = {
     cwd,
@@ -453,6 +469,12 @@ async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<
   if (options.customTools?.length) sessionOpts.customTools = options.customTools;
   const result = await createAgentSession(sessionOpts);
   const session = result.session;
+  if (options.deferredDefaultThinking !== undefined && session.model) {
+    const { provider, id } = session.model;
+    if (settingsManager.getModelThinkingLevel(provider, id) === undefined) {
+      session.setThinkingLevel(options.deferredDefaultThinking);
+    }
+  }
   patchRetryClassifier(session);
 
   // Inject the output-limit field into provider payloads; spawn-time value wins
@@ -600,17 +622,23 @@ export async function createChildSession(
 }> {
   const store = getStore(owner);
   const effectiveCwd = options.cwd ?? ctx.cwd;
+  const projectTrusted = options.projectTrusted !== false;
 
   // One SettingsManager for the whole spawn: its trust state gates both the
   // resource loader (project extensions/skills/prompts/themes/system prompt
   // files) and the session context (ctx.isProjectTrusted). pi reads
   // defaultTools and the extension selection from this same instance.
   const settingsManager = SettingsManager.create(effectiveCwd, getAgentDir(), {
-    projectTrusted: options.projectTrusted !== false,
+    projectTrusted,
   });
 
-  const config = owner.registry.getConfig(type, store.agent.loadSkillsImplicitly, store.agent.loadExtensionsImplicitly);
-  const agentConfig = owner.registry.getAgentConfig(type);
+  const config = owner.registry.getConfig(
+    type,
+    store.agent.loadSkillsImplicitly,
+    store.agent.loadExtensionsImplicitly,
+    options.agentConfig,
+  );
+  const agentConfig = options.agentConfig ?? owner.registry.getAgentConfig(type);
 
   // Buffer warnings during setup to avoid inserting custom_message entries
   // between tool_use and tool_result in the session tree (causes Anthropic 400).
@@ -641,9 +669,10 @@ export async function createChildSession(
     effectiveCwd,
     bufferNotify,
     agentConfig,
+    projectTrusted,
   );
 
-  const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras);
+  const systemPrompt = buildPrompt(type, agentConfig, config, effectiveCwd, env, mode, promptExtras, projectTrusted);
   const { loader, reloadAndMap } = createResourceLoader(
     config,
     agentConfig,

@@ -297,9 +297,10 @@ describe("AgentManager", () => {
 
         expect(onComplete).toHaveBeenCalledTimes(1);
         const completed = onComplete.mock.calls[0][0];
-        expect(completed.lifecycle.status).toBe("stopped");
-        expect(completed.lifecycle.stoppedBy).toBe("watchdog");
-        expect(completed.lifecycle.stopDetail).toEqual({ kind: "tool", toolName: "bash", elapsedMs: 46 * 60_000 });
+        expect(completed.status).toBe("stopped");
+        expect(completed.stoppedBy).toBe("watchdog");
+        expect(completed.stopDetail).toEqual({ kind: "tool", toolName: "bash", elapsedMs: 46 * 60_000 });
+        expect(Object.isFrozen(completed.stopDetail)).toBe(true);
       } finally {
         vi.useRealTimers();
       }

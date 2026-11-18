@@ -1,10 +1,6 @@
 import { Input, matchesKey } from "@earendil-works/pi-tui";
-import type { ExtensionOwner } from "../shell.ts";
-import { getManager } from "../shell.ts";
 import type { AgentRecord, AgentSubmissionResult } from "../types.ts";
-import { SHORT_ID_LENGTH } from "../types.ts";
-import { canRequestStop, stopRequestedText } from "../agents/agent-status.ts";
-import { invalidateAgentRow } from "./renderer.ts";
+import type { RunActionTarget } from "./run-actions.ts";
 import { plainText } from "./sanitize.ts";
 
 export type MessageIntent = "steer" | "continue";
@@ -17,48 +13,9 @@ export function messageIntent(record: AgentRecord): MessageIntent | undefined {
   return undefined;
 }
 
-/** Bind an action to the record, manager generation and exact run shown to the user. */
-export function captureRunAction(owner: ExtensionOwner, record: AgentRecord) {
-  const generation = owner.generation;
-  const manager = getManager(owner);
-  const id = record.id;
-  const runId = manager?.getRuns(id).at(-1)?.id;
-  return {
-    manager,
-    isCurrent: () => {
-      if (!manager || !runId || owner.generation !== generation || getManager(owner) !== manager) return false;
-      return record.id === id && manager.getRecord(id) === record && manager.getRuns(id).at(-1)?.id === runId;
-    },
-  };
-}
-
-export function requestRunStop(
-  owner: ExtensionOwner,
-  record: AgentRecord,
-  target: ReturnType<typeof captureRunAction>,
-): { accepted: boolean; text: string } {
-  if (!target.isCurrent() || !canRequestStop(record)) {
-    return {
-      accepted: false,
-      text: "Stop not accepted: The run is no longer eligible. Reopen the action and try again.",
-    };
-  }
-  if (!target.manager?.abort(record.id, "user")) {
-    return { accepted: false, text: "Stop not accepted: The manager refused the request." };
-  }
-  invalidateAgentRow(owner, record.id);
-  return {
-    accepted: true,
-    text:
-      record.lifecycle.status === "stopped"
-        ? `Stopped ${record.id.slice(0, SHORT_ID_LENGTH)}.`
-        : stopRequestedText(record),
-  };
-}
-
 export function submitToRun(
   record: AgentRecord,
-  target: ReturnType<typeof captureRunAction>,
+  target: RunActionTarget,
   intent: MessageIntent,
   submit: (message: string) => Promise<AgentSubmissionResult>,
 ): (message: string) => Promise<AgentSubmissionResult> {

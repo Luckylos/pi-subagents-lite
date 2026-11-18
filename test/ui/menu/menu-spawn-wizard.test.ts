@@ -17,6 +17,17 @@ import type { Component, SelectItem, SettingItem, SettingsListTheme, SelectListT
 import type { ThinkingLevel } from "../../../src/types.js";
 import type { PiSettingsScope } from "../../../src/pi-settings.js";
 import type { SpawnOptions } from "../../../src/agents/agent-manager.js";
+import type { WorktreeValidationResult } from "../../../src/spawn/worktree-validator.js";
+
+// The picker lists mock worktrees whose paths need not exist on this host.
+vi.mock("../../../src/spawn/worktree-validator.js", () => ({
+  validateWorktreePath: vi.fn(async (_pi: unknown, path: string): Promise<WorktreeValidationResult> => ({
+    ok: true,
+    resolvedPath: path,
+    worktreeRoot: path,
+    sameRepo: true,
+  })),
+}));
 
 // Mock pi's settings reads (per-model map + global default)
 const piSettingsMock = vi.hoisted(() => ({
@@ -183,6 +194,7 @@ function setupMocks() {
 function createMockWizardCtx(stepResults: (string | undefined)[]) {
   let callCount = 0;
   const ctx = createMockCtx([], [], [], {
+    modelRegistry: owner.sessionCtx?.modelRegistry,
     ui: {
       custom: vi.fn(async (factory) => {
         const stepIndex = callCount++;
@@ -193,6 +205,7 @@ function createMockWizardCtx(stepResults: (string | undefined)[]) {
       }),
     },
   });
+  ctx.model = owner.sessionCtx?.model;
   return ctx;
 }
 
@@ -362,11 +375,12 @@ function pickThinking(value: string) {
   settingsListCalls[1].onChange("thinkingLevel", value);
 }
 
-function pickWorktree(path: string) {
+async function pickWorktree(path: string) {
   const wtItem = settingsListCalls[1].items.find((i) => i.id === "worktree")!;
   wtItem.submenu!("Inherits parent cwd", vi.fn());
   selectDialogInstances[selectDialogInstances.length - 1].callbacks.onSelect(path);
   settingsListCalls[1].onChange("worktree", "feature");
+  await vi.waitFor(() => expect(row().currentValue).not.toBe(""));
 }
 
 async function spawnOptions(): Promise<SpawnOptions> {
@@ -474,10 +488,9 @@ describe("showSpawnAgentMenu — thinking level row", () => {
     expect(selectListInstances[selectListInstances.length - 1].items.map((i) => i.value)).toContain("parent");
 
     pickThinking("parent");
-    // Nothing to follow: the row shows what the chain decides and the spawn sends
-    // no explicit level, so `parent` never reaches the child session.
+    // Missing parent Thinking falls through to the frontmatter level.
     expect(row().currentValue).toBe("medium (frontmatter)");
-    expect(await spawnOptions()).toMatchObject({ thinkingLevel: undefined });
+    expect(await spawnOptions()).toMatchObject({ thinkingLevel: "medium" });
   });
 
   it("re-derives on a model change while on pi default, clamped to the new model", async () => {
@@ -511,18 +524,15 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     typeWithoutThinking();
   });
 
-  it("Default spawns with nothing so the runner resolves the chain at the spawn's target", async () => {
+  it("Default uses the per-model level at launch", async () => {
     piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
     expect(row().currentValue).toBe("high (pi per-model)");
 
     const options = await spawnOptions();
-    // The derived value is a display prediction read at the parent cwd. Passing
-    // it as the explicit param would shadow the spawn target's own per-model
-    // entry, so Default passes nothing and the runner decides.
-    expect(options.thinkingLevel).toBeUndefined();
-    expect(options.invocation?.thinkingLevel).toBeUndefined();
+    expect(options.thinkingLevel).toBe("high");
+    expect(options.invocation?.thinkingLevel).toBe("high");
   });
 
   it("a picked level is displayed alone, with no source annotation", async () => {
@@ -575,7 +585,7 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     await completeWizard(ctx);
 
     pickThinking("low");
-    pickWorktree("/test-feature");
+    await pickWorktree("/test-feature");
 
     expect(row().currentValue).toBe("low");
     expect(await spawnOptions()).toMatchObject({ thinkingLevel: "low" });
@@ -639,7 +649,7 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     pickThinking("pi default");
 
     expect(row().currentValue).toBe("high (pi per-model)");
-    expect(await spawnOptions()).toMatchObject({ thinkingLevel: undefined });
+    expect(await spawnOptions()).toMatchObject({ thinkingLevel: "high" });
   });
 
   it("a picked level can be released after switching to a non-reasoning model", async () => {
@@ -689,33 +699,36 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     expect(await spawnOptions()).toMatchObject({ thinkingLevel: undefined });
   });
 
-  it("reads pi's per-model entry for the agent's own model when the model returns to the parent", async () => {
-    // Sending no model does not drop the agent file's model: the runner resolves
-    // it, so pi's per-model entry is read for that model, not for the parent's.
-    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
+  it("looks up the parent's per-model level when the menu explicitly inherits the parent model", async () => {
     typeWithoutThinking();
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    const parentKey = `${ctx.model!.provider}/${ctx.model!.id}`;
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      "anthropic/claude-sonnet-4-20250514": "high",
+      [parentKey]: "low",
+    });
     await completeWizard(ctx);
     expect(row().currentValue).toBe("high (pi per-model)");
 
     switchModel("(inherits parent)");
-    expect(row().currentValue).toBe("high (pi per-model)");
+    expect(row().currentValue).toBe("low (pi per-model)");
   });
 
-  it("offers the agent's own model levels when the model returns to the parent", async () => {
-    // The parent runs a reasoning model; the agent file pins a non-reasoning one.
-    mockModules.mockSessionCtx.model = mockModules.mockSessionCtx.modelRegistry.find(
-      "anthropic",
-      "claude-sonnet-4-20250514",
-    );
+  it("offers the parent model's levels when the menu explicitly inherits it", async () => {
     typeWithoutThinking("openai/gpt-4o");
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    ctx.model = ctx.modelRegistry.find("anthropic", "claude-sonnet-4-20250514");
     await completeWizard(ctx);
 
     switchModel("(inherits parent)");
     row().submenu!("off", vi.fn());
     expect(selectListInstances[selectListInstances.length - 1].items.map((i) => i.value)).toEqual([
       "off",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
       "parent",
       "pi default",
     ]);
@@ -730,8 +743,8 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     await completeWizard(ctx);
     expect(row().currentValue).toBe("medium (pi default)");
 
-    pickWorktree("/test-feature");
-    expect(piSettingsMock.getPiModelThinkingLevels).toHaveBeenCalledWith("/test-feature");
+    await pickWorktree("/test-feature");
+    expect(piSettingsMock.getPiModelThinkingLevels).toHaveBeenCalledWith("/test-feature", { projectTrusted: true });
     expect(row().currentValue).toBe("max (pi per-model)");
   });
 
@@ -743,10 +756,10 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
 
-    pickWorktree("/test-feature");
+    await pickWorktree("/test-feature");
     expect(row().currentValue).toBe("max (pi per-model)");
 
-    pickWorktree("Inherits parent cwd");
+    await pickWorktree("Inherits parent cwd");
     expect(row().currentValue).toBe("medium (pi default)");
   });
 
@@ -759,12 +772,11 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     await completeWizard(ctx);
 
     pickThinking("low");
-    pickWorktree("/test-feature");
+    await pickWorktree("/test-feature");
     pickThinking("pi default");
 
-    // The spawn sends nothing, so the row must show what the worktree resolves.
     expect(row().currentValue).toBe("max (pi per-model)");
-    expect(await spawnOptions()).toMatchObject({ thinkingLevel: undefined });
+    expect(await spawnOptions()).toMatchObject({ thinkingLevel: "max" });
   });
 
   it("picking `pi default` after returning to the parent cwd derives from the parent's settings", async () => {
@@ -775,9 +787,9 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
 
-    pickWorktree("/test-feature");
+    await pickWorktree("/test-feature");
     pickThinking("low");
-    pickWorktree("Inherits parent cwd");
+    await pickWorktree("Inherits parent cwd");
     pickThinking("pi default");
 
     expect(row().currentValue).toBe("medium (pi default)");
@@ -1005,6 +1017,39 @@ describe("showSpawnAgentMenu — model", () => {
     setupMocks();
   });
 
+  it("uses the parent model directly when explicitly selected despite a frontmatter model", async () => {
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    switchModel("(inherits parent)");
+    expect(await spawnOptions()).toMatchObject({ model: owner.sessionCtx?.model });
+  });
+
+  it("re-resolves omitted model and Thinking when the available models change before launch", async () => {
+    typeWithoutThinking();
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    const key = `${ctx.model!.provider}/${ctx.model!.id}`;
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      [key]: "low",
+      "anthropic/claude-sonnet-4-20250514": "high",
+    });
+    await completeWizard(ctx);
+    expect(row().currentValue).toBe("high (pi per-model)");
+
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValueOnce([]);
+    expect(await spawnOptions()).toMatchObject({ model: ctx.model, thinkingLevel: "low" });
+  });
+
+  it("reports the name of an explicit model that becomes unavailable before launch", async () => {
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    switchModel("openai/gpt-4o");
+    vi.mocked(ctx.modelRegistry.getAvailable).mockReturnValueOnce([]);
+    settingsListCalls[1].items.find((i) => i.id === "spawn")!.submenu!("", vi.fn());
+
+    await vi.waitFor(() => expect(ctx.ui.notify).toHaveBeenCalledWith("Model not found: openai/gpt-4o", "error"));
+    expect(mockModules.mockManager.spawn).not.toHaveBeenCalled();
+  });
+
   it("shows agent config model", async () => {
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
@@ -1180,9 +1225,7 @@ describe("showSpawnAgentMenu — spawn action", () => {
     const [, , type, prompt, options] = mockModules.mockManager.spawn.mock.calls[0];
     expect(type).toBe("general-purpose");
     expect(prompt).toBe("fix the bug");
-    // Derived state (no user pick): the wizard passes nothing — frontmatter,
-    // per-model, and defaultThinking are resolved by the spawn runner's chain.
-    expect(options.thinkingLevel).toBeUndefined();
+    expect(options.thinkingLevel).toBe("medium");
     expect(options).toMatchObject({
       description: "fix the bug",
       model: { provider: "anthropic", id: "claude-sonnet-4-20250514" },
@@ -1193,7 +1236,7 @@ describe("showSpawnAgentMenu — spawn action", () => {
       worktreePath: undefined,
       invocation: {
         modelName: "claude-sonnet-4-20250514",
-        thinkingLevel: undefined,
+        thinkingLevel: "medium",
         maxTurns: 25,
         runInBackground: true,
       },

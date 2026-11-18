@@ -2,7 +2,7 @@ import type { Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AgentOutputLog } from "./agents/output-file.ts";
 import type { LifetimeUsage, AgentUsage } from "./agents/usage.ts";
-import type { SubagentType, AgentInvocation } from "./agents/types.ts";
+import type { SubagentType, AgentInvocation, AgentConfig } from "./agents/types.ts";
 
 export type ThinkingLevel = ModelThinkingLevel;
 
@@ -42,7 +42,7 @@ export interface RunTunables {
 export type SubagentRunPhase = "queued" | "running" | "stopping" | "settling" | "settled";
 export type SubagentRunStatus = Exclude<AgentStatus, "queued" | "running">;
 
-/** Immutable terminal snapshot retained independently of the current record. */
+/** Outcome data used to settle one run. */
 export interface SubagentRunOutcome {
   readonly status: SubagentRunStatus;
   readonly result?: string;
@@ -50,6 +50,41 @@ export interface SubagentRunOutcome {
   readonly completedAt: number;
   readonly stoppedBy?: StopInitiator;
   readonly stopDetail?: Readonly<WatchdogStopDetail>;
+}
+
+/** Conversation totals and display stats captured at settlement. */
+export interface RunResultStats {
+  readonly lifetimeUsage: Readonly<LifetimeUsage>;
+  readonly turnCount?: number;
+  readonly maxTurns?: number;
+  readonly toolUses: number;
+  readonly contextPercent: number | null;
+  readonly compactionCount: number;
+  readonly modelName?: string;
+  readonly modelId?: string;
+  readonly thinkingLevel?: ThinkingLevel;
+}
+
+/** The exact terminal result of one run, retained separately from mutable agent state. */
+export interface SubagentRunResult extends SubagentRunOutcome {
+  readonly runId: string;
+  readonly agentId: string;
+  readonly sequence: number;
+  readonly type: SubagentType;
+  readonly description: string;
+  readonly worktreePath?: string;
+  readonly outputFile?: string;
+  readonly started: boolean;
+  readonly elapsedMs: number;
+  readonly stats: RunResultStats;
+}
+
+/** Delivery binding captured before execution, separate from retained result data. */
+export interface RunNotificationBinding {
+  readonly ownerGeneration: number;
+  readonly parentSessionId: string;
+  readonly spawnCtx: ExtensionContext;
+  readonly required: boolean;
 }
 
 /** One accepted initial request or continuation; no transcript duplication. */
@@ -61,7 +96,7 @@ export interface SubagentRun {
   readonly acceptedAt: number;
   readonly startedAt?: number;
   readonly stopRequestedAt?: number;
-  readonly outcome?: SubagentRunOutcome;
+  readonly outcome?: SubagentRunResult;
   /** Resolves only after execution and run-owned cleanup have actually finished. */
   readonly completion: Promise<void>;
 }
@@ -122,6 +157,10 @@ export interface RunCallbacks {
  */
 export interface SpawnConfig extends RunTunables {
   description: string;
+  /** Definition selected for this spawn, including target-local frontmatter. */
+  agentConfig?: AgentConfig;
+  /** Applied only after Pi selects a model without a per-model Thinking setting. */
+  deferredDefaultThinking?: ThinkingLevel;
   modelKey?: string;
   worktreePath?: string;
   worktreeLabel?: string;
@@ -196,7 +235,7 @@ export interface AgentDisplayInfo {
 }
 
 /**
- * Execution internals: session handle, abort controller, pending steers.
+ * Execution internals projected for consumers of the agent record.
  * Used by agent-manager (session lifecycle), tool-execution (steering, nudge).
  */
 export interface AgentExecutionState {
@@ -209,8 +248,6 @@ export interface AgentExecutionState {
    * distinct from the actual run execution and SubagentRun.completion.
    */
   promise?: Promise<string>;
-  /** Steering messages queued before the session was ready. */
-  pendingSteers?: string[];
   /** Lifecycle wrapper for the output file stream. */
   outputLog?: AgentOutputLog;
   /**
@@ -227,19 +264,10 @@ export interface AgentExecutionState {
   settled: boolean;
   /**
    * Number of settlements so far (first run = 1, each continuation run
-   * increments). Written at the top of the shared settlement chain's
-   * .finally, before the completion callback fires, so the coordinator can
-   * tell a continuation settlement from the first one. Never-started stops
-   * (queued stop, already-aborted spawn) never increment it.
+   * increments). Parent messages use this to reset their per-run allowance.
+   * Never-started stops (queued stop, already-aborted spawn) never increment it.
    */
   settlementCount: number;
-  /**
-   * Spawning-session ExtensionContext, attached by the coordinator at spawn
-   * for every spawn. Kept for the record's lifetime so the UI-notify
-   * fallback can reach a live context on any later nudge (continuations of
-   * foreground agents included). Dies with the record at Clear/dispose.
-   */
-  spawnCtx?: ExtensionContext;
   /**
    * Lifetime cost already added to the session total (tallyCompletion
    * baseline). Undefined until the first settlement; continuations add only
