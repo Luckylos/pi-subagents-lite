@@ -44,6 +44,10 @@ _Avoid_: stopped run, completed cancellation
 A Subagent run whose execution and run-owned callbacks have finished.
 _Avoid_: stop request accepted, final text received
 
+**Subagent run settlement publication**:
+The local handoff of a settled Subagent run's result that opens continuation admission for a reusable child session. The parent can record its completion notification receipt independently.
+_Avoid_: completion notification receipt, stop request accepted
+
 **Clear**:
 An explicit request to remove a settled Subagent and its retained run history from the owning session.
 _Avoid_: clear one run, stop

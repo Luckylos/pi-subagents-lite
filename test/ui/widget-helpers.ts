@@ -59,8 +59,6 @@ export function makeRunningAgent(id: string, opts?: AgentFactoryOpts): AgentReco
     },
     lifecycle: { status: "running", startedAt: Date.now() - 60_000, started: true },
     execution: {
-      settled: false,
-      settlementCount: 0,
       session: opts?.withSession
         ? (asAgentSession({ model: { id: "haiku", name: "Haiku" }, thinkingLevel: "medium" }) as never)
         : undefined,
@@ -92,8 +90,6 @@ export function makeFinishedAgent(id: string, opts?: AgentFactoryOpts): AgentRec
       started: true,
     },
     execution: {
-      settled: false,
-      settlementCount: 0,
       session: opts?.withSession
         ? (asAgentSession({ model: { id: "haiku", name: "Haiku" }, thinkingLevel: "medium" }) as never)
         : undefined,
@@ -116,7 +112,7 @@ export function makeQueuedAgent(id: string, opts?: { type?: string }): AgentReco
       description: `Queued agent ${id}`,
     },
     lifecycle: { status: "queued", startedAt: Date.now() - 30_000, started: false },
-    execution: { settled: false, settlementCount: 0 },
+    execution: {},
     stats: {
       toolUses: 0,
       compactionCount: 0,

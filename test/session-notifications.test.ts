@@ -65,7 +65,7 @@ describe("session-bound completion notifications", () => {
       const atReturn = vi.fn();
       vi.spyOn(manager, "spawn").mockImplementation((...args: Parameters<AgentManager["spawn"]>) => {
         const id = spawnAgent(...args);
-        atReturn(coordinator.getCompletionNotification(manager.getRecord(id)!.execution.currentRunId!).status);
+        atReturn(coordinator.getCompletionNotification(manager.getCurrentRunId(id)!).status);
         return id;
       });
 

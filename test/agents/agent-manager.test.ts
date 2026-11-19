@@ -838,12 +838,16 @@ describe("AgentManager", () => {
     it("keeps a settled record after the old eviction cutoff, even once its result was consumed", async () => {
       vi.useFakeTimers();
       try {
-        manager = new AgentManager(owner, onComplete);
+        const parent = await createTestOwner();
+        const ctx = fakeCtx();
+        parent.sessionCtx = ctx;
+        manager = new AgentManager(parent, onComplete);
         mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
         // Drive the real spawn path — same route as a foreground tool spawn.
         const { SpawnCoordinator } = await import("../../src/spawn/spawn-coordinator.js");
-        const coordinator = new SpawnCoordinator(owner, manager);
-        const { agentId } = await coordinator.spawn(fakePi(), fakeCtx(), {
+        const coordinator = new SpawnCoordinator(parent, manager);
+        parent.coordinator = coordinator;
+        const { agentId } = await coordinator.spawn(parent.pi, ctx, {
           type: "general-purpose",
           prompt: "task",
           description: "task",

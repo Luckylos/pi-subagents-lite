@@ -35,7 +35,7 @@ const {
   mockDiscoverNewAgents: vi.fn(),
   mockResolveSubagentTrust: vi.fn(),
   mockResolveType: vi.fn<(type: string) => TypeResolution>((type) => ({ kind: "resolved", key: type })),
-  mockStoreState: { forceBackground: false, parentMessages: true },
+  mockStoreState: { forceBackground: false },
 }));
 
 vi.mock("../../src/spawn/worktree-validator.js", () => ({
@@ -81,7 +81,6 @@ vi.mock("../../src/shell.js", async () =>
           return {
             graceTurns: 5,
             forceBackground: mockStoreState.forceBackground,
-            parentMessages: mockStoreState.parentMessages,
           };
         },
         modelFor(type: string, parentModelId: string, agentConfig?: { model?: string }) {
@@ -119,7 +118,6 @@ vi.mock("../../src/shell.js", async () =>
             isBackground: intent.runInBackground,
             signal: intent.signal,
             // Not a SpawnOptions field: surfaces the intent flag the real coordinator consumes.
-            parentMessages: intent.parentMessages,
           });
           const record = mockGetRecord(id);
           if (!intent.runInBackground && record?.execution?.promise) {
@@ -686,7 +684,7 @@ describe("formatResultContent", () => {
       result: "done",
       display: { type: "general-purpose", description: "Test agent" },
       lifecycle: { status: "completed", startedAt: Date.now(), started: true },
-      execution: { settled: false, settlementCount: 0 },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
@@ -820,20 +818,6 @@ describe("executeAgentTool — parent signal forwarding", () => {
     expect(spawnOptions.signal).toBe(controller.signal);
   });
 
-  it("passes the parent-messages setting to the coordinator's spawn intent", async () => {
-    const flag = (call: number) => mockSpawn.mock.calls[call][4].parentMessages;
-    try {
-      await executeAgentTool(owner, "tc-mp-1", makeParams({ run_in_background: true }), undefined, undefined, ctx);
-      mockStoreState.parentMessages = false;
-      await executeAgentTool(owner, "tc-mp-2", makeParams({ run_in_background: true }), undefined, undefined, ctx);
-
-      expect(flag(0)).toBe(true);
-      expect(flag(1)).toBe(false);
-    } finally {
-      mockStoreState.parentMessages = true;
-    }
-  });
-
   it("does not forward the signal to an explicit run_in_background spawn", async () => {
     const controller = new AbortController();
     await executeAgentTool(
@@ -878,7 +862,7 @@ describe("executeAgentTool — queued foreground spawn", () => {
       result: undefined,
       display: { type: "general-purpose", description: "Test agent" },
       lifecycle: { status: "queued", startedAt: Date.now(), started: true },
-      execution: { promise: gate.promise as Promise<string>, settled: false, settlementCount: 0 },
+      execution: { promise: gate.promise as Promise<string> },
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,

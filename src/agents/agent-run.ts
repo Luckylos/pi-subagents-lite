@@ -22,6 +22,7 @@ export class AgentRun {
   startedAt?: number;
   private stopRequestedAt?: number;
   private terminalResult?: SubagentRunResult;
+  private settlementPublished = false;
   private promptState?: "started" | "finished";
   private executionFinished = false;
   private queueCleanupFailed = false;
@@ -84,7 +85,6 @@ export class AgentRun {
   admitMessage(
     message: string,
     session: AgentSession | undefined,
-    published: boolean,
   ): AgentSubmissionResult | Promise<AgentSubmissionResult> | { continuationSession: AgentSession } {
     switch (this.phase) {
       case "stopping":
@@ -102,7 +102,7 @@ export class AgentRun {
         (this.pendingSteers ??= []).push(message);
         return { accepted: true, agentId: this.agentId, runId: this.id, delivery: "pending_steer" };
       case "settled":
-        if (!published) return { accepted: false, reason: "settling", message: RUN_SETTLING };
+        if (!this.settlementPublished) return { accepted: false, reason: "settling", message: RUN_SETTLING };
         if (this.queueCleanupFailed) return { accepted: false, reason: "unavailable", message: QUEUE_CLEANUP_FAILED };
         if (!session || session.isStreaming)
           return { accepted: false, reason: "unavailable", message: "The subagent session is unavailable or busy." };
@@ -209,6 +209,11 @@ export class AgentRun {
     this.openParent(result.result);
     this.resolveCompletion();
     return result;
+  }
+
+  /** Allow continuation after the manager finishes publishing this run. */
+  publishSettlement(): void {
+    this.settlementPublished = true;
   }
 
   snapshot(): SubagentRun {

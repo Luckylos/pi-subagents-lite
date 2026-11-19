@@ -254,8 +254,6 @@ export class AgentManager {
       },
       execution: {
         modelKey: options.modelKey,
-        settled: false,
-        settlementCount: 0,
       },
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
@@ -404,7 +402,6 @@ export class AgentManager {
         run.finishSettlement(
           () => record.execution.session,
           () => {
-            record.execution.settlementCount++;
             this.finalizeOutput(record);
             this.releaseLease(run);
             this.detachParentBinding(record);
@@ -421,7 +418,7 @@ export class AgentManager {
               this.notifyComplete(terminal, run.notification);
             }
             this.drainQueue();
-            record.execution.settled = true;
+            run.publishSettlement();
             this.inFlightRuns.delete(settled);
           },
         ),
@@ -472,7 +469,7 @@ export class AgentManager {
     this.releaseLease(run);
     this.detachParentBinding(record);
     const result = this.settleRun(record, run, { status: "error", error: errorMessage(error) });
-    record.execution.settled = true;
+    run.publishSettlement();
     return result;
   }
 
@@ -491,10 +488,8 @@ export class AgentManager {
     const run = new AgentRun(record.id, history.length + 1, queued, notification);
     history.push(run);
     this.runs.set(record, history);
-    record.execution.currentRunId = run.id;
     record.execution.abortController = run.controller;
     record.execution.promise = run.parentWait;
-    record.execution.settled = false;
     record.lifecycle.stoppedBy = undefined;
     record.lifecycle.stopDetail = undefined;
     this.projectRun(record, run);
@@ -510,6 +505,11 @@ export class AgentManager {
     record.lifecycle.completedAt = run.outcome?.completedAt;
     record.result = run.outcome?.result;
     record.error = run.outcome?.error;
+  }
+
+  getCurrentRunId(id: string): string | undefined {
+    const record = this.agents.get(id);
+    return record && this.currentRun(record).id;
   }
 
   getRuns(id: string): readonly SubagentRun[] {
@@ -647,7 +647,7 @@ export class AgentManager {
     if (!record) return reject("not_found", "Subagent was not found.");
     if (!message.trim()) return reject("empty_message", "Message is required.");
     if (this.disposed) return reject("unavailable", "The subagent manager is unavailable.");
-    const admission = this.currentRun(record).admitMessage(message, record.execution.session, record.execution.settled);
+    const admission = this.currentRun(record).admitMessage(message, record.execution.session);
     if (!("continuationSession" in admission)) return admission;
     const modelKey = record.execution.modelKey;
     const slot = modelKey ? this.getSlot(modelKey) : undefined;
@@ -756,7 +756,7 @@ export class AgentManager {
     run.controller.abort();
     if (!record.lifecycle.started) {
       const terminal = this.settleRun(record, run, { status: "stopped", stoppedBy, stopDetail });
-      record.execution.settled = true;
+      run.publishSettlement();
       if (terminal) this.notifyComplete(terminal, run.notification);
     }
     return true;
@@ -817,7 +817,7 @@ export class AgentManager {
       const run = this.currentRun(record);
       if (run.phase === "queued") {
         this.settleRun(record, run, { status: "error", error: DISPOSE_QUEUED_MESSAGE });
-        record.execution.settled = true;
+        run.publishSettlement();
       } else {
         this.stopAgent(record, "user");
       }

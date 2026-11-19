@@ -239,8 +239,6 @@ export interface AgentDisplayInfo {
  * Used by agent-manager (session lifecycle), tool-execution (steering, nudge).
  */
 export interface AgentExecutionState {
-  /** Current accepted run; legacy fields below project only this run. */
-  currentRunId?: string;
   session?: AgentSession;
   abortController?: AbortController;
   /**
@@ -256,18 +254,6 @@ export interface AgentExecutionState {
    * the spawn had no model key (re-reservation is skipped entirely).
    */
   modelKey?: string;
-  /**
-   * Whether the run promise chain has fully settled (its .finally ran).
-   * False at spawn and while a continuation is running; true after every
-   * settlement. Guards continuation against racing settlement cleanup.
-   */
-  settled: boolean;
-  /**
-   * Number of settlements so far (first run = 1, each continuation run
-   * increments). Parent messages use this to reset their per-run allowance.
-   * Never-started stops (queued stop, already-aborted spawn) never increment it.
-   */
-  settlementCount: number;
   /**
    * Lifetime cost already added to the session total (tallyCompletion
    * baseline). Undefined until the first settlement; continuations add only

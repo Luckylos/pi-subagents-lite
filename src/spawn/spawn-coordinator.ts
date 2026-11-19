@@ -36,6 +36,7 @@ export class SpawnCoordinator {
   private readonly notifications: CompletionNotifications;
   private readonly generation: number;
   private readonly parentSessionId: string | undefined;
+  private readonly parentSessionManager: ExtensionContext["sessionManager"] | undefined;
   private disposed = false;
 
   constructor(
@@ -43,7 +44,9 @@ export class SpawnCoordinator {
     private manager: AgentManager,
   ) {
     this.generation = owner.generation;
-    this.parentSessionId = readParentSessionId(getSessionCtx(owner));
+    const parent = getSessionCtx(owner);
+    this.parentSessionId = readParentSessionId(parent);
+    this.parentSessionManager = this.parentSessionId ? parent?.sessionManager : undefined;
     this.notifications = new CompletionNotifications(getPiInstance(owner), this.generation, this.parentSessionId, () =>
       this.currentParent(),
     );
@@ -57,14 +60,30 @@ export class SpawnCoordinator {
     )
       return null;
     const ctx = getSessionCtx(this.owner);
-    return this.parentSessionId && readParentSessionId(ctx) === this.parentSessionId ? ctx : null;
+    return this.matchesParent(ctx) ? ctx : null;
+  }
+
+  private matchesParent(ctx: ExtensionContext | null): boolean {
+    if (!this.parentSessionId || !ctx) return false;
+    try {
+      // Pi can create fresh contexts for commands and tools within the same session.
+      const sessionManager = ctx.sessionManager;
+      return sessionManager === this.parentSessionManager && sessionManager.getSessionId() === this.parentSessionId;
+    } catch {
+      // Reload can invalidate a captured SDK context.
+      return false;
+    }
   }
 
   /**
    * Spawn + wire tracking + (foreground) await.
-   * Single entry point for LLM tool executor and menu wizard.
+   * Single entry point for the Agent tool, menu wizard and Restart.
    */
   async spawn(pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent): Promise<SpawnResult> {
+    const sessionId = this.parentSessionId;
+    if (!sessionId || !this.currentParent() || !this.matchesParent(ctx)) {
+      throw new Error("Subagents parent session changed before spawn");
+    }
     // Create live view BEFORE spawn so callbacks can close over it
     const liveView: LiveView = {
       activeTools: new Map(),
@@ -73,15 +92,12 @@ export class SpawnCoordinator {
     const liveViewCallbacks = this.createLiveViewCallbacks(liveView);
 
     // SpawnConfig fields pass through unchanged; only the intent-only fields
-    // (type/prompt/runInBackground/signal/parentMessages) are handled explicitly.
-    const { type, prompt, runInBackground, signal, parentMessages, ...config } = intent;
-    const parent = this.currentParent();
-    const sessionId = this.parentSessionId;
-    const sameParent = parent && sessionId && readParentSessionId(ctx) === sessionId;
+    // (type/prompt/runInBackground/signal) are handled explicitly.
+    const { type, prompt, runInBackground, signal, ...config } = intent;
     const spawnOptions: SpawnOptions = {
       ...config,
       isBackground: runInBackground,
-      notificationOwner: sameParent ? { ownerGeneration: this.generation, parentSessionId: sessionId } : undefined,
+      notificationOwner: { ownerGeneration: this.generation, parentSessionId: sessionId },
       signal,
       ...liveViewCallbacks,
     };
@@ -89,11 +105,11 @@ export class SpawnCoordinator {
     // MessageParent is bound at session creation, before the id exists, so its
     // closures read the id once spawn returns (ADR-0013: background only).
     let spawnedId: string | undefined;
-    if (sameParent && runInBackground && parentMessages) {
+    if (runInBackground && this.owner.store?.agent.parentMessages) {
       spawnOptions.customTools = [
         createParentMessageTool({
           deliver: (text) => spawnedId !== undefined && this.deliverParentMessage(spawnedId, text),
-          runKey: () => (spawnedId ? (this.manager.getRecord(spawnedId)?.execution.settlementCount ?? 0) : 0),
+          runId: () => (spawnedId === undefined ? undefined : this.manager.getCurrentRunId(spawnedId)),
         }),
       ];
     }

@@ -471,7 +471,7 @@ describe("renderFinishedLine context percent", () => {
     // Set context percent in stats (what agent-manager writes at completion)
     finished.stats.contextPercent = 72;
     // No session on execution — the display code must NOT reach here
-    finished.execution = { settled: false, settlementCount: 0 };
+    finished.execution = {};
     manager.listAgents = () => [finished];
 
     // Track what buildStatsParts receives by mocking getSessionContextPercent
@@ -492,8 +492,6 @@ describe("renderFinishedLine context percent", () => {
     const running = makeRunningAgent("a1");
     running.stats.contextPercent = 50;
     running.execution = {
-      settled: false,
-      settlementCount: 0,
       session: asAgentSession({
         getSessionStats: () => ({ contextUsage: { percent: 85 } }),
       }),
@@ -603,8 +601,6 @@ describe("stats visibility integration", () => {
     const agent = makeRunningAgent("a1");
     agent.stats.compactionCount = 3;
     agent.execution = {
-      settled: false,
-      settlementCount: 0,
       session: asAgentSession({
         getSessionStats: () => ({ contextUsage: { percent: 75 } }),
       }),
@@ -647,8 +643,6 @@ describe("stats visibility integration", () => {
     agent.stats.compactionCount = 1;
     agent.stats.lifetimeUsage.cost = 0.5;
     agent.execution = {
-      settled: false,
-      settlementCount: 0,
       session: asAgentSession({
         getSessionStats: () => ({ contextUsage: { percent: 60 } }),
       }),
@@ -828,7 +822,7 @@ describe("finished-agent time window", () => {
       id: "q1",
       display: { type: "builder", description: "Queued agent q1" },
       lifecycle: { status: "queued", startedAt: Date.now() - 30 * 60_000, started: false },
-      execution: { settled: false, settlementCount: 0 },
+      execution: {},
       stats: {
         toolUses: 0,
         compactionCount: 0,

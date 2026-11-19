@@ -55,7 +55,7 @@ export function makeAgentRecord(overrides: AgentRecordOverrides = {}): AgentReco
     id: "11111111-2222-400",
     lifecycle: { status: "running", startedAt: 1000, started: true },
     display: { type: "builder", description: "Test agent" },
-    execution: { settled: true, settlementCount: 1 },
+    execution: {},
     stats: {
       lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
       toolUses: 0,

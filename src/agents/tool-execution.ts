@@ -118,7 +118,6 @@ export async function executeAgentTool(
       maxTurns,
       graceTurns: store.agent.graceTurns,
       runInBackground: isBackground,
-      parentMessages: store.agent.parentMessages,
       signal: isBackground ? undefined : signal,
     }),
   );

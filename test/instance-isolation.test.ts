@@ -1,13 +1,18 @@
 import { parent, emit, services, spawn, finishedRun } from "./instance-fixtures.js";
 import { describe, expect, it, vi } from "vite-plus/test";
+import type { SessionMessageEntry } from "@earendil-works/pi-coding-agent";
+import { assistantMessage } from "./agents/session-messages.ts";
 import { fakeCtx } from "./fixtures.js";
-import { asExtensionAPI } from "./pi-boundaries.js";
+import { asCommandContext, asExtensionAPI } from "./pi-boundaries.js";
 import { scanAgentFilesInDir, type AgentConfigFromMd } from "../src/agents/agent-discovery.js";
-import { runAgent, type RunResult } from "../src/agents/agent-runner.js";
+import { continueAgentSession, runAgent, type RunResult } from "../src/agents/agent-runner.js";
+import { PARENT_MESSAGE_LIMIT, PARENT_MESSAGE_TOOL_NAME } from "../src/agents/parent-message.js";
 import { createConfigIO } from "../src/config/config-io.js";
 import { registerAgentInvalidation, invalidateAgentRow } from "../src/ui/renderer.js";
 import { getDisplayName, agentColoredText } from "../src/ui/format.js";
 import { executeAgentTool } from "../src/agents/tool-execution.js";
+import { handleRestartLastAgents } from "../src/agents/restart-last-agents.js";
+import { showSpawnAgentMenu } from "../src/ui/menu/menu-spawn-wizard.js";
 
 function discovered(name: string): AgentConfigFromMd[] {
   return [{ name, display_name: name, description: name, source: "project" }];
@@ -253,6 +258,170 @@ describe("factory instance isolation", () => {
     await expect(pendingTool).rejects.toThrow("session changed");
     await replacement;
     expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("abandons the old Spawn wizard when Git discovery outlives its parent session", async () => {
+    const a = parent();
+    const ctx = await emit(a, "session_start");
+    const oldManager = services(a).manager;
+    let probeStarted!: () => void;
+    const gitStarted = new Promise<void>((resolve) => {
+      probeStarted = resolve;
+    });
+    let releaseProbe!: () => void;
+    a.api.api.exec.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseProbe = () => resolve({ code: 1, stdout: "", stderr: "" });
+          probeStarted();
+        }),
+    );
+    const custom = vi.fn().mockResolvedValueOnce("general-purpose").mockResolvedValueOnce("old draft");
+    const oldWizard = showSpawnAgentMenu(a.owner, asCommandContext({ ...ctx, ui: { ...ctx.ui, custom } }), []);
+    await gitStarted;
+    const replacement = await emit(a, "session_start");
+    releaseProbe();
+    await oldWizard;
+
+    expect(custom).toHaveBeenCalledTimes(2);
+    expect(oldManager.listAgents()).toEqual([]);
+    expect(services(a).manager.listAgents()).toEqual([]);
+    await spawn(a, replacement);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects stale and cross-parent Spawn requests even when parents share a session ID", async () => {
+    vi.mocked(runAgent).mockImplementation(
+      (_owner, _ctx, _type, _prompt, options) =>
+        new Promise((resolve) =>
+          options.signal?.addEventListener("abort", () => resolve(finishedRun()), { once: true }),
+        ),
+    );
+    const a = parent();
+    const b = parent();
+    const ctxA = fakeCtx({ hasUI: false });
+    const ctxB = fakeCtx({ hasUI: false });
+    vi.mocked(ctxB.sessionManager.getSessionId).mockReturnValue("parent-b");
+    await Promise.all([emit(a, "session_start", ctxA), emit(b, "session_start", ctxB)]);
+    const oldA = services(a);
+    const liveB = services(b);
+    liveB.store.mutate.concurrency.setDefault(2, "session");
+    const piA = asExtensionAPI(a.api.api);
+    const piB = asExtensionAPI(b.api.api);
+    const intent = {
+      type: "general-purpose",
+      prompt: "parallel Spawn",
+      description: "parallel Spawn",
+      modelKey: "test/model",
+      graceTurns: 6,
+      runInBackground: true,
+    };
+    const b1 = await liveB.coordinator.spawn(piB, ctxB, intent);
+    const newCtxA = fakeCtx({ hasUI: false });
+    vi.mocked(newCtxA.sessionManager.getSessionId).mockReturnValue(ctxB.sessionManager.getSessionId());
+    await emit(a, "session_start", newCtxA);
+    const newA = services(a);
+    const results = await Promise.allSettled([
+      oldA.coordinator.spawn(piA, ctxA, intent),
+      newA.coordinator.spawn(piA, ctxA, intent),
+      newA.coordinator.spawn(piA, ctxB, intent),
+      liveB.coordinator.spawn(piB, ctxB, { ...intent, type: "Explore" }),
+      newA.coordinator.spawn(piA, { ...newCtxA }, intent),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual([
+      "rejected",
+      "rejected",
+      "rejected",
+      "fulfilled",
+      "fulfilled",
+    ]);
+    expect(oldA.manager.listAgents()).toEqual([]);
+    expect(newA.manager.listAgents()).toHaveLength(1);
+    expect(liveB.manager.listAgents()).toHaveLength(2);
+    expect(b1.record.lifecycle.status).toBe("running");
+  });
+
+  it("uses each parent's MessageParent setting when restarting Subagents concurrently", async () => {
+    const a = parent();
+    const b = parent();
+    const ctxA = await emit(a, "session_start");
+    const ctxB = await emit(b, "session_start");
+    const configB = vi.mocked(createConfigIO).mock.results.at(-1)!.value;
+    vi.mocked(configB.load).mockReturnValue({
+      global: { agent: { parentMessages: false } },
+      project: null,
+      projectStatus: "untrusted",
+    });
+    services(b).store.reload();
+    const entry: SessionMessageEntry = {
+      type: "message",
+      id: "assistant-1",
+      parentId: null,
+      timestamp: "2026-11-18T00:00:00.000Z",
+      message: assistantMessage({
+        content: [{ type: "toolCall", id: "call-1", name: "Agent", arguments: { prompt: "restart work" } }],
+        stopReason: "toolUse",
+      }),
+    };
+    vi.mocked(ctxA.sessionManager.getEntries).mockReturnValue([entry]);
+    vi.mocked(ctxB.sessionManager.getEntries).mockReturnValue([entry]);
+
+    const results = await Promise.all([
+      handleRestartLastAgents(a.owner, asCommandContext(ctxA)),
+      handleRestartLastAgents(b.owner, asCommandContext(ctxB)),
+    ]);
+
+    expect(results).toEqual([
+      { restarted: ["general-purpose: restart work"], skipped: [] },
+      { restarted: ["general-purpose: restart work"], skipped: [] },
+    ]);
+    const calls = vi.mocked(runAgent).mock.calls;
+    expect(calls).toHaveLength(2);
+    const optionsA = calls.find(([owner]) => owner === a.owner)?.[4];
+    const optionsB = calls.find(([owner]) => owner === b.owner)?.[4];
+    expect(optionsA?.customTools?.map((tool) => tool.name)).toEqual(["MessageParent"]);
+    expect(optionsB).toBeDefined();
+    expect(optionsB?.customTools).toBeUndefined();
+  });
+
+  it("keeps the Parent message allowance until a continuation is accepted", async () => {
+    const a = parent();
+    const ctx = await emit(a, "session_start");
+    const { coordinator, manager } = services(a);
+    const initial = finishedRun();
+    let finish!: (result: RunResult) => void;
+    vi.mocked(runAgent).mockReturnValueOnce(new Promise<RunResult>((resolve) => (finish = resolve)));
+    const { agentId } = await coordinator.spawn(asExtensionAPI(a.api.api), ctx, {
+      type: "general-purpose",
+      prompt: "first run",
+      description: "Verify Parent message allowance",
+      graceTurns: 6,
+      runInBackground: true,
+    });
+    const tool = vi
+      .mocked(runAgent)
+      .mock.lastCall?.[4]?.customTools?.find((tool) => tool.name === PARENT_MESSAGE_TOOL_NAME);
+    if (!tool) throw new Error("MessageParent was not bound");
+    const toolContext = { ...ctx, tools: [], executeTool: vi.fn() };
+    const send = (message: string) => tool.execute("call", { message }, undefined, undefined, toolContext);
+    for (let i = 0; i < PARENT_MESSAGE_LIMIT; i++) await send(`initial ${i}`);
+    const first = manager.getRuns(agentId)[0];
+    finish(initial);
+    await first.completion;
+    await expect(send("settlement did not start another run")).rejects.toThrow("limit");
+
+    vi.mocked(continueAgentSession).mockImplementationOnce(async () => {
+      for (let i = 0; i < PARENT_MESSAGE_LIMIT; i++) await send(`continuation ${i}`);
+      await expect(send("still limited in the continuation")).rejects.toThrow("limit");
+      return initial;
+    });
+    const submission = await manager.submitMessage(agentId, "continue");
+    expect(submission).toMatchObject({ accepted: true, delivery: "continuation" });
+    const second = manager.getRuns(agentId)[1];
+    expect(second.id).not.toBe(first.id);
+    await second.completion;
+    expect(manager.getRuns(agentId)[1].outcome?.status).toBe("completed");
   });
 
   it("gives each parent its own concurrency queue and stops only A's work", async () => {

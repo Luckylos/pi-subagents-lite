@@ -12,6 +12,12 @@ import { createExtensionOwner, type ExtensionOwner } from "../src/shell.js";
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: () => "/test/instance-isolation/agent",
   DynamicBorder: class {},
+  SettingsManager: {
+    create: () => ({
+      getDefaultThinkingLevel: () => undefined,
+      getAllModelThinkingLevels: () => ({}),
+    }),
+  },
 }));
 vi.mock("../src/config/config-io.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/config/config-io.js")>();
@@ -74,7 +80,8 @@ export function services(parent: ParentFixture) {
   return { manager: owner.manager, coordinator: owner.coordinator, widget: owner.widget, store: owner.store };
 }
 
-export async function spawn(parent: ParentFixture, ctx = fakeCtx({ hasUI: false })) {
+export async function spawn(parent: ParentFixture, ctx = parent.owner.sessionCtx) {
+  if (!ctx) throw new Error("parent session context missing");
   const { coordinator } = services(parent);
   const result = await coordinator.spawn(asExtensionAPI(parent.api.api), ctx, {
     type: "general-purpose",

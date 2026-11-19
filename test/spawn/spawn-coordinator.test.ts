@@ -29,7 +29,7 @@ vi.mock("../../src/utils.js", () => ({
 
 // Hoist mock pi so shell mock can return it
 const { mockPi, mockGetPiInstance, parentState } = vi.hoisted(() => ({
-  parentState: { idle: true },
+  parentState: { idle: true, sessionManager: { getSessionId: () => "parent", getEntries: () => [] } },
   mockPi: {
     sendMessage: vi.fn(),
     sendUserMessage: vi.fn(),
@@ -50,7 +50,7 @@ vi.mock("../../src/shell.js", async () =>
       getPiInstance: () => mockGetPiInstance(),
       getSessionCtx: () => ({
         isIdle: () => parentState.idle,
-        sessionManager: { getSessionId: () => "parent", getEntries: () => [] },
+        sessionManager: parentState.sessionManager,
       }),
       getWidget: () => null,
     }))(),
@@ -75,7 +75,7 @@ function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & M
         id,
         display: { type, description: options.description },
         lifecycle: { status: "running", startedAt: Date.now(), started: true },
-        execution: { promise, settled: false, settlementCount: 0 },
+        execution: { promise },
         stats: {
           lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
           toolUses: 0,
@@ -89,12 +89,12 @@ function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & M
       return id;
     }),
     getRecord: vi.fn((id: string) => records.get(id)),
-    mockSettlement(id: string) {
+    getCurrentRunId: (id: string) => (records.has(id) ? id + "-run-1" : undefined),
+    mockSettlement(id: string, sequence = 1) {
       const record = records.get(id);
       const spawn = spawnCalls.find((call) => call.id === id);
       if (!record || !spawn) return undefined;
-      const { lifecycle, execution, display } = record;
-      const sequence = execution.settlementCount || 1;
+      const { lifecycle, display } = record;
       const status = lifecycle.status === "queued" || lifecycle.status === "running" ? "completed" : lifecycle.status;
       const completedAt = Date.now();
       const result: SubagentRunResult = Object.freeze({
@@ -150,7 +150,10 @@ interface MockManager {
   getRecord: (id: string) => AgentRecord | undefined;
   getSpawnCalls: () => SpawnCall[];
   getGateResolver: (id: string) => ((value: string) => void) | undefined;
-  mockSettlement: (id: string) => { result: SubagentRunResult; binding?: RunNotificationBinding } | undefined;
+  mockSettlement: (
+    id: string,
+    sequence?: number,
+  ) => { result: SubagentRunResult; binding?: RunNotificationBinding } | undefined;
   dispose: () => Promise<void>;
 }
 
@@ -160,7 +163,7 @@ function asAgentManager<S extends object>(mock: S): AgentManager & S {
 }
 
 function makeMockCtx() {
-  return asExtensionContext({ cwd: "/test", sessionManager: { getSessionId: () => "parent" } });
+  return asExtensionContext({ cwd: "/test", sessionManager: parentState.sessionManager });
 }
 
 // --- Tests ---
@@ -171,8 +174,8 @@ describe("SpawnCoordinator", () => {
   let manager: ReturnType<typeof makeMockManager>;
   let ctx: ExtensionContext;
 
-  function complete(coordinator: InstanceType<typeof SpawnCoordinator>, id: string): void {
-    const settlement = manager.mockSettlement(id);
+  function complete(coordinator: InstanceType<typeof SpawnCoordinator>, id: string, sequence = 1): void {
+    const settlement = manager.mockSettlement(id, sequence);
     if (settlement) coordinator.onAgentComplete(settlement.result, settlement.binding);
   }
 
@@ -498,19 +501,16 @@ describe("SpawnCoordinator", () => {
       });
 
       // The first background run nudges once.
-      result.record.execution.settlementCount = 1;
       complete(coordinator, result.agentId);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
 
       // Each continuation settlement nudges again.
-      result.record.execution.settlementCount = 2;
-      complete(coordinator, result.agentId);
+      complete(coordinator, result.agentId, 2);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(2);
 
-      result.record.execution.settlementCount = 3;
-      complete(coordinator, result.agentId);
+      complete(coordinator, result.agentId, 3);
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(3);
     });
@@ -525,8 +525,7 @@ describe("SpawnCoordinator", () => {
         runInBackground: false,
       });
 
-      result.record.execution.settlementCount = 2;
-      complete(coordinator, result.agentId);
+      complete(coordinator, result.agentId, 2);
 
       vi.advanceTimersByTime(200);
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
@@ -542,7 +541,6 @@ describe("SpawnCoordinator", () => {
         runInBackground: false,
       });
 
-      result.record.execution.settlementCount = 1;
       complete(coordinator, result.agentId);
 
       vi.advanceTimersByTime(200);
@@ -615,8 +613,7 @@ describe("SpawnCoordinator", () => {
         runInBackground: false,
       });
 
-      result.record.execution.settlementCount = 2;
-      complete(coordinator, result.agentId);
+      complete(coordinator, result.agentId, 2);
       vi.advanceTimersByTime(200);
 
       expect(manager.getSpawnCalls()[0].options.isBackground).toBe(false);
@@ -685,8 +682,7 @@ describe("SpawnCoordinator", () => {
         throw new Error("stale context");
       });
 
-      result.record.execution.settlementCount = 2;
-      complete(coordinator, result.agentId);
+      complete(coordinator, result.agentId, 2);
       vi.advanceTimersByTime(200);
 
       expect(notify).toHaveBeenCalledTimes(1);
@@ -737,8 +733,7 @@ describe("SpawnCoordinator", () => {
       mockPi.sendMessage.mockImplementation(() => {
         throw new Error("stale context");
       });
-      result.record.execution.settlementCount = 2;
-      complete(coordinator, result.agentId);
+      complete(coordinator, result.agentId, 2);
       vi.advanceTimersByTime(200);
       expect(notify).toHaveBeenCalledTimes(1);
     });
@@ -986,18 +981,13 @@ describe("SpawnCoordinator parent messages", () => {
     SpawnCoordinator = (await import("../../src/spawn/spawn-coordinator.js")).SpawnCoordinator;
   });
 
-  async function spawnWith(
-    coordinator: InstanceType<typeof SpawnCoordinator>,
-    runInBackground: boolean,
-    parentMessages?: boolean,
-  ) {
+  async function spawnWith(coordinator: InstanceType<typeof SpawnCoordinator>, runInBackground: boolean) {
     const result = await coordinator.spawn(mockPiApi, ctx, {
       type: "builder",
       prompt: "work",
       description: "Investigate",
       graceTurns: 6,
       runInBackground,
-      ...(parentMessages === undefined ? {} : { parentMessages }),
     });
     const options = manager.getSpawnCalls().at(-1)!.options;
     return { ...result, options };
@@ -1009,16 +999,17 @@ describe("SpawnCoordinator parent messages", () => {
 
   it("binds MessageParent only for a background spawn with parent messages on", async () => {
     const coordinator = new SpawnCoordinator(owner, manager);
-    expect(toolOf((await spawnWith(coordinator, true, true)).options)).toBeDefined();
-    expect((await spawnWith(coordinator, false, true)).options.customTools).toBeUndefined();
-    expect((await spawnWith(coordinator, true, false)).options.customTools).toBeUndefined();
+    expect(toolOf((await spawnWith(coordinator, true)).options)).toBeDefined();
+    expect((await spawnWith(coordinator, false)).options.customTools).toBeUndefined();
+
+    const store = owner.store!;
+    vi.spyOn(store, "agent", "get").mockReturnValue({ ...store.agent, parentMessages: false });
     expect((await spawnWith(coordinator, true)).options.customTools).toBeUndefined();
-    expect("parentMessages" in (await spawnWith(coordinator, true, true)).options).toBe(false);
   });
 
   it("delivers immediately to an idle parent as a triggering follow-up", async () => {
     const coordinator = new SpawnCoordinator(owner, manager);
-    const { agentId, options } = await spawnWith(coordinator, true, true);
+    const { agentId, options } = await spawnWith(coordinator, true);
 
     await send(options, " blocked on credentials ");
 
@@ -1036,7 +1027,7 @@ describe("SpawnCoordinator parent messages", () => {
 
   it("steers a running parent", async () => {
     const coordinator = new SpawnCoordinator(owner, manager);
-    const { options } = await spawnWith(coordinator, true, true);
+    const { options } = await spawnWith(coordinator, true);
     parentState.idle = false;
 
     await send(options, "heads up");
@@ -1049,12 +1040,12 @@ describe("SpawnCoordinator parent messages", () => {
     ctx = asExtensionContext({ ...makeMockCtx(), ui: { notify } });
 
     const disposed = new SpawnCoordinator(owner, manager);
-    const a = await spawnWith(disposed, true, true);
+    const a = await spawnWith(disposed, true);
     disposed.dispose();
     await expect(send(a.options, "x")).rejects.toThrow("Not delivered");
 
     const live = new SpawnCoordinator(owner, manager);
-    const b = await spawnWith(live, true, true);
+    const b = await spawnWith(live, true);
     mockPi.sendMessage.mockImplementation(() => {
       throw new Error("boom");
     });
@@ -1069,13 +1060,11 @@ describe("SpawnCoordinator parent messages", () => {
 
   it("submits each run's Parent message before its completion notification", async () => {
     const coordinator = new SpawnCoordinator(owner, manager);
-    const { agentId, record, options } = await spawnWith(coordinator, true, true);
+    const { agentId, record, options } = await spawnWith(coordinator, true);
     for (const sequence of [1, 2]) {
-      record.execution.settlementCount = sequence - 1;
       await send(options, `progress ${sequence}`);
-      record.execution.settlementCount = sequence;
       record.result = `result ${sequence}`;
-      const { result, binding } = manager.mockSettlement(agentId)!;
+      const { result, binding } = manager.mockSettlement(agentId, sequence)!;
       coordinator.onAgentComplete(result, binding);
       vi.advanceTimersByTime(200);
     }
@@ -1087,17 +1076,6 @@ describe("SpawnCoordinator parent messages", () => {
       ["subagent-message", "progress 2"],
       ["subagent-result", "result 2"],
     ]);
-  });
-
-  it("starts a fresh allowance when the record settles into a continuation", async () => {
-    const coordinator = new SpawnCoordinator(owner, manager);
-    const { record, options } = await spawnWith(coordinator, true, true);
-    for (let i = 0; i < 5; i++) await send(options, `m${i}`);
-    await expect(send(options, "sixth")).rejects.toThrow("limit");
-
-    record.execution.settlementCount++;
-    await send(options, "after continuation");
-    expect(mockPi.sendMessage).toHaveBeenCalledTimes(6);
   });
 });
 

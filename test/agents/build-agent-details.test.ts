@@ -45,7 +45,7 @@ describe("buildAgentDetails", () => {
         type: "builder",
         description: "Build something",
       },
-      execution: { settled: true, settlementCount: 1 },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 100, output: 200, cacheWrite: 50, cost: 0.01 },
         toolUses: 5,

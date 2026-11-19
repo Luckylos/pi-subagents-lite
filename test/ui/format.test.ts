@@ -252,8 +252,6 @@ function makeAgentRecord(overrides?: Partial<AgentRecord>): AgentRecord {
       invocation: { modelName: "haiku", thinkingLevel: "medium" },
     },
     execution: {
-      settled: false,
-      settlementCount: 0,
       session: asAgentSession({ model: { id: "haiku", name: "Haiku" }, thinkingLevel: "medium" }),
     },
     stats: {
@@ -325,7 +323,7 @@ describe("buildMetadataLineParts", () => {
           worktreeLabel: "my-feature",
           outputFile: undefined,
         },
-        execution: { settled: false, settlementCount: 0, session: undefined },
+        execution: { session: undefined },
       });
       const parts = buildMetadataLineParts(agent, "name", undefined, "metadata");
       expect(parts[0]).toBe("@my-feature");
@@ -358,8 +356,6 @@ describe("buildMetadataLineParts", () => {
           invocation: { modelName: "haiku", thinkingLevel: undefined },
         },
         execution: {
-          settled: false,
-          settlementCount: 0,
           session: asAgentSession({ model: { id: "claude-3-haiku", name: "Haiku" } }),
         },
       });
@@ -375,8 +371,6 @@ describe("buildMetadataLineParts", () => {
           invocation: { modelName: "haiku", thinkingLevel: undefined },
         },
         execution: {
-          settled: false,
-          settlementCount: 0,
           session: asAgentSession({ model: { id: "claude-3-haiku", name: "Haiku" } }),
         },
       });

@@ -672,10 +672,7 @@ vi.mock("../src/shell.js", async () =>
         getSessionCtx: () => mockModules.mockSessionCtx,
         getCoordinator: vi.fn(() => ({
           spawn: vi.fn(async (_pi: ExtensionAPI, _ctx: ExtensionContext, intent: SpawnIntent) => {
-            // parentMessages is a test-only capture (not a SpawnOptions field): the
-            // intent flag the real coordinator turns into MessageParent.
-            const options: SpawnOptions & { parentMessages?: boolean } = {
-              parentMessages: intent.parentMessages,
+            const options: SpawnOptions = {
               description: intent.description,
               model: intent.model,
               maxTurns: intent.maxTurns,

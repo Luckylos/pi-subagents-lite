@@ -84,7 +84,7 @@ function makeRecord(session: unknown): AgentRecord {
       turnCount: 10,
       compactionCount: 0,
     },
-    execution: { settled: false, settlementCount: 0, session },
+    execution: { session },
   } as AgentRecord;
 }
 

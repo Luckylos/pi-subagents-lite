@@ -115,7 +115,7 @@ function makeRecord(overrides: RecordOverrides = {}): AgentRecord {
     id: "test-id-123",
     display: { type: "general-purpose", description: "Test agent" },
     lifecycle: { status: "completed", startedAt: Date.now() - 50000, completedAt: Date.now() - 10000, started: true },
-    execution: { settled: false, settlementCount: 0 },
+    execution: {},
     result: "some result",
     error: "",
     stats: {

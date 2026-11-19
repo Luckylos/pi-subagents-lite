@@ -91,11 +91,11 @@ describe("AgentManager", () => {
     expect(record.lifecycle.completedAt).toBeUndefined();
     expect(record.result).toBeUndefined();
     expect(record.error).toBeUndefined();
-    expect(record.execution.settled).toBe(false);
+    expect(record.lifecycle.phase).toBe("running");
     expect(record.execution.abortController).not.toBe(oldController);
 
     await settleRun(deferred);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("creates a fresh parent wait for each continuation", async () => {
@@ -111,7 +111,7 @@ describe("AgentManager", () => {
     expect(await gate).toBe("done");
 
     await settleRun(deferred);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("returns false for a settled agent without a session", async () => {
@@ -143,7 +143,7 @@ describe("AgentManager", () => {
     expect(mockModules.mockContinueAgentSession).not.toHaveBeenCalled();
 
     await settleRun(deferred);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("rejects when the session is streaming", async () => {
@@ -187,7 +187,7 @@ describe("AgentManager", () => {
     expect(mockModules.mockContinueAgentSession).toHaveBeenCalledTimes(1);
 
     await settleRun(deferred);
-    expect(manager.getRecord(id)!.execution.settled).toBe(true);
+    expect(manager.getRecord(id)!.lifecycle.phase).toBe("settled");
   });
 
   it("releases the slot and drains the queue when the continuation settles", async () => {
@@ -206,7 +206,7 @@ describe("AgentManager", () => {
     await settleRun(contRun);
     expect(manager.getRecord(idC)!.lifecycle.status).toBe("running");
     await settleRun(cRun);
-    expect(manager.getRecord(idC)!.execution.settled).toBe(true);
+    expect(manager.getRecord(idC)!.lifecycle.phase).toBe("settled");
   });
 
   it("preserves stats and accumulates the turn count across continuation", async () => {
@@ -237,7 +237,7 @@ describe("AgentManager", () => {
     expect(record.stats.turnCount).toBe(5); // 3 from the first run + 2 from the continuation
 
     await settleRun(contRun);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("forwards continuation activity and streamed text to the spawn-time live-view callbacks", async () => {
@@ -258,7 +258,7 @@ describe("AgentManager", () => {
     expect(onTextDelta).toHaveBeenCalledWith("hel", "hello");
 
     await settleRun(contRun);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("tallies only the cost delta and does not double-count the agent", async () => {
@@ -282,7 +282,7 @@ describe("AgentManager", () => {
       cacheRead: 0,
     });
     await settleRun(contDeferred);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
     expect(manager.getTotalAgentCost()).toBe(0.35); // 0.1 first run + only the 0.25 continuation delta (not 0.45)
     expect(manager.getTotalAgentCount()).toBe(1); // continuation never increments
   });
@@ -296,7 +296,7 @@ describe("AgentManager", () => {
 
     await manager.steer(id, "keep going");
     await settleRun(contRun);
-    expect(manager.getRecord(id)!.execution.settled).toBe(true);
+    expect(manager.getRecord(id)!.lifecycle.phase).toBe("settled");
     expect(onComplete).toHaveBeenCalledTimes(2); // first settlement + continuation
   });
 
@@ -310,7 +310,7 @@ describe("AgentManager", () => {
     mockModules.mockContinueAgentSession.mockRejectedValue(new Error("boom"));
     await manager.steer(id, "keep going");
     await completed;
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
     expect(record.result).toBeUndefined(); // no stale result from the prior run
     expect(record.error).toContain("boom");
     expect(record.lifecycle.status).toBe("error");
@@ -332,7 +332,7 @@ describe("AgentManager", () => {
         session: mockAgentSession({ model: { provider: "anthropic", id: "claude-sonnet-4" } }),
       }),
     );
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
     expect(record.lifecycle.status).toBe("error");
     // The failed continuation must not leave the first run's result visible.
     expect(record.result).toBe("");
@@ -359,7 +359,7 @@ describe("AgentManager", () => {
     expect(contSignal.aborted).toBe(true);
 
     await settleRun(contRun);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
     expect(record.lifecycle.status).toBe("stopped");
   });
 
@@ -376,7 +376,7 @@ describe("AgentManager", () => {
     expect(record.lifecycle.status).toBe("running"); // parent interrupt is over
 
     await settleRun(contRun);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("restarts the watchdog clock on continuation", async () => {
@@ -478,7 +478,7 @@ describe("AgentManager", () => {
     expect(mockModules.mockContinueAgentSession).not.toHaveBeenCalled();
 
     await settleRun(deferred);
-    expect(record.execution.settled).toBe(true);
+    expect(record.lifecycle.phase).toBe("settled");
   });
 
   it("messaging a settled agent reuses its record rather than creating a second one", async () => {
@@ -535,19 +535,19 @@ describe("AgentManager", () => {
     firstRun.resolve(mockRunResult());
   });
 
-  it("initializes settlementCount to 0 at spawn", async () => {
+  it("exposes the initial run identity as soon as Spawn is accepted", async () => {
     manager = new AgentManager(owner, onComplete);
     mockModules.mockRunAgent.mockReturnValue(makeResolvablePromise().promise);
     const id = spawnForeground("first task");
 
-    expect(manager.getRecord(id)!.execution.settlementCount).toBe(0);
+    expect(manager.getCurrentRunId(id)).toBe(manager.getRuns(id)[0].id);
   });
 
-  it("increments settlementCount on every settlement, before notifying", async () => {
-    const observedCounts: number[] = [];
+  it("publishes each completion with the current run identity", async () => {
+    const publishedRunIds: Array<string | undefined> = [];
     manager = new AgentManager(owner, (result, binding) => {
       onComplete(result, binding);
-      observedCounts.push(manager.getRecord(result.agentId)!.execution.settlementCount);
+      publishedRunIds.push(manager.getCurrentRunId(result.agentId));
     });
     mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const id = spawnForeground("first task");
@@ -557,21 +557,22 @@ describe("AgentManager", () => {
     mockModules.mockContinueAgentSession.mockReturnValue(contRun1.promise);
     await manager.steer(id, "keep going");
     await settleRun(contRun1);
-    expect(manager.getRecord(id)!.execution.settled).toBe(true);
+    expect(manager.getRecord(id)!.lifecycle.phase).toBe("settled");
 
     const contRun2 = makeResolvablePromise();
     mockModules.mockContinueAgentSession.mockReturnValue(contRun2.promise);
     await manager.steer(id, "keep going again");
     await settleRun(contRun2);
-    expect(manager.getRecord(id)!.execution.settled).toBe(true);
+    expect(manager.getRecord(id)!.lifecycle.phase).toBe("settled");
 
-    const record = manager.getRecord(id)!;
-    expect(record.execution.settlementCount).toBe(3);
-    expect(observedCounts).toEqual([1, 2, 3]);
+    const ids = manager.getRuns(id).map((run) => run.id);
+    expect(new Set(ids).size).toBe(3);
+    expect(publishedRunIds).toEqual(ids);
+    expect(onComplete.mock.calls.map(([result]) => result.runId)).toEqual(ids);
     expect(onComplete.mock.calls.map(([result]) => result.sequence)).toEqual([1, 2, 3]);
   });
 
-  it("keeps settlementCount at 0 for a never-started queued stop", async () => {
+  it("publishes the accepted run identity for a never-started queued stop", async () => {
     manager = new AgentManager(owner, onComplete, { default: 1, models: { "test/model": 1 } });
     const firstRun = makeResolvablePromise();
     mockModules.mockRunAgent.mockReturnValue(firstRun.promise);
@@ -580,10 +581,12 @@ describe("AgentManager", () => {
     const record2 = manager.getRecord(id2)!;
     expect(record2.lifecycle.status).toBe("queued");
 
+    const runId = manager.getCurrentRunId(id2);
+    expect(runId).toBeDefined();
     manager.abort(id2, "user");
-    expect(record2.execution.settlementCount).toBe(0);
+    expect(manager.getCurrentRunId(id2)).toBe(runId);
     expect(onComplete).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ agentId: id2, sequence: 1, status: "stopped", started: false }),
+      expect.objectContaining({ agentId: id2, runId, sequence: 1, status: "stopped", started: false }),
       undefined,
     );
 

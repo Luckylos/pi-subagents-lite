@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.3] - 2026-11-19
+
+### Fixed
+
+- Spawn rejects requests from an old or different parent session. Replacing one parent abandons its open Spawn wizard without interrupting Subagents in other Pi-web sessions.
+
+- Restart now makes `MessageParent` available to background Subagents when the parent enables it and the child tool settings allow it.
+
+- `MessageParent` resets its message allowance when a continuation starts a new Subagent run. Settling the current run keeps its allowance intact.
+
+- The Spawn wizard keeps edits to Description and Prompt when other options change and uses the displayed values when launching the Subagent.
+
 ## [1.17.2] - 2026-11-18
 
 ### Added

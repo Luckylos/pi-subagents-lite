@@ -12,7 +12,7 @@ import {
 function makeTool(opts: { delivered?: boolean } = {}) {
   let run = 0;
   const deliver = vi.fn((_text: string) => opts.delivered ?? true);
-  const tool = createParentMessageTool({ deliver, runKey: () => run });
+  const tool = createParentMessageTool({ deliver, runId: () => `run-${run}` });
   const send = (message: string) => tool.execute("call", { message }, undefined, undefined, undefined as never);
   return { tool, deliver, send, nextRun: () => run++ };
 }
@@ -65,7 +65,7 @@ describe("MessageParent tool", () => {
 
     let ok = false;
     const deliver = vi.fn(() => ok);
-    const tool = createParentMessageTool({ deliver, runKey: () => 0 });
+    const tool = createParentMessageTool({ deliver, runId: () => "run-1" });
     const send = (m: string) => tool.execute("c", { message: m }, undefined, undefined, undefined as never);
     for (let i = 0; i < PARENT_MESSAGE_LIMIT; i++) await expect(send("x")).rejects.toThrow("Not delivered");
     ok = true;

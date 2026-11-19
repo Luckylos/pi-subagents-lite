@@ -997,19 +997,6 @@ describe("showSpawnAgentMenu — background toggle", () => {
     const item = settingsListCalls[1].items.find((i) => i.id === "background")!;
     expect(item.currentValue).toBe("ON");
   });
-
-  it("passes the parent-messages setting to the spawn intent", async () => {
-    mockModules.mockConfig.agent.parentMessages = false;
-    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
-    await completeWizard(ctx);
-    expect(await spawnOptions()).toMatchObject({ parentMessages: false });
-  });
-
-  it("passes parent messages ON by default", async () => {
-    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
-    await completeWizard(ctx);
-    expect(await spawnOptions()).toMatchObject({ parentMessages: true });
-  });
 });
 
 describe("showSpawnAgentMenu — model", () => {
@@ -1244,6 +1231,25 @@ describe("showSpawnAgentMenu — spawn action", () => {
     // Menu-wizard spawns have no parent run — the intent carries no signal,
     // so the coordinator spread must not produce a signal option.
     expect(options).not.toHaveProperty("signal");
+  });
+
+  it("keeps edited Description and Prompt through option rebuilds and launch", async () => {
+    const ctx = createMockWizardCtx(["general-purpose", "original prompt", undefined]);
+    await completeWizard(ctx);
+    const list = settingsListCalls[1];
+    list.activate("description");
+    inputInstances.at(-1)!.onSubmit!("review the queue");
+    list.activate("prompt");
+    inputInstances.at(-1)!.onSubmit!("check the retry path");
+    list.onChange("background", "OFF");
+    list.activate("graceTurns");
+    inputInstances.at(-1)!.onSubmit!("0");
+
+    expect(
+      list.items.filter((item) => ["description", "prompt"].includes(item.id)).map((item) => item.currentValue),
+    ).toEqual(["review the queue", "check the retry path"]);
+    expect(await spawnOptions()).toMatchObject({ description: "review the queue", isBackground: false, graceTurns: 0 });
+    expect(mockModules.mockManager.spawn.mock.calls[0][3]).toBe("check the retry path");
   });
 
   it("passes the selected worktree path to spawn", async () => {

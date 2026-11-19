@@ -763,7 +763,7 @@ describe("contract: untrusted target prompt resources", () => {
 });
 
 describe("contract: spawn-bound MessageParent obeys frontmatter tool gating", () => {
-  const messageParent = () => createParentMessageTool({ deliver: () => true, runKey: () => 0 });
+  const messageParent = () => createParentMessageTool({ deliver: () => true, runId: () => "run-1" });
 
   async function childWith(name: string, frontmatter: Record<string, unknown> | null) {
     const type = frontmatter ? `contract-mp-${name}` : "general-purpose";

@@ -28,13 +28,13 @@ export interface ParentMessageToolOptions {
   /** Deliver the trimmed text to the parent session; false when it could not be delivered. */
   deliver: (text: string) => boolean;
   /** Identifies the current Subagent run; a new value restores the allowance. */
-  runKey: () => number;
+  runId: () => string | undefined;
   limit?: number;
 }
 
 export function createParentMessageTool(opts: ParentMessageToolOptions): ToolDefinition<typeof parameters> {
   const limit = opts.limit ?? PARENT_MESSAGE_LIMIT;
-  let countedRun = opts.runKey();
+  let countedRun: string | undefined;
   let delivered = 0;
 
   return {
@@ -46,7 +46,7 @@ export function createParentMessageTool(opts: ParentMessageToolOptions): ToolDef
       const text = typeof params.message === "string" ? params.message.trim() : "";
       if (!text) throw new Error("message is required");
 
-      const run = opts.runKey();
+      const run = opts.runId();
       if (run !== countedRun) {
         countedRun = run;
         delivered = 0;

@@ -47,8 +47,6 @@ describe("Subagent run ownership", () => {
     expect(record.lifecycle.phase).toBe("stopping");
     expect(manager.getRuns(a)[0].outcome).toBeUndefined();
     expect(record.lifecycle.completedAt).toBeUndefined();
-    expect(record.execution.settled).toBe(false);
-    expect(record.execution.settlementCount).toBe(0);
     expect(manager.getTotalAgentCount()).toBe(0);
     expect(manager.clear(a)).toBe(false);
     expect(await manager.submitMessage(a, "continue")).toMatchObject({ accepted: false, reason: "stopping" });
@@ -61,8 +59,6 @@ describe("Subagent run ownership", () => {
     expect(completed).toBe(true);
     expect(record.lifecycle.status).toBe("stopped");
     expect(record.lifecycle.completedAt).toBeDefined();
-    expect(record.execution.settled).toBe(true);
-    expect(record.execution.settlementCount).toBe(1);
     expect(manager.getTotalAgentCount()).toBe(1);
     expect(manager.getRuns(a)[0]).toMatchObject({
       phase: "settled",
@@ -263,8 +259,6 @@ describe("Subagent run ownership", () => {
         expect(session.clearQueue).toHaveBeenCalledTimes(1);
         expect(phaseAtCleanup).toHaveReturnedWith("queued");
         expect(completed).toHaveBeenCalledExactlyOnceWith(manager.getRuns(id)[0].outcome, undefined);
-        expect(record.execution.settled).toBe(true);
-        expect(record.execution.settlementCount).toBe(1);
         expect(record.execution.session).toBe(session);
         expect(manager.getRuns(id)[0].outcome).toMatchObject({
           status: "error",
@@ -344,7 +338,6 @@ describe("Subagent run ownership", () => {
     );
     expect(queuedRecord.lifecycle).toMatchObject({ status: "stopped", phase: "settled", started: false });
     expect(manager.getRecord(queued)!.lifecycle.completedAt).toBeDefined();
-    expect(manager.getRecord(queued)!.execution.settled).toBe(true);
     await manager.getRuns(queued)[0].completion;
     expect(manager.getRuns(queued)[0]).toMatchObject({ phase: "settled", outcome: { status: "stopped" } });
     expect(await manager.submitMessage(queued, "wait")).toMatchObject({ accepted: false, reason: "unavailable" });

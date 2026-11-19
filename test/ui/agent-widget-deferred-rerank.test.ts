@@ -48,7 +48,7 @@ function makeRunningAgent(id: string): AgentRecord {
     id,
     display: { type: "builder", description: `Running agent ${id}` },
     lifecycle: { status: "running", startedAt: Date.now() - 60000, started: true },
-    execution: { settled: false, settlementCount: 0 },
+    execution: {},
     stats: {
       toolUses: 5,
       compactionCount: 0,
@@ -64,7 +64,7 @@ function makeFinishedAgent(id: string): AgentRecord {
     id,
     display: { type: "builder", description: `Finished agent ${id}` },
     lifecycle: { status: "completed", startedAt: Date.now() - 120000, completedAt: Date.now() - 30000, started: true },
-    execution: { settled: false, settlementCount: 0 },
+    execution: {},
     stats: {
       toolUses: 10,
       compactionCount: 0,
@@ -80,7 +80,7 @@ function makeQueuedAgent(id: string): AgentRecord {
     id,
     display: { type: "builder", description: `Queued agent ${id}` },
     lifecycle: { status: "queued", startedAt: Date.now() - 30000, started: false },
-    execution: { settled: false, settlementCount: 0 },
+    execution: {},
     stats: {
       toolUses: 0,
       compactionCount: 0,

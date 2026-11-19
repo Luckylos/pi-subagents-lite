@@ -48,8 +48,6 @@ function target(
     id: overrides.id ?? ID,
     lifecycle: { status: overrides.status, completedAt: overrides.status === "running" ? undefined : 5000 },
     execution: {
-      settled: overrides.status !== "running",
-      settlementCount: overrides.status === "running" ? 0 : 1,
       session: overrides.session === false ? undefined : asAgentSession({ isStreaming: false }),
     },
   });

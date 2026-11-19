@@ -37,7 +37,7 @@ function fakeRecord(): AgentRecord {
     id: "agent-id-1",
     display: { type: "general-purpose", description: "Do it" },
     lifecycle: { status: "running", startedAt: Date.now(), started: false },
-    execution: { settled: false, settlementCount: 0 },
+    execution: {},
     stats: {
       lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
       toolUses: 0,

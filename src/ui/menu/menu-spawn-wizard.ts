@@ -172,6 +172,12 @@ export async function showSpawnAgentMenu(
   ctx: ExtensionCommandContext,
   modelOptions: string[],
 ): Promise<void> {
+  // Bind the draft before the first UI or Git probe can outlive its parent.
+  const menuGeneration = owner.generation;
+  const menuSession = getSessionCtx(owner);
+  const menuCoordinator = getCoordinator(owner);
+  const isCurrentMenu = () => owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator;
+
   // ---- Step 1: Type selection ----
   let selectedType: string;
   {
@@ -204,7 +210,7 @@ export async function showSpawnAgentMenu(
       );
       return new SettingsListWrapper(list, { title: "Select Agent Type", theme, passthroughKeys: true });
     });
-    if (result === undefined) return;
+    if (result === undefined || !isCurrentMenu()) return;
 
     const config = owner.registry.getAgentConfig(result);
     if (!config) {
@@ -217,47 +223,61 @@ export async function showSpawnAgentMenu(
   const agentConfig = owner.registry.getAgentConfig(selectedType)!;
 
   // ---- Step 2: Prompt entry ----
-  let prompt: string;
+  let initialPrompt: string;
   {
     const result = await ctx.ui.custom<string | undefined>((_tui, theme, _kb, done) => {
       const input = createInputSubmenu(ctx, { required: true })("", done);
       return new SettingsListWrapper(input, { title: "Agent Prompt", theme, passthroughKeys: true });
     });
-    if (result === undefined) return;
-    prompt = result;
+    if (result === undefined || !isCurrentMenu()) return;
+    initialPrompt = result;
   }
 
   // ---- Step 3: Options sub-menu with spawn ----
-  const session = getSessionCtx(owner);
-  const parentCwd = session?.cwd ?? "";
+  const parentCwd = menuSession?.cwd ?? "";
   const inGitRepo = parentCwd ? await isInGitRepo(owner, parentCwd) : false;
+  if (!isCurrentMenu()) return;
   const worktrees = inGitRepo ? ((await listWorktrees(owner, parentCwd)) ?? []) : [];
+  if (!isCurrentMenu()) return;
 
   const store = getStore(owner);
-  // Keep the resources that belong to this open wizard. A session replacement
-  // may happen while the user is choosing options or discovery is awaiting.
-  const menuGeneration = owner.generation;
-  const menuSession = session;
-  const menuCoordinator = getCoordinator(owner);
-  const isCurrentMenu = () => owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator;
   let selection: SpawnSelection | undefined;
   try {
     selection = await resolveSpawnSelection(owner, ctx, selectedType, undefined, { preview: true });
   } catch (err) {
-    ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
+    if (isCurrentMenu()) ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
     return;
   }
   if (!isCurrentMenu()) return;
 
-  let modelChoice: SpawnModelChoice = { kind: "default" };
-  let thinkingChoice: ThinkingChoice | undefined;
+  const draft: {
+    prompt: string;
+    description: string;
+    modelChoice: SpawnModelChoice;
+    thinkingChoice?: ThinkingChoice;
+    maxTurns?: number;
+    maxTokens?: number;
+    graceTurns: number;
+    background: boolean;
+    worktreePath?: string;
+    worktreeLabel: string;
+  } = {
+    prompt: initialPrompt,
+    description: initialPrompt.slice(0, 50),
+    modelChoice: { kind: "default" },
+    maxTurns: agentConfig.maxTurns ?? store.agent.defaultMaxTurns,
+    maxTokens: agentConfig.maxTokens,
+    graceTurns: store.agent.graceTurns ?? DEFAULT_GRACE_TURNS,
+    background: true,
+    worktreeLabel: "Inherits parent cwd",
+  };
   const setThinkingChoice = (choice: string) => {
-    thinkingChoice = parseThinkingChoice(choice);
+    draft.thinkingChoice = parseThinkingChoice(choice);
   };
   const preview = () => {
     if (!selection) return undefined;
     try {
-      return resolveSpawnChoices(store, ctx, selection, modelChoice, thinkingChoice);
+      return resolveSpawnChoices(store, ctx, selection, draft.modelChoice, draft.thinkingChoice);
     } catch {
       // The picker can still replace an unavailable selection. Launch reports its error.
       return undefined;
@@ -267,20 +287,13 @@ export async function showSpawnAgentMenu(
   const thinkingDisplay = (choices: ReturnType<typeof preview>): string => {
     if (!choices) return "";
     if (choices.explicitThinkingLevel !== undefined) {
-      return thinkingChoice === "parent"
+      return draft.thinkingChoice === "parent"
         ? formatDisplayedThinking({ level: choices.explicitThinkingLevel, source: "parent" })
         : choices.explicitThinkingLevel;
     }
     return formatDisplayedThinking(choices.displayThinking());
   };
 
-  let currentMaxTurns: number | undefined = agentConfig.maxTurns ?? store.agent.defaultMaxTurns;
-  let currentMaxTokens: number | undefined = agentConfig.maxTokens;
-  let currentGraceTurns: number = store.agent.graceTurns ?? DEFAULT_GRACE_TURNS;
-  let currentBackground: boolean = true;
-  let currentWorktreePath: string | undefined;
-  let currentWorktreeLabel = "Inherits parent cwd";
-  let currentDescription = prompt.length > 50 ? prompt.slice(0, 50) : prompt;
   let optionsClosed = false;
   let launchPending = false;
   let previewSequence = 0;
@@ -301,13 +314,14 @@ export async function showSpawnAgentMenu(
   const buildItems = (): SettingItem[] => {
     const fmtNum = (v: number | undefined) => (v != null ? String(v) : "(not set)");
     const choices = preview();
+    const { modelChoice } = draft;
     const displayModel =
       modelChoice.kind === "explicit"
         ? modelChoice.name
         : modelChoice.kind === "parent"
           ? "(inherits parent)"
           : (choices?.modelKey ?? "(inherits parent)");
-    const items: SettingItem[] = [
+    return [
       {
         id: "spawn",
         label: "Spawn",
@@ -319,22 +333,19 @@ export async function showSpawnAgentMenu(
             return undefined as any;
           }
           launchPending = true;
-          const gtItem = items.find((i) => i.id === "graceTurns");
-          const bgItem = items.find((i) => i.id === "background");
-          const descItem = items.find((i) => i.id === "description");
-          const promptItem = items.find((i) => i.id === "prompt");
-
-          const maxTurns = currentMaxTurns;
-          const maxTokens = currentMaxTokens;
-          const graceTurns = Number(gtItem?.currentValue ?? DEFAULT_GRACE_TURNS);
-          const background = bgItem?.currentValue === "ON";
-          const description = descItem?.currentValue ?? currentDescription;
-          const spawnPrompt = promptItem?.currentValue ?? prompt;
-          const worktreePath = currentWorktreePath;
-          const worktreeLabel = currentWorktreeLabel;
-          const chosenModel = modelChoice;
-          const chosenThinking = thinkingChoice;
-          const validateModelBeforeClosing = chosenModel.kind === "explicit";
+          const {
+            prompt,
+            description,
+            maxTurns,
+            maxTokens,
+            graceTurns,
+            background,
+            worktreePath,
+            worktreeLabel,
+            modelChoice,
+            thinkingChoice,
+          } = draft;
+          const validateModelBeforeClosing = modelChoice.kind === "explicit";
 
           const doSpawn = async () => {
             if (!menuCoordinator || !menuSession) {
@@ -346,7 +357,7 @@ export async function showSpawnAgentMenu(
               return;
             }
             try {
-              const spawn = await resolveSpawn(owner, ctx, selectedType, worktreePath, chosenModel, chosenThinking);
+              const spawn = await resolveSpawn(owner, ctx, selectedType, worktreePath, modelChoice, thinkingChoice);
               if (!isCurrentMenu()) {
                 ctx.ui.notify("Subagents session changed during agent discovery", "warning");
                 return;
@@ -365,14 +376,13 @@ export async function showSpawnAgentMenu(
                 ctx,
                 prepareSpawnIntent({
                   ...spawn,
-                  prompt: spawnPrompt,
+                  prompt,
                   description,
                   maxTurns,
                   maxTokens,
                   graceTurns,
                   worktreeLabel: spawn.worktreePath ? worktreeLabel : undefined,
                   runInBackground: background,
-                  parentMessages: store.agent.parentMessages,
                   includeRunModeInInvocation: true,
                 }),
               );
@@ -418,7 +428,7 @@ export async function showSpawnAgentMenu(
           projectOffered: store.projectTargetOffered,
           theme,
           onSet: (_target, model) => {
-            modelChoice =
+            draft.modelChoice =
               model === "(inherits parent)" || model === null ? { kind: "parent" } : { kind: "explicit", name: model };
             rebuild?.(buildItems());
           },
@@ -427,7 +437,7 @@ export async function showSpawnAgentMenu(
       {
         id: "background",
         label: "Background",
-        currentValue: currentBackground ? "ON" : "OFF",
+        currentValue: draft.background ? "ON" : "OFF",
         description: "Run the agent in the background",
         values: ["ON", "OFF"],
       },
@@ -436,7 +446,7 @@ export async function showSpawnAgentMenu(
             {
               id: "worktree",
               label: "Worktree",
-              currentValue: currentWorktreeLabel,
+              currentValue: draft.worktreeLabel,
               description: "Run in a linked git worktree instead of parent cwd",
               submenu: (_v: string, done: (v?: string) => void) => {
                 const pickerItems = [
@@ -452,10 +462,10 @@ export async function showSpawnAgentMenu(
                   {
                     onSelect: (value) => {
                       const wt = value === "Inherits parent cwd" ? undefined : worktrees.find((w) => w.path === value);
-                      currentWorktreePath = wt?.path;
-                      currentWorktreeLabel = wt ? (wt.branch ?? "detached") : "Inherits parent cwd";
-                      void updateTargetPreview(currentWorktreePath);
-                      done(currentWorktreeLabel);
+                      draft.worktreePath = wt?.path;
+                      draft.worktreeLabel = wt ? (wt.branch ?? "detached") : "Inherits parent cwd";
+                      void updateTargetPreview(draft.worktreePath);
+                      done(draft.worktreeLabel);
                     },
                     onCancel: () => done(),
                   },
@@ -475,60 +485,58 @@ export async function showSpawnAgentMenu(
       {
         id: "maxTokens",
         label: "Max tokens",
-        currentValue: fmtNum(currentMaxTokens),
+        currentValue: fmtNum(draft.maxTokens),
         description: "Maximum tokens the agent can consume",
         submenu: createNumericSubmenu(
           ctx,
           (parsed) => {
-            currentMaxTokens = parsed;
+            draft.maxTokens = parsed;
           },
           () => {
-            currentMaxTokens = undefined;
+            draft.maxTokens = undefined;
           },
         ),
       },
       {
         id: "maxTurns",
         label: "Max turns",
-        currentValue: fmtNum(currentMaxTurns),
+        currentValue: fmtNum(draft.maxTurns),
         description: "Maximum conversation turns before hard stop",
         submenu: createNumericSubmenu(
           ctx,
           (parsed) => {
-            currentMaxTurns = parsed;
+            draft.maxTurns = parsed;
           },
           () => {
-            currentMaxTurns = undefined;
+            draft.maxTurns = undefined;
           },
         ),
       },
       {
         id: "graceTurns",
         label: "Grace turns",
-        currentValue: String(currentGraceTurns),
+        currentValue: String(draft.graceTurns),
         description: "Extra turns after soft limit before abort",
         submenu: createNumericSubmenu(ctx, { min: 0, default: DEFAULT_GRACE_TURNS }, (parsed) => {
-          currentGraceTurns = parsed;
+          draft.graceTurns = parsed;
         }),
       },
       { id: SEPARATOR_ID, label: " ", currentValue: "" },
       {
         id: "description",
         label: "Description",
-        currentValue: currentDescription,
+        currentValue: draft.description,
         description: "Short label shown in the agents list",
         submenu: createInputSubmenu(ctx),
       },
       {
         id: "prompt",
         label: "Prompt",
-        currentValue: prompt,
+        currentValue: draft.prompt,
         description: "The user message sent to the agent",
         submenu: createInputSubmenu(ctx, { required: true }),
       },
     ];
-
-    return items;
   };
 
   let theme: Theme;
@@ -549,10 +557,13 @@ export async function showSpawnAgentMenu(
           setThinkingChoice(newValue);
           break;
         case "background":
-          currentBackground = newValue === "ON";
+          draft.background = newValue === "ON";
+          break;
+        case "description":
+          draft.description = newValue;
           break;
         case "prompt":
-          prompt = newValue;
+          draft.prompt = newValue;
           break;
       }
       // Rebuild items so displayed values stay in sync after any change
