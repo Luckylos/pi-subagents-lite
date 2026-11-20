@@ -6,6 +6,7 @@ import type { WorktreeValidationResult } from "../../src/spawn/worktree-validato
 import { fakeCtx, makeAgentRecord, shellMock } from "../fixtures.js";
 import { defaultModel } from "../mock-utils.js";
 import { createTestOwner } from "../owner-fixtures.js";
+import { captureResultStats } from "../../src/agents/agent-result.js";
 import { executeAgentTool } from "../../src/agents/tool-execution.js";
 
 const { state, getAgentConfig, spawn, validateWorktreePath, resolveSubagentTrust, readThinking } = vi.hoisted(() => ({
@@ -31,7 +32,7 @@ vi.mock("../../src/pi-settings.js", () => ({ getPiModelThinkingLevels: readThink
 vi.mock("../../src/shell.js", async () =>
   (await import("../owner-fixtures.js")).ownerShellMock(
     shellMock({
-      coordinator: { spawn },
+      coordinator: { spawn, assertCurrentParent: vi.fn() },
       store: {
         get agent() {
           return { ...state, graceTurns: 5 };
@@ -50,7 +51,22 @@ const modelKey = `${model.provider}/${model.id}`;
 beforeEach(() => {
   vi.clearAllMocks();
   getAgentConfig.mockReturnValue(agent);
-  spawn.mockResolvedValue({ agentId: "agent-id", record: makeAgentRecord() });
+  const record = makeAgentRecord();
+  spawn.mockResolvedValue({
+    agentId: record.id,
+    record,
+    foregroundReport: {
+      ...record.display,
+      agentId: record.id,
+      runId: "initial-run",
+      sequence: 1,
+      status: "completed",
+      started: true,
+      completedAt: Date.now(),
+      elapsedMs: 0,
+      stats: captureResultStats(record),
+    },
+  });
   readThinking.mockReturnValue({});
   resolveSubagentTrust.mockReturnValue(true);
   validateWorktreePath.mockResolvedValue({ ok: true, resolvedPath: "/resolved", sameRepo: false });

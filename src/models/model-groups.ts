@@ -25,7 +25,8 @@
  */
 
 import type { Model } from "@earendil-works/pi-ai";
-import type { SubagentsConfig, SessionModelOverrides } from "./model-precedence.ts";
+import type { SubagentsConfig } from "../config/types.ts";
+import type { SessionModelOverrides } from "./model-precedence.ts";
 import { resolveModelSource } from "./model-precedence.ts";
 import { resolveDisplayedThinking, type DisplayedThinking, type ThinkingSource } from "./thinking-resolution.ts";
 import type { ThinkingChoice, ThinkingLevel } from "../types.ts";
@@ -36,17 +37,21 @@ export interface AgentTypeModelConfig {
   thinkingLevel?: ThinkingChoice;
 }
 
-export interface ModelGroupsInput {
-  /** All registered Agent type names (UI listing order). */
-  types: readonly string[];
-  /** Frontmatter config per type (undefined = no config). */
-  agentConfigs: Readonly<Record<string, AgentTypeModelConfig | undefined>>;
+/** Merged values for resolution and layer membership for clearing. */
+export interface ModelSettingsLayers {
   /** Merged config.agent (project over global): default, per-type model keys, defaultThinking. */
   config: SubagentsConfig["agent"];
   /** Session-layer Model overrides: "default" + per-type. */
   sessionOverrides: SessionModelOverrides;
-  /** Whether the project layer carries the key (provenance for [project] tags). */
+  hasGlobalModelKey: (key: string) => boolean;
   hasProjectModelKey: (key: string) => boolean;
+}
+
+export interface ModelGroupsInput extends ModelSettingsLayers {
+  /** All registered Agent type names (UI listing order). */
+  types: readonly string[];
+  /** Frontmatter config per type (undefined = no config). */
+  agentConfigs: Readonly<Record<string, AgentTypeModelConfig | undefined>>;
   /** Parent session model id; "(inherits parent)" when unknown. */
   parentModelId: string;
   /** pi's defaultThinkingLevel setting (project over global). */
@@ -69,7 +74,7 @@ export interface ModelGroupRow {
   thinking: ThinkingLevel;
   /** Which thinking source won, in the words the menu prints; `tag` carries the model layer. */
   source: ThinkingSource;
-  /** Provenance tag of the winning layer: "[session]" (session per-type or session default), "[project]"; "" when the global per-type layer won without a session default. */
+  /** Model provenance tag when the winning model comes from the session or project layer. */
   tag: string;
 }
 
@@ -81,37 +86,55 @@ export interface ModelGroup {
 /** Groups ordered alphabetically by model id; each type appears in at most one row. */
 export type ModelGroups = ModelGroup[];
 
+/** Explain the selected model and record which layers still carry the requested key. */
+export function describeModelSetting(
+  layers: ModelSettingsLayers,
+  key: string,
+  parentModelId = "(inherits parent)",
+  agentConfig?: AgentTypeModelConfig,
+) {
+  const { config, sessionOverrides, hasProjectModelKey } = layers;
+  const { model, source } = resolveModelSource({
+    subagentType: key,
+    agentConfig,
+    config: { agent: config },
+    parentModelId,
+    sessionOverrides,
+  });
+  let layer: "session" | "project" | "global" | "frontmatter" | "parent";
+  switch (source) {
+    case "session-per-type":
+    case "session-default":
+      layer = "session";
+      break;
+    case "config-per-type":
+    case "config-default":
+      layer = hasProjectModelKey(source === "config-default" ? "default" : key) ? "project" : "global";
+      break;
+    default:
+      layer = source;
+  }
+  const tag = layer === "session" || layer === "project" ? "[" + layer + "]" : "";
+  return { model, layer, tag, clearable: modelSettingLevels(layers, key) };
+}
+
+/** An empty stored value can be cleared even when resolution skips it. */
+export function modelSettingLevels(layers: ModelSettingsLayers, key: string) {
+  return {
+    session: layers.sessionOverrides[key] != null,
+    global: layers.hasGlobalModelKey(key),
+    project: layers.hasProjectModelKey(key),
+  };
+}
+
 export function buildModelGroups(input: ModelGroupsInput): ModelGroups {
-  const { types, agentConfigs, config, sessionOverrides, hasProjectModelKey, parentModelId } = input;
+  const { types, agentConfigs, config, sessionOverrides, parentModelId } = input;
 
   const byModel = new Map<string, ModelGroupRow[]>();
   for (const type of types) {
-    const cfg = agentConfigs[type];
-    const { model: resolved, source: modelSource } = resolveModelSource({
-      subagentType: type,
-      agentConfig: cfg,
-      config: { agent: config },
-      parentModelId,
-      sessionOverrides,
-    });
-    // Anti-spam: only explicit per-type overrides are listed — frontmatter-
-    // only and inheriting types stay hidden regardless of the model they resolve
-    // to. An explicit per-type key — including an empty one — is listed with a
-    // clear path.
     if (!hasExplicitPerTypeOverride(sessionOverrides, config, type)) continue;
-
-    // Tag = the layer that won, straight from the chain: [session] for a
-    // session-layer win (per-type override, or the session default shadowing
-    // the config per-type key); [project] for a project per-type win without
-    // a session default; untagged for a global per-type win. A listed row
-    // resolves at a per-type position, at the session default above it, or —
-    // for an empty-string key — at the next chain layer.
-    const tag =
-      modelSource === "session-per-type" || modelSource === "session-default"
-        ? "[session]"
-        : hasProjectModelKey(type)
-          ? "[project]"
-          : "";
+    const cfg = agentConfigs[type];
+    const { model: resolved, tag } = describeModelSetting(input, type, parentModelId, cfg);
 
     const rows = byModel.get(resolved) ?? [];
     const displayed = displayThinking(cfg, resolved, input);

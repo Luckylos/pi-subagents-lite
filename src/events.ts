@@ -9,8 +9,7 @@ import { createConfigIO } from "./config/config-io.ts";
 import type { ExtensionOwner } from "./shell.ts";
 import { AgentManager } from "./agents/agent-manager.ts";
 import { AgentWidget, type UICtx } from "./ui/agent-widget.ts";
-import { requestRunStop } from "./ui/run-actions.ts";
-import { ConversationViewer } from "./ui/conversation-viewer.ts";
+import { prepareConversationViewer } from "./ui/open-conversation-viewer.ts";
 import { SpawnCoordinator } from "./spawn/spawn-coordinator.ts";
 import { invalidateAgentRow, cleanupInvalidations } from "./ui/renderer.ts";
 import { registerAgentTool } from "./registration.ts";
@@ -60,7 +59,8 @@ export function ensureManagerAndWidget(owner: ExtensionOwner): void {
   }
 
   if (!currentWidget) {
-    const newWidget = new AgentWidget(owner, getManager(owner)!, (id: string) => getCoordinator(owner)?.liveView(id));
+    const manager = getManager(owner)!;
+    const newWidget = new AgentWidget(owner, manager, (id) => manager.getLiveView(id));
     setWidget(owner, newWidget);
     // Sync widget as config side-effect target — setDeps re-syncs all display settings from config.
     getStore(owner).setDeps({ widget: newWidget });
@@ -104,34 +104,16 @@ export async function loadConfigAndRegisterAgents(
 
 // --- Event listener setup ---
 
-/** Open the viewer overlay; the viewerOpen flag prevents nav deactivation while open. */
+/** Open the viewer in the editor; viewerOpen keeps Widget navigation active until it closes. */
 async function openViewer(owner: ExtensionOwner, ctx: ExtensionContext, record: AgentRecord | null): Promise<void> {
-  if (!record) return;
-  if (!record.execution?.session) return;
   const widget = getWidget(owner);
   if (!widget) return;
-  const manager = getManager(owner);
-  const session = record.execution.session;
-  if (!manager) return;
+  const open = prepareConversationViewer(owner, ctx.ui, record, "editor");
+  if (!open) return;
 
   try {
     widget.setViewerOpen(true);
-
-    await ctx.ui.custom<void>((tui, theme, kb, done) => {
-      const viewer = new ConversationViewer(
-        owner,
-        tui,
-        session,
-        record,
-        theme,
-        done,
-        (target) => requestRunStop(owner, record, target).text,
-        kb,
-        (msg: string) => manager.submitMessage(record.id, msg),
-      );
-      viewer.setModelDisplayStyle(getStore(owner).agent.modelDisplayStyle);
-      return viewer;
-    });
+    await open();
   } finally {
     widget.setViewerOpen(false);
   }
@@ -152,7 +134,7 @@ export function createNavInputHandler(
     // Only fire on key press (not release).
     if (isKeyRelease(data)) return undefined;
 
-    // Viewer overlay open — don't consume, don't deactivate.
+    // The viewer handles input while open.
     if (widget?.isViewerOpen()) {
       return undefined;
     }

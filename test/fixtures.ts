@@ -23,7 +23,7 @@ import type {
   AgentLifecycle,
   AgentRecord,
 } from "../src/types.js";
-import type { SubagentsConfig } from "../src/models/model-precedence.js";
+import type { SubagentsConfig } from "../src/config/types.js";
 import type { SpawnCoordinator } from "../src/spawn/spawn-coordinator.js";
 import type { AgentWidget } from "../src/ui/agent-widget.js";
 
@@ -170,7 +170,11 @@ export interface RegisteredTool {
   parameters: TObject;
   /** Provider-side json_schema enforcement; mirrors src/registration.ts. */
   constrainedSampling?: { type: string; strict: string };
-  renderCall?: (args: Record<string, unknown>, theme: unknown) => unknown;
+  renderCall?: (
+    args: Record<string, unknown>,
+    theme: unknown,
+    context?: { state?: Record<string, unknown>; toolCallId?: string },
+  ) => unknown;
   renderResult?: (
     result: { content: Array<{ type: string; text?: string }>; details?: Record<string, unknown>; isError?: boolean },
     options: { expanded?: boolean },

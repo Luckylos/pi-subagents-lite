@@ -26,28 +26,18 @@ import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createClearAllSubmenu, type AvailableLevels, type TargetChoice } from "./submenus/target-select.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
 import { getSessionCtx, getStore } from "../../shell.ts";
-import { buildModelGroups, hasExplicitPerTypeOverride, type AgentTypeModelConfig } from "../../models/model-groups.ts";
+import {
+  buildModelGroups,
+  describeModelSetting,
+  hasExplicitPerTypeOverride,
+  modelSettingLevels,
+  type AgentTypeModelConfig,
+  type ModelSettingsLayers,
+} from "../../models/model-groups.ts";
 import { formatDisplayedThinking } from "../../models/thinking-resolution.ts";
 import { findModelInRegistry } from "../../utils.ts";
 import { getPiDefaultThinkingLevel, getPiModelThinkingLevels } from "../../pi-settings.ts";
 import type { SessionModelOverrides } from "../../models/model-precedence.ts";
-
-/**
- * Display value for the "Global default model" row. Tag precedence:
- * session > project; the global layer is the default source and is never
- * tagged, so an untagged value means the global layer won. A null default
- * key means "unset" (null-skip in resolveModel), so a tag requires a
- * usable value.
- */
-function defaultRowValue(
-  sessionDefault: string | null,
-  effectiveDefault: string | null,
-  hasProjectDefault: boolean,
-): string {
-  if (sessionDefault != null) return `${sessionDefault} [session]`;
-  if (effectiveDefault == null) return "(inherits parent)";
-  return hasProjectDefault ? `${effectiveDefault} [project]` : effectiveDefault;
-}
 
 export async function showModelSettingsMenu(
   owner: ExtensionOwner,
@@ -58,79 +48,63 @@ export async function showModelSettingsMenu(
     const items: SettingItem[] = [];
     const projectOffered = store.projectTargetOffered;
 
-    // Shared onSet for model override submenus: applies the model to the given
-    // config key at the picked layer, with `label` used in notify messages.
-    // The picker returns the literal "(inherits parent)" sentinel string (never
-    // null); selecting it means "clear this key at the picked layer" so the
-    // value falls through to the next layer (ADR-0008 delete semantics).
-    const modelOverrideOnSelect =
-      (key: string, label: string): ((target: "session" | "global" | "project", model: string | null) => void) =>
-      (target, model) => {
-        const inherits = model === null || model === "(inherits parent)";
-        if (inherits) store.mutate.agent.clearModelOverride(key, target);
-        else store.mutate.agent.setModelOverride(key, model, target);
-        ctx.ui.notify(
-          inherits ? `${label} inherits parent model` : `${label} model set to ${model} (${target})`,
-          "info",
-        );
-      };
-
-    // Shared onClear: deletes the key at the picked layer, falling through to
-    // the next layer. "all" clears every layer.
-    const clearOverrideOnSelect =
-      (key: string, label: string): ((target: TargetChoice) => void) =>
-      (target) => {
-        store.mutate.agent.clearModelOverride(key, target);
-        ctx.ui.notify(`${label} override cleared (${target})`, "info");
-      };
+    const clearOverride = (key: string, target: TargetChoice) => {
+      store.mutate.agent.clearModelOverride(key, target);
+      const parent = getSessionCtx(owner)?.model ?? ctx.model;
+      const parentModelId = parent ? `${parent.provider}/${parent.id}` : undefined;
+      const { model, layer } = describeModelSetting(
+        {
+          ...layers,
+          config: store.agentConfigSnapshot(),
+          sessionOverrides: { default: store.sessionDefaultModel, [key]: store.sessionModelOverride(key) },
+        },
+        key,
+        parentModelId,
+        key === "default" ? undefined : owner.registry.getAgentConfig(key),
+      );
+      const effective =
+        layer === "parent" && !parent ? "Inherits parent model" : `Effective model ${plainText(model)} (${layer})`;
+      ctx.ui.notify(`${key} override cleared (${target}). ${effective}`, "info");
+    };
 
     // Shared submenu factory: target + model picker for one config key.
     // availableLevels filters the nested clear picker (the default and per-type
     // rows pass the levels where the key exists); set entries are never filtered.
-    const modelSubmenuFor = (
-      typeName: string,
-      effectiveModel: string | null,
-      showClear: boolean,
-      availableLevels?: AvailableLevels,
-    ) =>
+    const modelSubmenuFor = (typeName: string, effectiveModel: string, availableLevels: AvailableLevels) =>
       createModelSelectSubmenu(owner, {
         modelOptions,
-        showClear,
+        showClear: availableLevels.session || availableLevels.global || (projectOffered && availableLevels.project),
         projectOffered,
         theme,
         currentModel: effectiveModel,
         availableLevels,
-        onSet: modelOverrideOnSelect(typeName, typeName),
-        onClear: clearOverrideOnSelect(typeName, typeName),
+        fallbackLabel: "Clear override at this level",
+        onSet: (target, model) => {
+          if (model === null || model === "(inherits parent)") {
+            clearOverride(typeName, target);
+          } else {
+            store.mutate.agent.setModelOverride(typeName, model, target);
+            ctx.ui.notify(`${typeName} model set to ${model} (${target})`, "info");
+          }
+        },
+        onClear: (target) => clearOverride(typeName, target),
       });
 
-    // Per-key level availability: which layers carry a config key, driving the
-    // nested clear picker and the default row's Clear entry.
     const sessionOverrides: SessionModelOverrides = { default: store.sessionDefaultModel };
-    const levelsFor = (key: string): AvailableLevels => ({
-      session: sessionOverrides[key] != null,
-      global: store.hasGlobalModelKey(key),
-      project: store.hasProjectModelKey(key),
-    });
-
-    // Global default model
-    const agentConfigSnapshot = store.agentConfigSnapshot();
-    const sessionDefault = store.sessionDefaultModel;
-    const effectiveDefault = agentConfigSnapshot.default;
-    const globalDisplayValue = defaultRowValue(sessionDefault, effectiveDefault, store.hasProjectModelKey("default"));
-    const defaultLevels = levelsFor("default");
+    const layers: ModelSettingsLayers = {
+      config: store.agentConfigSnapshot(),
+      sessionOverrides,
+      hasGlobalModelKey: (key) => store.hasGlobalModelKey(key),
+      hasProjectModelKey: (key) => store.hasProjectModelKey(key),
+    };
+    const defaultModel = describeModelSetting(layers, "default");
 
     items.push({
       id: "defaultModel",
       label: "Global default model",
-      currentValue: globalDisplayValue,
+      currentValue: [defaultModel.model, defaultModel.tag].filter(Boolean).join(" "),
       description: "Model used when no session default, per-type override, or frontmatter model applies.",
-      submenu: modelSubmenuFor(
-        "default",
-        effectiveDefault,
-        defaultLevels.session || defaultLevels.global || defaultLevels.project,
-        defaultLevels,
-      ),
+      submenu: modelSubmenuFor("default", defaultModel.model, defaultModel.clearable),
     });
 
     // Model groups: one group per Resolved model with a listed row (an
@@ -158,9 +132,7 @@ export async function showModelSettingsMenu(
     const groups = buildModelGroups({
       types,
       agentConfigs,
-      config: agentConfigSnapshot,
-      sessionOverrides,
-      hasProjectModelKey: (key) => store.hasProjectModelKey(key),
+      ...layers,
       parentModelId,
       piDefaultThinking: getPiDefaultThinkingLevel(ctx.cwd),
       piModelThinking: (modelKey) => modelThinkingLevels[modelKey],
@@ -183,8 +155,7 @@ export async function showModelSettingsMenu(
           // reserved padding: an empty tag contributes no space.
           currentValue: [thinkingLabel, row.tag].filter(Boolean).join(" "),
           description: `Model for the ${row.type} agent type. Select to set or clear its override.`,
-          // Every listed row carries an explicit per-type override, so Clear is always offered.
-          submenu: modelSubmenuFor(row.type, group.modelId, true, levelsFor(row.type)),
+          submenu: modelSubmenuFor(row.type, group.modelId, modelSettingLevels(layers, row.type)),
         });
       }
     }
@@ -192,9 +163,7 @@ export async function showModelSettingsMenu(
     // "Override another type..." lists types without an explicit per-type
     // override: frontmatter-only and inheriting types.
     items.push({ id: SEPARATOR_ID, label: "─────────────────────────", currentValue: "────────" });
-    const nonOverridden = types.filter(
-      (type) => !hasExplicitPerTypeOverride(sessionOverrides, agentConfigSnapshot, type),
-    );
+    const nonOverridden = types.filter((type) => !hasExplicitPerTypeOverride(sessionOverrides, layers.config, type));
     if (nonOverridden.length > 0) {
       items.push({
         id: "overrideType",
@@ -209,8 +178,13 @@ export async function showModelSettingsMenu(
             })),
             {
               onSelect: (typeName) => {
-                const effectiveModel = store.modelFor(typeName, parentModelId, owner.registry.getAgentConfig(typeName));
-                return modelSubmenuFor(typeName, effectiveModel, false)(effectiveModel, subDone);
+                const { model, clearable } = describeModelSetting(
+                  layers,
+                  typeName,
+                  parentModelId,
+                  agentConfigs[typeName],
+                );
+                return modelSubmenuFor(typeName, model, clearable)(model, subDone);
               },
               onCancel: () => subDone(),
             },

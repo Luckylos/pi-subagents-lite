@@ -210,7 +210,7 @@ const TOOL_DISPLAY: Record<string, string> = {
   find: "searching",
 };
 
-export function describeActivity(activeTools: Map<string, string>, responseText?: string): string {
+export function describeActivity(activeTools: ReadonlyMap<string, string>, responseText?: string): string {
   if (activeTools.size > 0) {
     const groups = new Map<string, number>();
     for (const toolName of activeTools.values()) {

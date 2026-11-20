@@ -147,7 +147,7 @@ describe("widget redraw scheduling", () => {
 
   it("keeps visible spinner and activity updates on the 80 ms cadence", () => {
     const running = makeRunningAgent("running");
-    const activity: LiveView = { activeTools: new Map(), responseText: "first response" };
+    const activity = { activeTools: new Map<string, string>(), responseText: "first response" };
     const host = setup([running], () => activity);
     const previous = [...host.lines];
     host.widget.ensureTimer();

@@ -12,7 +12,7 @@ import { fakeCtx, makeResolvablePromise } from "../fixtures.js";
 import { asExtensionContext } from "../pi-boundaries.js";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SpawnIntent } from "../../src/spawn/spawn-coordinator.js";
-import type { AgentLifecycle, AgentRecord } from "../../src/types.js";
+import type { AgentRecord, SubagentParentReport, SubagentRunResult } from "../../src/types.js";
 import type { TypeResolution } from "../../src/agents/agent-types.js";
 
 /* ------------------------------------------------------------------ */
@@ -103,6 +103,7 @@ vi.mock("../../src/shell.js", async () =>
         update: vi.fn(),
       }),
       getCoordinator: () => ({
+        assertCurrentParent: vi.fn(),
         spawn: vi.fn(async (pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent) => {
           // Delegate to the mocked manager.spawn
           const id = mockSpawn(pi, ctx, intent.type, intent.prompt, {
@@ -119,11 +120,10 @@ vi.mock("../../src/shell.js", async () =>
             signal: intent.signal,
             // Not a SpawnOptions field: surfaces the intent flag the real coordinator consumes.
           });
-          const record = mockGetRecord(id);
-          if (!intent.runInBackground && record?.execution?.promise) {
-            await record.execution.promise;
-          }
-          return { agentId: id, record };
+          const record: AgentRecord = mockGetRecord(id);
+          if (intent.runInBackground) return { agentId: id, record };
+          const foregroundReport = record.execution.promise ? await record.execution.promise : settledResult(record);
+          return { agentId: id, record, foregroundReport };
         }),
         isBackground: vi.fn(() => false),
         scheduleNudge: vi.fn(),
@@ -141,7 +141,29 @@ vi.mock("../../src/agents/usage.js", () => ({
 }));
 
 // Import after mocks are in place
-import { executeAgentTool, formatResultContent } from "../../src/agents/tool-execution.js";
+import { executeAgentTool } from "../../src/agents/tool-execution.js";
+import { captureResultStats, formatTerminalContent } from "../../src/agents/agent-result.js";
+
+function settledResult(record: AgentRecord): SubagentRunResult {
+  const { status, started, startedAt, completedAt = startedAt } = record.lifecycle;
+  if (status === "queued" || status === "running") throw new Error("Mock run has not settled");
+  const { type, description, worktreePath } = record.display;
+  return {
+    agentId: record.id,
+    runId: "mock-run",
+    sequence: 1,
+    type,
+    description,
+    worktreePath,
+    status,
+    started,
+    completedAt,
+    elapsedMs: completedAt - startedAt,
+    result: record.result,
+    error: record.error,
+    stats: captureResultStats(record),
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /*  Factories                                                         */
@@ -170,8 +192,9 @@ describe("executeAgentTool — worktree_path validation", () => {
     mockGetRecord.mockReturnValue({
       id: "agent-id-123",
       display: { type: "general-purpose", description: "Test agent" },
-      lifecycle: { status: "running", startedAt: Date.now() },
-      execution: { promise: Promise.resolve("done") },
+      result: "done",
+      lifecycle: { status: "completed", startedAt: Date.now() },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
@@ -273,14 +296,15 @@ describe("executeAgentTool — worktree_path validation", () => {
   });
 
   it("reports a foreground gate release while execution is still stopping", async () => {
-    const record = mockGetRecord();
-    let release!: (value: string) => void;
-    record.execution.promise = new Promise<string>((resolve) => {
+    const record: AgentRecord = mockGetRecord();
+    let release!: (value: SubagentParentReport) => void;
+    record.execution.promise = new Promise<SubagentParentReport>((resolve) => {
       release = resolve;
     });
     const output = executeAgentTool(owner, "tc-stopping", makeParams(), undefined, undefined, ctx);
+    record.lifecycle.status = "running";
     record.lifecycle.phase = "stopping";
-    release("");
+    release({ ...record.display, status: "stopping", stats: captureResultStats(record) });
     const result = await output;
     expect(record.lifecycle.status).toBe("running");
     expect(result.content[0].text).toBe("Stop requested for agent-id — stopping.");
@@ -299,7 +323,7 @@ describe("executeAgentTool — worktree_path validation", () => {
       result: "Agent completed successfully",
       display: { type: "general-purpose", description: "Test agent", worktreeLabel: "feature" },
       lifecycle: { status: "completed", startedAt: Date.now() - 1000, completedAt: Date.now() },
-      execution: { promise: Promise.resolve("Agent completed successfully") },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 100, output: 50, cacheWrite: 0, cost: 0.01 },
         toolUses: 3,
@@ -407,7 +431,7 @@ describe("executeAgentTool — worktree_path discovery integration", () => {
       result: "Agent completed successfully",
       display: { type: "feature-reviewer", description: "Reviews feature" },
       lifecycle: { status: "completed", startedAt: Date.now() - 1000, completedAt: Date.now() },
-      execution: { promise: Promise.resolve("Agent completed successfully") },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 100, output: 50, cacheWrite: 0, cost: 0.01 },
         toolUses: 3,
@@ -475,7 +499,7 @@ describe("executeAgentTool — case-insensitive type resolution", () => {
       result: "Agent completed successfully",
       display: { type: "Explore", description: "Test agent" },
       lifecycle: { status: "completed", startedAt: Date.now() - 1000, completedAt: Date.now() },
-      execution: { promise: Promise.resolve("Agent completed successfully") },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 100, output: 50, cacheWrite: 0, cost: 0.01 },
         toolUses: 3,
@@ -562,7 +586,7 @@ describe("executeAgentTool — cross-repo trust gate", () => {
       result: "done",
       display: { type: "general-purpose", description: "Test agent" },
       lifecycle: { status: "completed", startedAt: Date.now() - 1000, completedAt: Date.now() },
-      execution: { promise: Promise.resolve("done") },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
@@ -661,7 +685,7 @@ describe("executeAgentTool — foreground error result", () => {
       error: "feature-reviewer (anthropic/claude-sonnet-4): model failed to load",
       display: { type: "feature-reviewer", description: "Reviews feature" },
       lifecycle: { status: "error", startedAt: Date.now() - 1000, completedAt: Date.now() },
-      execution: { promise: Promise.resolve("") },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
@@ -675,113 +699,58 @@ describe("executeAgentTool — foreground error result", () => {
   });
 });
 
-describe("formatResultContent", () => {
-  function makeContentRecord(
-    overrides: { result?: string; error?: string; lifecycle?: Partial<AgentLifecycle> } = {},
-  ): AgentRecord {
-    const base: AgentRecord = {
-      id: "agent-id",
-      result: "done",
-      display: { type: "general-purpose", description: "Test agent" },
-      lifecycle: { status: "completed", startedAt: Date.now(), started: true },
-      execution: {},
-      stats: {
-        lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
-        toolUses: 0,
-        compactionCount: 0,
-      },
-    };
-    return {
-      ...base,
-      result: overrides.result ?? base.result,
-      error: overrides.error ?? base.error,
-      lifecycle: { ...base.lifecycle, ...overrides.lifecycle },
-    };
+describe("formatTerminalContent", () => {
+  function format(overrides: Partial<Parameters<typeof formatTerminalContent>[0]> = {}): string {
+    return formatTerminalContent({ result: "done", status: "completed", started: true, ...overrides });
   }
 
   it("appends the recorded error message for error status", () => {
-    const content = formatResultContent(
-      makeContentRecord({ lifecycle: { status: "error", startedAt: Date.now() }, error: "model failed to load" }),
-    );
-
-    expect(content).toBe("done\n\nError: model failed to load");
+    expect(format({ status: "error", error: "model failed to load" })).toBe("done\n\nError: model failed to load");
   });
 
   it("keeps completed output unchanged (no error block)", () => {
-    expect(formatResultContent(makeContentRecord())).toBe("done");
+    expect(format()).toBe("done");
   });
 
   it("keeps aborted output unchanged", () => {
-    const content = formatResultContent(makeContentRecord({ lifecycle: { status: "aborted", startedAt: Date.now() } }));
-
-    expect(content).toBe("done (hit the turn limit before completion; output may be incomplete)");
+    expect(format({ status: "aborted" })).toBe("done (hit the turn limit before completion; output may be incomplete)");
   });
 
   it("keeps turn_limited output unchanged", () => {
-    const content = formatResultContent(
-      makeContentRecord({ lifecycle: { status: "turn_limited", startedAt: Date.now() } }),
-    );
-
-    expect(content).toBe("done (wrapped up at the turn limit — output may be partial)");
+    expect(format({ status: "turn_limited" })).toBe("done (wrapped up at the turn limit — output may be partial)");
   });
 
   it("does not append a dangling error block when error text is missing", () => {
-    const content = formatResultContent(makeContentRecord({ lifecycle: { status: "error", startedAt: Date.now() } }));
-
-    expect(content).toBe("done");
+    expect(format({ status: "error" })).toBe("done");
   });
 
   it("surfaces the watchdog reason with tool name and duration for watchdog stops", () => {
-    const content = formatResultContent(
-      makeContentRecord({
-        lifecycle: {
-          status: "stopped",
-          startedAt: Date.now(),
-          stoppedBy: "watchdog",
-          stopDetail: { kind: "tool", toolName: "bash", elapsedMs: 46 * 60_000 },
-        },
-      }),
-    );
-
+    const content = format({
+      status: "stopped",
+      stoppedBy: "watchdog",
+      stopDetail: { kind: "tool", toolName: "bash", elapsedMs: 46 * 60_000 },
+    });
     expect(content).toContain("STOPPED BY WATCHDOG");
     expect(content).toContain("bash");
     expect(content).toContain("46m");
   });
-  it("appends the stopped note to partial output for a ran-then-stopped agent", () => {
-    const content = formatResultContent(
-      makeContentRecord({
-        result: "partial work",
-        lifecycle: { status: "stopped", startedAt: Date.now(), stoppedBy: "user", started: true },
-      }),
-    );
 
+  it("appends the stopped note to partial output for a ran-then-stopped agent", () => {
+    const content = format({ result: "partial work", status: "stopped", stoppedBy: "user" });
     expect(content).toContain("partial work");
     expect(content).toContain("STOPPED BY THE USER");
     expect(content).toContain("output is partial");
   });
 
   it("never claims partial output for a never-started stopped record", () => {
-    const content = formatResultContent(
-      makeContentRecord({
-        result: "",
-        lifecycle: { status: "stopped", startedAt: Date.now(), stoppedBy: "user", started: false },
-      }),
-    );
-
+    const content = format({ result: "", status: "stopped", stoppedBy: "user", started: false });
     expect(content).toContain("before the agent started");
     expect(content).toContain("NOT attempted");
     expect(content).not.toContain("output is partial");
   });
 
   it("does not append an error block to a stopped record even when the run recorded an error", () => {
-    const content = formatResultContent(
-      makeContentRecord({
-        result: "partial",
-        error: "boom",
-        lifecycle: { status: "stopped", startedAt: Date.now(), stoppedBy: "user" },
-      }),
-    );
-
+    const content = format({ result: "partial", error: "boom", status: "stopped", stoppedBy: "user" });
     expect(content).toContain("partial");
     expect(content).not.toContain("Error: boom");
   });
@@ -800,7 +769,7 @@ describe("executeAgentTool — parent signal forwarding", () => {
       result: "done",
       display: { type: "general-purpose", description: "Test agent" },
       lifecycle: { status: "completed", startedAt: Date.now() - 1000, completedAt: Date.now() },
-      execution: { promise: Promise.resolve("done") },
+      execution: {},
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
@@ -862,7 +831,7 @@ describe("executeAgentTool — queued foreground spawn", () => {
       result: undefined,
       display: { type: "general-purpose", description: "Test agent" },
       lifecycle: { status: "queued", startedAt: Date.now(), started: true },
-      execution: { promise: gate.promise as Promise<string> },
+      execution: { promise: gate.promise as Promise<SubagentParentReport> },
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
@@ -885,7 +854,7 @@ describe("executeAgentTool — queued foreground spawn", () => {
     // A slot frees: the subagent starts and settles with its full result.
     record.lifecycle.status = "completed";
     record.result = "full result text";
-    gate.resolve("full result text");
+    gate.resolve(settledResult(record));
     const result = await toolResult;
 
     expect(result.isError).toBeUndefined();

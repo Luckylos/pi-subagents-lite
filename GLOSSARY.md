@@ -52,6 +52,6 @@ _Avoid_: completion notification receipt, stop request accepted
 An explicit request to remove a settled Subagent and its retained run history from the owning session.
 _Avoid_: clear one run, stop
 
-**ConversationViewer overlay**:
-A live, scrollable view of a subagent conversation, including its messages and tool calls.
+**ConversationViewer**:
+A live, scrollable view of a subagent conversation, including its messages and tool calls. The Widget opens it in the editor area and the Running agents menu opens it as an overlay.
 _Avoid_: ResultViewer, snapshot viewer

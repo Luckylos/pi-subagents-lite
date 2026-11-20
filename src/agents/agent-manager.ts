@@ -24,6 +24,7 @@ import {
   type RunNotificationBinding,
   type AgentRecord,
   type AgentStatus,
+  type LiveView,
   type RunCallbacks,
   type StopInitiator,
   type WatchdogStopDetail,
@@ -34,7 +35,8 @@ import type { SubagentType } from "./types.ts";
 import { addUsage, getLifetimeTotal } from "./usage.ts";
 import { captureResultStats } from "./agent-result.ts";
 import { errorMessage, toSingleLine } from "../utils.ts";
-import { DEFAULT_GRACE_TURNS } from "../config/config-io.ts";
+import { DEFAULT_GRACE_TURNS } from "../config/agent-settings.ts";
+import { DEFAULT_CONCURRENCY } from "../config/config-layers.ts";
 
 export const WATCHDOG_TICK_MS = 5_000;
 
@@ -46,8 +48,6 @@ const DISPOSE_QUEUED_MESSAGE = "Agent manager disposed before the queued agent c
 
 /** UUID prefix length for agent IDs stored in the agents map (uniqueness). */
 const AGENT_ID_PREFIX_LENGTH = 17;
-
-const DEFAULT_CONCURRENCY_LIMIT = 4;
 
 /** Whether the agent status is terminal (no longer running or queued). */
 function isTerminalStatus(status: AgentStatus): boolean {
@@ -146,7 +146,7 @@ export class AgentManager {
   ) {
     this.onComplete = onComplete;
     this.onStart = onStart;
-    this.defaultConcurrency = concurrency?.default ?? DEFAULT_CONCURRENCY_LIMIT;
+    this.defaultConcurrency = concurrency?.default ?? DEFAULT_CONCURRENCY.default;
 
     for (const [provider, limit] of Object.entries(concurrency?.providers ?? {})) {
       this.applyConcurrencyEntry(this.providerSlots, provider, limit);
@@ -249,6 +249,9 @@ export class AgentManager {
         type,
         description: options.description,
         invocation: options.invocation,
+        toolCall: options.toolCallId
+          ? { id: options.toolCallId, background: options.isBackground === true }
+          : undefined,
         worktreePath: options.worktreePath,
         worktreeLabel: options.worktreeLabel,
       },
@@ -263,9 +266,7 @@ export class AgentManager {
         maxTurns: options.maxTurns,
       },
     };
-    // Capture the coordinator's live-view bridge so a continuation can re-wire
-    // tool activity and streamed text into the widget's live view.
-    record.execution.liveViewCallbacks = {
+    record.execution.continuationActivityCallbacks = {
       onToolActivity: options.onToolActivity,
       onTextDelta: options.onTextDelta,
     };
@@ -507,19 +508,24 @@ export class AgentManager {
     record.error = run.outcome?.error;
   }
 
+  getLiveView(id: string): LiveView | undefined {
+    const record = this.agents.get(id);
+    return record && this.currentRun(record).liveView;
+  }
+
   getCurrentRunId(id: string): string | undefined {
     const record = this.agents.get(id);
     return record && this.currentRun(record).id;
   }
 
+  getInitialRun(id: string): SubagentRun | undefined {
+    const record = this.agents.get(id);
+    return record && this.runs.get(record)?.[0]?.snapshot();
+  }
+
   getRuns(id: string): readonly SubagentRun[] {
     const record = this.agents.get(id);
     return Object.freeze(record ? (this.runs.get(record) ?? []).map((run) => run.snapshot()) : []);
-  }
-
-  private openGate(id: string, value: string): void {
-    const record = this.agents.get(id);
-    if (record) this.currentRun(record).openParent(value);
   }
 
   /** Remove a record's parent-interrupt binding; a later abort of the signal is a no-op. */
@@ -568,10 +574,10 @@ export class AgentManager {
   }
 
   /**
-   * Callback set shared by a first run and a continuation: accumulates stats
-   * on the record, feeds the watchdog, and forwards to the caller's own
-   * callbacks. writeTurnCount is the per-path policy — the first run records
-   * the absolute count, a continuation adds to the previous total.
+   * Callback set shared by a first run and a continuation. Updates run activity
+   * and record stats, feeds the watchdog, and forwards the caller's callbacks.
+   * writeTurnCount is the per-path policy: the first run records the absolute
+   * count, a continuation adds to the previous total.
    */
   private runTrackingCallbacks(
     record: AgentRecord,
@@ -586,6 +592,7 @@ export class AgentManager {
       onToolActivity: (activity) => {
         if (!this.isCurrentRun(record, run)) return;
         if (activity.type === "end") record.stats.toolUses++;
+        run.recordToolActivity(activity);
         this.watchdog.recordActivity(record.id, activity);
         forward?.onToolActivity?.(activity);
       },
@@ -601,6 +608,7 @@ export class AgentManager {
       },
       onTextDelta: (delta: string, fullText: string) => {
         if (!this.isCurrentRun(record, run)) return;
+        run.recordText(fullText);
         // Streamed response text counts as activity for the idle watchdog.
         this.watchdog.recordText(record.id);
         forward?.onTextDelta?.(delta, fullText);
@@ -686,7 +694,7 @@ export class AgentManager {
     const previousTurns = record.stats.turnCount ?? 0;
     const promise = (async () =>
       continueAgentSession(session, message, {
-        ...this.runTrackingCallbacks(record, run, record.execution.liveViewCallbacks, (turnCount) => {
+        ...this.runTrackingCallbacks(record, run, record.execution.continuationActivityCallbacks, (turnCount) => {
           record.stats.turnCount = previousTurns + turnCount;
         }),
         maxTurns: record.stats.maxTurns,
@@ -752,9 +760,11 @@ export class AgentManager {
     // Publish intent before abort: listeners may run synchronously.
     this.projectRun(record, run);
     this.detachParentBinding(record);
-    run.openParent();
     run.controller.abort();
-    if (!record.lifecycle.started) {
+    // Abort listeners can synchronously update this run's statistics.
+    if (record.lifecycle.started) {
+      run.acknowledgeStop(record.display, captureResultStats(record));
+    } else {
       const terminal = this.settleRun(record, run, { status: "stopped", stoppedBy, stopDetail });
       run.publishSettlement();
       if (terminal) this.notifyComplete(terminal, run.notification);
@@ -765,8 +775,7 @@ export class AgentManager {
   private removeRecord(id: string, record: AgentRecord): void {
     this.releaseSession(record);
     this.detachParentBinding(record);
-    // Gates already opened on Stop or settlement; Clear drops retained history.
-    this.openGate(id, "");
+    // The run's gate is already open at settlement. Clear drops retained history.
     this.agents.delete(id);
   }
 

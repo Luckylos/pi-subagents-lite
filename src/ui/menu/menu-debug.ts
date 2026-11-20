@@ -22,7 +22,8 @@ import { plainText } from "../sanitize.ts";
 import type { AgentConfig } from "../../agents/types.ts";
 import { buildSelectListTheme } from "./helpers.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
-import { getPiInstance, getStore } from "../../shell.ts";
+import { getCoordinator, getPiInstance, getStore } from "../../shell.ts";
+import type { SpawnCoordinator } from "../../spawn/spawn-coordinator.ts";
 import { handleRestartLastAgents } from "../../agents/restart-last-agents.ts";
 
 /** pi's DEFAULT_TOOL_NAMES fallback when defaultTools is unconfigured (unexported; pinned by the contract suite). */
@@ -141,8 +142,14 @@ async function handleAgentBriefing(owner: ExtensionOwner, ctx: ExtensionCommandC
   ctx.ui.notify("Agent briefing sent to LLM", "info");
 }
 
-async function handleRestartLastAgentsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
-  const { restarted, skipped } = await handleRestartLastAgents(owner, ctx);
+async function handleRestartLastAgentsMenu(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  coordinator: SpawnCoordinator | null,
+): Promise<void> {
+  if (!coordinator?.isCurrentParent(ctx)) return;
+  const { restarted, skipped } = await handleRestartLastAgents(owner, ctx, coordinator);
+  if (!coordinator.isCurrentParent(ctx)) return;
 
   if (restarted.length === 0 && skipped.length === 0) {
     ctx.ui.notify("No recent Agent tool calls found in session history.", "info");
@@ -163,7 +170,11 @@ async function handleRestartLastAgentsMenu(owner: ExtensionOwner, ctx: Extension
   ctx.ui.notify(plainText(lines.join("\n")), "info");
 }
 
-export async function showDebugMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
+export async function showDebugMenu(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  coordinator = getCoordinator(owner),
+): Promise<void> {
   await ctx.ui.custom((_tui, theme, _kb, done) => {
     const items: SelectItem[] = [
       { value: "agent-types", label: "Agent types", description: "List available agent types and their configs" },
@@ -186,7 +197,7 @@ export async function showDebugMenu(owner: ExtensionOwner, ctx: ExtensionCommand
       } else if (item.value === "agent-briefing") {
         await handleAgentBriefing(owner, ctx);
       } else if (item.value === "restart-last-agents") {
-        await handleRestartLastAgentsMenu(owner, ctx);
+        await handleRestartLastAgentsMenu(owner, ctx, coordinator);
       }
     };
     return new SettingsListWrapper(selectList, { title: "Debug", theme, onCancel: () => done(undefined) });

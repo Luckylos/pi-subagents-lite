@@ -229,7 +229,7 @@ describe("runSessionPrompt — real SDK cancellation contract", () => {
       await expect(session.followUp("old follow-up")).resolves.toBe("queued");
       expect(session.getFollowUpMessages()).toEqual(["old follow-up"]);
       expect(manager.abort(id, "user")).toBe(true);
-      expect(await parentWait).toBe("");
+      expect(await parentWait).toMatchObject({ status: "stopping" });
       expect(manager.getRuns(id)[0]).toMatchObject({ phase: "stopping", outcome: undefined });
       expect(completed).not.toHaveBeenCalled();
       expect(await manager.submitMessage(id, "too soon")).toMatchObject({ accepted: false, reason: "stopping" });

@@ -11,7 +11,6 @@ import type { ExtensionOwner } from "../../shell.ts";
  *   - buildAgentActionsList: per-agent action sub-menu (view result, steer, stop, clear)
  *
  * Private helpers (single-consumer, co-located):
- *   - showConversationViewer: show ConversationViewer for agent snapshot
  *   - showTextViewer: show simple text viewer for result/error
  */
 
@@ -28,48 +27,19 @@ import {
 import type { AgentRecord, SubagentRun, SubagentRunResult } from "../../types.ts";
 import type { CompletionNotificationState } from "../../spawn/spawn-coordinator.ts";
 import { SHORT_ID_LENGTH } from "../../types.ts";
-import { ConversationViewer } from "../conversation-viewer.ts";
+import { prepareConversationViewer } from "../open-conversation-viewer.ts";
 import { canRequestStop, displayAgentStatus } from "../../agents/agent-status.ts";
 import { messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "../message-composer.ts";
 import { captureRunAction, requestRunClear, requestRunStop } from "../run-actions.ts";
 import { getDisplayName, agentBulletPrefix, formatMs } from "../format.ts";
 import { SEPARATOR_ID, buildSelectListTheme, createDelegatingComponent, installSeparatorSkip } from "./helpers.ts";
-import { getCoordinator, getManager, getStore } from "../../shell.ts";
+import { getCoordinator, getManager } from "../../shell.ts";
 import { plainText } from "../sanitize.ts";
 import type { Theme } from "../types.ts";
 
 /** Running or queued — the only non-terminal statuses (ADR-0006: active work is never cleared). */
 function isActive(record: AgentRecord): boolean {
   return record.lifecycle.status === "running" || record.lifecycle.status === "queued";
-}
-
-async function showConversationViewer(
-  owner: ExtensionOwner,
-  ctx: ExtensionCommandContext,
-  record: AgentRecord,
-): Promise<void> {
-  const session = record.execution.session;
-  const manager = getManager(owner);
-  if (!session || !manager) return;
-
-  await ctx.ui.custom<void>(
-    (tui, theme, kb, done) => {
-      const viewer = new ConversationViewer(
-        owner,
-        tui,
-        session,
-        record,
-        theme,
-        done,
-        (target) => requestRunStop(owner, record, target).text,
-        kb,
-        (msg: string) => manager.submitMessage(record.id, msg),
-      );
-      viewer.setModelDisplayStyle(getStore(owner).agent.modelDisplayStyle);
-      return viewer;
-    },
-    { overlay: true },
-  );
 }
 
 async function showTextViewer(
@@ -362,7 +332,11 @@ export function buildAgentActionsList(
   const list = new SelectList(items, 10, buildSelectListTheme(theme));
   list.onSelect = async (item) => {
     if (item.value === "view-snapshot" || item.value === "view-conversation") {
-      await showConversationViewer(owner, ctx, record);
+      try {
+        await prepareConversationViewer(owner, ctx.ui, record, "overlay")?.();
+      } catch (err) {
+        ctx.ui.notify(`Failed to open agent viewer: ${String(err)}`, "error");
+      }
     } else if (item.value === "view-result" && resultRun?.outcome.result) {
       await showTextViewer(owner, ctx, record, "result", resultRun.outcome.result, resultRun.sequence);
     } else if (item.value === "view-error" && errorRun?.outcome.error) {

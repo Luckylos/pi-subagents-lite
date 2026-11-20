@@ -16,7 +16,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { AgentManager } from "../src/agents/agent-manager.js";
 import type { SystemPromptMode } from "../src/agents/types.js";
 import type { ConfigStore, RawConcurrency } from "../src/config/config-store.js";
-import type { SessionModelOverrides, SubagentsConfig } from "../src/models/model-precedence.js";
+import type { SubagentsConfig } from "../src/config/types.js";
+import type { SessionModelOverrides } from "../src/models/model-precedence.js";
 import type { SpawnCoordinator, SpawnIntent } from "../src/spawn/spawn-coordinator.js";
 import type { SpawnOptions } from "../src/agents/agent-manager.js";
 import type { SelectOption } from "../src/ui/searchable-select.js";
@@ -253,61 +254,22 @@ vi.mock("../src/shell.js", async () =>
     await (async () => {
       // Derive the getter defaults from src's real config constants (via the mocked
       // config-io module above) so menu tests pin src's defaults, not a hand copy.
-      const { DEFAULT_AGENT, DEFAULT_CONCURRENCY } = await import("../src/config/config-io.js");
+      const { DEFAULT_CONCURRENCY } = await import("../src/config/config-io.js");
+      const { DEFAULT_AGENT, isAgentModelKey, resolveAgentSettings } = await import("../src/config/agent-settings.js");
       const { resolveModel } = await import("../src/models/model-precedence.js");
-      const {
-        agentLayerHasModelSettings,
-        sessionOverridesHasModelSettings,
-        CLEAR_ALL_KEPT_AGENT_KEYS,
-        concurrencyLayerHasSettings,
-      } = await import("../src/config/config-store.js");
+      const { agentLayerHasModelSettings, sessionOverridesHasModelSettings, concurrencyLayerHasSettings } =
+        await import("../src/config/config-store.js");
       const mockStore = {
         get projectTargetOffered() {
           return mockModules.mockProjectTargetOffered;
         },
         get agent() {
-          // Effective agent: project layer over global layer (model keys only).
-          const a = { ...mockModules.mockConfig.agent, ...mockModules.mockProjectConfig.agent };
-          // DEFAULT_AGENT always carries widgetMaxLines (typed optional via the layer type).
-          const widgetMaxLines = a.widgetMaxLines ?? DEFAULT_AGENT.widgetMaxLines!;
-          return {
-            defaultModel: a.default ?? null,
-            forceBackground: a.forceBackground === true,
-            showCost: mockModules.mockSessionShowCost ?? a.showCost === true,
-            graceTurns: a.graceTurns ?? DEFAULT_AGENT.graceTurns,
-            toolTimeoutMinutes: a.toolTimeoutMinutes ?? DEFAULT_AGENT.toolTimeoutMinutes,
-            idleTimeoutMinutes: a.idleTimeoutMinutes ?? DEFAULT_AGENT.idleTimeoutMinutes,
-            widgetMaxLines,
-            widgetMaxLinesCompact: a.widgetMaxLinesCompact ?? Math.floor(widgetMaxLines / 2),
-            widgetCompact: a.widgetCompact === true,
-            showCompletionCards: a.showCompletionCards !== false,
-            widgetShortcut: a.widgetShortcut === true,
-            widgetDescLengthFull: a.widgetDescLengthFull ?? DEFAULT_AGENT.widgetDescLengthFull,
-            widgetDescLengthCompact: a.widgetDescLengthCompact ?? DEFAULT_AGENT.widgetDescLengthCompact,
-            systemPromptMode: a.systemPromptMode ?? DEFAULT_AGENT.systemPromptMode,
-            includeContextFiles: a.includeContextFiles ?? DEFAULT_AGENT.includeContextFiles,
-            defaultThinking: a.defaultThinking,
-            defaultMaxTurns: a.defaultMaxTurns,
-            loadSkillsImplicitly: a.loadSkillsImplicitly !== false,
-            loadExtensionsImplicitly: a.loadExtensionsImplicitly !== false,
-            loadToolsImplicitly: a.loadToolsImplicitly !== false,
-            showTools: a.showTools === true,
-            showTurns: a.showTurns !== false,
-            showInput: a.showInput !== false,
-            showOutput: a.showOutput !== false,
-            showContext: a.showContext !== false,
-            showTime: a.showTime !== false,
-            outputTranscript: a.outputTranscript !== false,
-            parentMessages: a.parentMessages !== false,
-            outputThinkingBufferSize: a.outputThinkingBufferSize ?? 0,
-            finishedRetentionMinutes: a.finishedRetentionMinutes ?? DEFAULT_AGENT.finishedRetentionMinutes,
-            modelDisplayStyle: a.modelDisplayStyle === "id" ? "id" : "name",
-            statusBarFormat: a.statusBarFormat === "compact" ? "compact" : "full",
-            widgetShowModel: a.widgetShowModel !== false,
-            widgetShowThinking: a.widgetShowThinking !== false,
-            widgetNavHint: a.widgetNavHint !== false,
-            exposeDescriptions: a.exposeDescriptions === true,
+          const effective = {
+            ...DEFAULT_AGENT,
+            ...mockModules.mockConfig.agent,
+            ...mockModules.mockProjectConfig.agent,
           };
+          return resolveAgentSettings(effective, this.concurrency.default, mockModules.mockSessionShowCost);
         },
         get concurrency() {
           const globalConc = mockModules.mockConfig.concurrency ?? {};
@@ -414,7 +376,7 @@ vi.mock("../src/shell.js", async () =>
               // Mirror the store: clear the model family + per-type keys, keep non-model settings.
               const clearAgent = (agent: Partial<SubagentsConfig["agent"]>) => {
                 for (const key of Object.keys(agent)) {
-                  if (!CLEAR_ALL_KEPT_AGENT_KEYS.has(key)) delete agent[key];
+                  if (isAgentModelKey(key)) delete agent[key];
                 }
               };
               if (target === "session") {
@@ -671,6 +633,8 @@ vi.mock("../src/shell.js", async () =>
         getPiInstance: () => mockModules.mockPiInstance,
         getSessionCtx: () => mockModules.mockSessionCtx,
         getCoordinator: vi.fn(() => ({
+          isCurrentParent: () => true,
+          assertCurrentParent: vi.fn(),
           spawn: vi.fn(async (_pi: ExtensionAPI, _ctx: ExtensionContext, intent: SpawnIntent) => {
             const options: SpawnOptions = {
               description: intent.description,

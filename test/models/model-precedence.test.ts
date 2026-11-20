@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from "vite-plus/test";
 import { resolveModel } from "../../src/models/model-precedence.js";
-import type { SubagentsConfig } from "../../src/models/model-precedence.js";
+import type { SubagentsConfig } from "../../src/config/types.js";
 
 const baseConfig: SubagentsConfig = {
   agent: { default: null, forceBackground: false },

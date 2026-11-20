@@ -7,97 +7,9 @@
  * and one loud warning per bad value names the file, key, got, expected,
  * and fix hint. Never migrates fork shapes or throws.
  */
-import { Type, type TSchema } from "typebox";
 import { Check } from "typebox/value";
-import type { RawConfig } from "./config-io.ts";
-import { PARENT_THINKING_CHOICE } from "../models/thinking-resolution.ts";
-
-/** One known key's runtime rule plus its human-readable expected shape. */
-interface KeySpec {
-  schema: TSchema;
-  expected: string;
-}
-
-const MODEL_KEY: KeySpec = { schema: Type.Union([Type.String(), Type.Null()]), expected: "string or null" };
-const BOOL: KeySpec = { schema: Type.Boolean(), expected: "boolean" };
-const NUM: KeySpec = { schema: Type.Number(), expected: "number" };
-const SYSTEM_PROMPT_MODE: KeySpec = {
-  schema: Type.Union([Type.Literal("replace"), Type.Literal("inherit"), Type.Literal("custom")]),
-  expected: '"replace" | "inherit" | "custom"',
-};
-const THINKING: KeySpec = {
-  schema: Type.Union([
-    Type.Literal("off"),
-    Type.Literal("minimal"),
-    Type.Literal("low"),
-    Type.Literal("medium"),
-    Type.Literal("high"),
-    Type.Literal("xhigh"),
-    Type.Literal("max"),
-    Type.Literal(PARENT_THINKING_CHOICE),
-  ]),
-  expected:
-    '"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | ' +
-    `"${PARENT_THINKING_CHOICE}" (follow the parent session)`,
-};
-const MODEL_DISPLAY: KeySpec = {
-  schema: Type.Union([Type.Literal("id"), Type.Literal("name")]),
-  expected: '"id" | "name"',
-};
-const THINKING_PLACEMENT: KeySpec = {
-  schema: Type.Union([Type.Literal("header"), Type.Literal("metadata")]),
-  expected: '"header" | "metadata"',
-};
-const STATUS_BAR: KeySpec = {
-  schema: Type.Union([Type.Literal("full"), Type.Literal("compact")]),
-  expected: '"full" | "compact"',
-};
-
-/** Runtime schema for every known agent key. Unknown keys are per-type model keys. */
-const AGENT_KEY_SPECS: Record<string, KeySpec> = {
-  default: MODEL_KEY,
-  forceBackground: BOOL,
-  graceTurns: NUM,
-  toolTimeoutMinutes: NUM,
-  idleTimeoutMinutes: NUM,
-  showCost: BOOL,
-  showTools: BOOL,
-  showTurns: BOOL,
-  showInput: BOOL,
-  showOutput: BOOL,
-  showContext: BOOL,
-  showTime: BOOL,
-  widgetMaxLines: NUM,
-  widgetMaxLinesCompact: NUM,
-  widgetCompact: BOOL,
-  showCompletionCards: BOOL,
-  widgetShortcut: BOOL,
-  widgetShowModel: BOOL,
-  widgetShowThinking: BOOL,
-  widgetNavHint: BOOL,
-  systemPromptMode: SYSTEM_PROMPT_MODE,
-  includeContextFiles: BOOL,
-  defaultThinking: THINKING,
-  defaultMaxTurns: NUM,
-  loadSkillsImplicitly: BOOL,
-  loadExtensionsImplicitly: BOOL,
-  loadToolsImplicitly: BOOL,
-  disableDefaultAgents: BOOL,
-  agentToolStrictMode: BOOL,
-  exposeDescriptions: BOOL,
-  outputThinkingBufferSize: NUM,
-  finishedRetentionMinutes: NUM,
-  agentStatusLimit: NUM,
-  modelDisplayStyle: MODEL_DISPLAY,
-  modelThinkingPlacement: THINKING_PLACEMENT,
-  statusBarFormat: STATUS_BAR,
-  outputTranscript: BOOL,
-  parentMessages: BOOL,
-  showAgentColors: BOOL,
-};
-
-/** Legacy key normalized silently, never warned about. */
-const SILENTLY_DROPPED_KEYS = new Set(["finishedEvictTurns"]);
+import { agentKeySpec, LEGACY_AGENT_KEYS, NUM, type KeySpec } from "./agent-settings.ts";
+import type { RawConfig } from "./types.ts";
 
 /** Received-kind label for warnings: arrays and null get their own names. */
 function describeValue(value: unknown): string {
@@ -172,14 +84,14 @@ export function validateRawLayer(raw: unknown, filePath: string): RawConfig {
 
 /**
  * Keep valid agent entries, warn and drop the rest. Unknown keys are
- * per-type model keys; legacy keys in SILENTLY_DROPPED_KEYS vanish quietly.
+ * per-type model keys; legacy keys vanish quietly.
  */
 function cleanAgentEntries(agent: Record<string, unknown>, filePath: string): Record<string, unknown> {
   const kept: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(agent)) {
-    if (SILENTLY_DROPPED_KEYS.has(key)) continue;
+    if (LEGACY_AGENT_KEYS.has(key)) continue;
     if (value === undefined) continue;
-    const spec = AGENT_KEY_SPECS[key] ?? MODEL_KEY;
+    const spec = agentKeySpec(key);
     if (isValidValue(spec, value)) kept[key] = value;
     else warnIncompatible(filePath, `agent.${key}`, value, spec.expected);
   }

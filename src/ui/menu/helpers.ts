@@ -97,8 +97,9 @@ export function buildModelOptions(
   rawOptions: string[],
   currentModel?: string | null,
   configuredModels?: string[],
+  fallbackLabel = "(inherits parent)",
 ): SelectOption[] {
-  const items: SelectOption[] = [{ value: "(inherits parent)", label: "(inherits parent)", provider: "" }];
+  const items: SelectOption[] = [{ value: "(inherits parent)", label: fallbackLabel, provider: "" }];
 
   // Parse all options into SelectOption objects
   const parsed: SelectOption[] = [];

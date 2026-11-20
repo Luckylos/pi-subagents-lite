@@ -6,6 +6,7 @@ import { asCommandContext, asExtensionAPI } from "../pi-boundaries.js";
 import { fakeCtx, makeAgentMd, makeAgentRecord, tempDirWithFiles } from "../fixtures.js";
 import { createTestOwner } from "../owner-fixtures.js";
 import { AgentManager } from "../../src/agents/agent-manager.js";
+import { captureResultStats } from "../../src/agents/agent-result.js";
 import { SpawnCoordinator } from "../../src/spawn/spawn-coordinator.js";
 import { executeAgentTool } from "../../src/agents/tool-execution.js";
 import { handleRestartLastAgents } from "../../src/agents/restart-last-agents.js";
@@ -50,14 +51,32 @@ beforeEach(() => {
   owner.store!.mutate.session.clearAll();
   const manager = new AgentManager(owner);
   owner.manager = manager;
-  owner.coordinator = new SpawnCoordinator({ ...owner, pi }, manager);
-  owner.sessionCtx = null;
+  owner.sessionCtx = parent;
+  owner.coordinator = new SpawnCoordinator(owner, manager);
   vi.spyOn(owner.pi, "exec").mockImplementation(pi.exec);
   vi.spyOn(parent.modelRegistry, "find").mockImplementation((provider, id) =>
     [chosenModel, parentModel].find((m) => m.provider === provider && m.id === id),
   );
   vi.spyOn(parent.modelRegistry, "getAvailable").mockReturnValue([chosenModel, parentModel]);
-  spawn.mockClear().mockImplementation(async () => ({ agentId: "agent-id", record: makeAgentRecord() }));
+  spawn.mockClear().mockImplementation(async (_pi, _ctx, intent) => {
+    const record = makeAgentRecord({ id: "agent-id" });
+    if (intent.runInBackground) return { agentId: record.id, record };
+    return {
+      agentId: record.id,
+      record,
+      foregroundReport: {
+        ...record.display,
+        agentId: record.id,
+        runId: "run-id",
+        sequence: 1,
+        status: "completed",
+        started: true,
+        completedAt: 100,
+        elapsedMs: 100,
+        stats: captureResultStats(record),
+      },
+    };
+  });
 });
 
 afterEach(async () => {
@@ -159,10 +178,11 @@ describe("Spawn resolution at the Agent and Restart boundaries", () => {
     ]);
     session.branch(root);
     session.appendMessage({ role: "user", content: "other branch", timestamp: Date.now() });
-    const result = await handleRestartLastAgents(
-      owner,
-      asCommandContext({ ...parent, sessionManager: session, thinkingLevel: "high" }),
-    );
+    const restartCtx = { ...parent, sessionManager: session, thinkingLevel: "high" as const };
+    owner.coordinator?.dispose();
+    owner.sessionCtx = restartCtx;
+    owner.coordinator = new SpawnCoordinator(owner, owner.manager!);
+    const result = await handleRestartLastAgents(owner, asCommandContext({ ...restartCtx }));
     expect(result.skipped).toEqual(["general-purpose: explicit missing (Model not found: test/old-model)"]);
     expect(
       spawn.mock.calls.map(([, , intent]) => [

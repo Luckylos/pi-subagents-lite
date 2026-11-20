@@ -6,6 +6,7 @@ import type { ConfigStore } from "../config/config-store.ts";
 import { getStore, type ExtensionOwner } from "../shell.ts";
 import type { ThinkingChoice } from "../types.ts";
 import { findModelInRegistry } from "../utils.ts";
+import type { SpawnCoordinator } from "./spawn-coordinator.ts";
 import { computeSpawnTarget, surfaceSpawnTargetWarnings, type SpawnTarget } from "./spawn-target.ts";
 
 type ValidTarget = Extract<SpawnTarget, { ok: true }>;
@@ -28,16 +29,21 @@ export async function resolveSpawnSelection(
   ctx: ExtensionContext,
   type: string,
   path: unknown,
-  { preview = false }: { preview?: boolean } = {},
+  {
+    preview = false,
+    coordinator,
+    signal,
+  }: { preview?: boolean; coordinator?: SpawnCoordinator; signal?: AbortSignal } = {},
 ): Promise<SpawnSelection> {
   const generation = owner.generation;
+  assertCurrent();
   const target = await computeSpawnTarget(owner, ctx, path);
   assertCurrent();
   if (!preview) surfaceSpawnTargetWarnings(ctx.ui, target);
   if (!target.ok) throw new Error(target.error);
 
   const dir = target.projectTrusted && target.resolvedPath ? `${target.resolvedPath}/.pi/agents` : undefined;
-  const resolution = await owner.registry.resolveTypeOrDiscover(type, dir);
+  const resolution = await owner.registry.resolveTypeOrDiscover(type, dir, assertCurrent);
   assertCurrent();
   if (resolution.kind === "ambiguous") {
     throw new Error(
@@ -48,7 +54,10 @@ export async function resolveSpawnSelection(
   return { type: resolution.key, agentConfig: owner.registry.getAgentConfig(resolution.key, dir), target };
 
   function assertCurrent() {
-    if (generation !== owner.generation) throw new Error("Subagents session changed while resolving the agent type");
+    signal?.throwIfAborted();
+    if (coordinator) coordinator.assertCurrentParent(ctx);
+    else if (generation !== owner.generation)
+      throw new Error("Subagents session changed while resolving the agent type");
   }
 }
 
@@ -135,9 +144,11 @@ export async function resolveSpawn(
   path: unknown,
   model: SpawnModelChoice,
   thinking: ThinkingChoice | undefined,
+  coordinator: SpawnCoordinator,
 ) {
   const store = getStore(owner);
-  const selection = await resolveSpawnSelection(owner, ctx, type, path);
+  const selection = await resolveSpawnSelection(owner, ctx, type, path, { coordinator });
+  coordinator.assertCurrentParent(ctx);
   return prepareResolvedSpawn(store, ctx, selection, model, thinking);
 }
 

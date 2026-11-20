@@ -230,6 +230,98 @@ describe("factory instance isolation", () => {
     expect(a.api.api.sendMessage.mock.calls[0]?.[0].content).not.toContain("A1 late result");
   });
 
+  it("rejects a foreign same-ID Agent context before resolving a spawn target", async () => {
+    const a = parent();
+    const ctx = await emit(a, "session_start");
+    const foreign = fakeCtx();
+    vi.mocked(foreign.sessionManager.getSessionId).mockReturnValue(ctx.sessionManager.getSessionId());
+    const resolveType = vi.spyOn(a.owner.registry, "resolveTypeOrDiscover");
+
+    await expect(
+      executeAgentTool(a.owner, "call", { agent: "late-agent", prompt: "stale work" }, undefined, undefined, foreign),
+    ).rejects.toThrow();
+
+    expect(foreign.isProjectTrusted).not.toHaveBeenCalled();
+    expect(resolveType).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a foreign same-ID Spawn wizard before reading types or opening UI", async () => {
+    const a = parent();
+    const ctx = await emit(a, "session_start");
+    const custom = vi.fn();
+    const foreign = fakeCtx({ ui: { custom } });
+    vi.mocked(foreign.sessionManager.getSessionId).mockReturnValue(ctx.sessionManager.getSessionId());
+    const readTypes = vi.spyOn(a.owner.registry, "getAvailableTypes");
+
+    await showSpawnAgentMenu(a.owner, asCommandContext(foreign), []);
+
+    expect(readTypes).not.toHaveBeenCalled();
+    expect(custom).not.toHaveBeenCalled();
+    expect(a.api.api.exec).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("rejects a foreign same-ID Restart before probing or touching the widget", async () => {
+    const a = parent();
+    const ctx = await emit(a, "session_start");
+    const foreign = fakeCtx();
+    vi.mocked(foreign.sessionManager.getSessionId).mockReturnValue(ctx.sessionManager.getSessionId());
+    vi.mocked(foreign.sessionManager.getEntries).mockReturnValue([
+      {
+        type: "message",
+        id: "assistant-1",
+        parentId: null,
+        timestamp: "2026-11-18T00:00:00.000Z",
+        message: assistantMessage({
+          content: [{ type: "toolCall", id: "call-1", name: "Agent", arguments: { prompt: "stale work" } }],
+          stopReason: "toolUse",
+        }),
+      },
+    ]);
+    const resolveType = vi.spyOn(a.owner.registry, "resolveTypeOrDiscover");
+    const widget = services(a).widget;
+    const setUICtx = vi.spyOn(widget, "setUICtx");
+    const ensureTimer = vi.spyOn(widget, "ensureTimer");
+
+    const result = await handleRestartLastAgents(a.owner, asCommandContext(foreign));
+
+    expect(result.restarted).toEqual([]);
+    expect(foreign.isProjectTrusted).not.toHaveBeenCalled();
+    expect(resolveType).not.toHaveBeenCalled();
+    expect(setUICtx).not.toHaveBeenCalled();
+    expect(ensureTimer).not.toHaveBeenCalled();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("discards discovery if the SDK session ID changes during its scan", async () => {
+    const a = parent();
+    const ctx = await emit(a, "session_start");
+    let markStarted!: () => void;
+    let resolveDiscovery!: (agents: AgentConfigFromMd[]) => void;
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const discovery = new Promise<AgentConfigFromMd[]>((resolve) => (resolveDiscovery = resolve));
+    vi.mocked(scanAgentFilesInDir).mockImplementation(async () => {
+      markStarted();
+      return discovery;
+    });
+    const tool = executeAgentTool(
+      a.owner,
+      "call",
+      { agent: "late-agent", prompt: "stale work" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await started;
+    vi.mocked(ctx.sessionManager.getSessionId).mockReturnValue("different session");
+    resolveDiscovery(discovered("late-agent"));
+
+    await expect(tool).rejects.toThrow("session changed");
+    expect(a.owner.registry.getAgentConfig("late-agent")).toBeUndefined();
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
   it("rejects delayed tool discovery after its owner starts a replacement session", async () => {
     const a = parent();
     const ctx = await emit(a, "session_start");
@@ -257,6 +349,22 @@ describe("factory instance isolation", () => {
     releaseDiscovery();
     await expect(pendingTool).rejects.toThrow("session changed");
     await replacement;
+    expect(runAgent).not.toHaveBeenCalled();
+  });
+
+  it("keeps a registered menu's Spawn action bound across replacement with the same SDK context", async () => {
+    const a = parent();
+    let chooseAction!: (action: string) => void;
+    const custom = vi.fn().mockImplementationOnce(() => new Promise<string>((resolve) => (chooseAction = resolve)));
+    const ctx = await emit(a, "session_start", fakeCtx({ hasUI: false, ui: { custom } }));
+    const command = a.api.commands.find(({ name }) => name === "agents")!;
+    const pending = command.handler("", asCommandContext(ctx));
+    await emit(a, "session_start", ctx);
+    const readTypes = vi.spyOn(a.owner.registry, "getAvailableTypes");
+    chooseAction("spawn");
+    await pending;
+
+    expect(readTypes).not.toHaveBeenCalled();
     expect(runAgent).not.toHaveBeenCalled();
   });
 

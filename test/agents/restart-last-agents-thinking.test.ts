@@ -57,7 +57,7 @@ vi.mock("../../src/shell.js", async () =>
   (await import("../owner-fixtures.js")).ownerShellMock(
     await (() =>
       shellMock({
-        coordinator: { spawn: mockCoordinatorSpawn },
+        coordinator: { spawn: mockCoordinatorSpawn, isCurrentParent: () => true, assertCurrentParent: vi.fn() },
         store: {
           get agent() {
             return {

@@ -199,6 +199,18 @@ describe("showModelSettingsMenu — SettingsList migration", () => {
     expect(item.currentValue).toContain("[project]");
   });
 
+  it("shows parent inheritance for an empty project default and offers to clear it", async () => {
+    mockModules.mockProjectTargetOffered = true;
+    mockModules.mockProjectConfig.agent.default = "";
+    const ctx = createMockCtx();
+    await showModelSettingsMenu(owner, ctx, []);
+    const item = row("defaultModel")!;
+    expect(item.currentValue).toBe("(inherits parent)");
+    item.submenu!(item.currentValue, vi.fn());
+    settingsListCalls.at(-1)!.activate("clear");
+    expect(settingsListCalls.at(-1)!.items.map((entry) => entry.id)).toContain("project");
+  });
+
   it("tags a session default with [session]", async () => {
     mockModules.mockSessionOverrides.default = "openai/gpt-4o";
     const ctx = createMockCtx();
@@ -696,6 +708,24 @@ describe("showModelSettingsMenu — model groups", () => {
     expect(targetList.items.map((i) => i.id)).toContain("global");
   });
 
+  it.each([false, true])(
+    "keeps an empty project override clearable and tags only the winning default (project=%s)",
+    async (projectDefault) => {
+      mockModules.mockProjectTargetOffered = true;
+      mockModules.mockConfig.agent.default = "global/default";
+      mockModules.mockProjectConfig.agent["scout"] = "";
+      if (projectDefault) mockModules.mockProjectConfig.agent.default = "project/default";
+      const ctx = createMockCtx();
+      await showModelSettingsMenu(owner, ctx, []);
+      expect(groupHeaders().map((h) => h.label)).toContain(projectDefault ? "project/default" : "global/default");
+      const scout = row("type:scout")!;
+      expect(scout.currentValue.endsWith(" [project]")).toBe(projectDefault);
+      scout.submenu!(scout.currentValue, vi.fn());
+      settingsListCalls.at(-1)!.activate("clear");
+      expect(settingsListCalls.at(-1)!.items.map((entry) => entry.id)).toContain("project");
+    },
+  );
+
   it("groups an unknown resolved model by its raw id without clamping", async () => {
     vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "scout"
@@ -993,12 +1023,17 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     const done = vi.fn();
     item.submenu!("", done);
     settingsListCalls[settingsListCalls.length - 1].activate("global");
-    selectDialogInstances[selectDialogInstances.length - 1].callbacks.onSelect("(inherits parent)");
+    const picker = selectDialogInstances.at(-1)!;
+    expect(picker.items[0].label).toBe("Clear override at this level");
+    picker.callbacks.onSelect(picker.items[0].value);
 
     expect(store.hasGlobalModelKey("default")).toBe(false);
     expect(store.agent.defaultModel).toBeNull();
     expect(store.modelFor("Explore", "parent-id")).toBe("parent-id");
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("inherits parent"), "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "default override cleared (global). Effective model test/parent-model (parent)",
+      "info",
+    );
   });
 
   it("at the project target deletes only the project key and the global value applies again", async () => {
@@ -1023,6 +1058,10 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     expect(store.hasGlobalModelKey("default")).toBe(true);
     expect(store.agent.defaultModel).toBe("g/default");
     expect(store.modelFor("Explore", "parent-id")).toBe("g/default");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "default override cleared (project). Effective model g/default (global)",
+      "info",
+    );
   });
 
   it("at the session target clears the session override and the config value applies again", async () => {
@@ -1040,7 +1079,10 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
 
     expect(store.sessionDefaultModel).toBeNull();
     expect(store.modelFor("Explore", "parent-id")).toBe("g/default");
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("inherits parent"), "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "default override cleared (session). Effective model g/default (global)",
+      "info",
+    );
   });
 });
 

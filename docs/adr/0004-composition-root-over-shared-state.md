@@ -3,6 +3,8 @@
 > The process-singleton assumption in this historical decision is superseded by
 > [ADR-0012](0012-instance-owned-extension-state.md). Closure-based composition
 > remains; each extension factory invocation now owns its composition root.
+> The current Subagent run owns Widget activity, which the Widget reads through
+> the owning AgentManager.
 
 Shared runtime state (config, session overrides, the activity store, the manager,
 widget, pi instance, and session context) lives on a single composition-root

@@ -22,8 +22,14 @@ import type { ThinkingChoice, ThinkingLevel } from "../types.ts";
 /** pi's fallback when defaultThinkingLevel is unset (mirrors pi's DEFAULT_THINKING_LEVEL). */
 const PI_FALLBACK_THINKING_LEVEL: ThinkingLevel = "medium";
 
+/** Concrete Thinking levels, in picker order. Model-specific support is resolved separately. */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 /** The value that makes a source follow the parent session's current Thinking level. */
 export const PARENT_THINKING_CHOICE = "parent" satisfies ThinkingChoice;
+
+/** Choices accepted by stored settings and tool inputs. */
+export const CONFIGURED_THINKING_CHOICES: readonly ThinkingChoice[] = [...THINKING_LEVELS, PARENT_THINKING_CHOICE];
 
 /**
  * Picker entry that writes nothing, leaving the chain to decide. Named after the

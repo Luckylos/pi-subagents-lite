@@ -89,23 +89,30 @@ export function renderAgentToolCall(
   const typeName = getDisplayName(owner, (args.agent as string) || "");
   const label = typeName || "Agent";
 
-  // Background agents: show live status from manager, fallback to queued state
-  // Check args.run_in_background (initial render) OR context.state.isBackground (re-render after result)
-  const isBackground = args.run_in_background === true || context?.state?.isBackground === true;
   const manager = getManager(owner);
-  let agentId = context?.state?.agentId as string | undefined;
-  if (!agentId && context?.toolCallId) {
-    agentId = manager?.listAgents().find((record) => record.display.toolCallId === context.toolCallId)?.id;
-    if (agentId && context.state) {
-      context.state.agentId = agentId;
-      if (isBackground) context.state.isBackground = true;
-    }
+  const agentId = context?.state?.agentId as string | undefined;
+  const record = agentId
+    ? manager?.getRecord(agentId)
+    : context?.toolCallId
+      ? manager?.listAgents().find((entry) => entry.display.toolCall?.id === context.toolCallId)
+      : undefined;
+  const isBackground =
+    record?.display.toolCall?.background ?? (context?.state?.isBackground === true || args.run_in_background === true);
+  if (record && context?.state) {
+    context.state.agentId = record.id;
+    context.state.isBackground = isBackground;
   }
-  const liveRecord = agentId ? manager?.getRecord(agentId) : undefined;
-  const status = liveRecord?.lifecycle.status ?? (isBackground ? "queued" : undefined);
+
+  // Foreground rows belong to the run accepted for this tool call. A Continue
+  // starts another run on the record, while background rows follow the agent.
+  const initialRun = record && !isBackground ? manager?.getInitialRun(record.id) : undefined;
+  const phase = initialRun?.phase ?? record?.lifecycle.phase;
+  const status = initialRun
+    ? (initialRun.outcome?.status ?? (initialRun.phase === "queued" ? "queued" : "running"))
+    : (record?.lifecycle.status ?? (isBackground ? "queued" : undefined));
   const icon = statusIcon(owner, status, theme, (args.agent as string) || undefined);
   let text = `${icon} ${theme.fg("accent", theme.bold(label))}`;
-  if (liveRecord?.lifecycle.phase === "stopping") text += theme.fg("warning", " stopping");
+  if (phase === "stopping") text += theme.fg("warning", " stopping");
 
   const modelOverride = args._modelOverride as string | undefined;
   if (modelOverride) {

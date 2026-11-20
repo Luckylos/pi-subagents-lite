@@ -109,6 +109,10 @@ vi.mock("@earendil-works/pi-tui", async () => {
       activate(id: string) {
         activatePickerRow(this, id);
       }
+      updateValue(id: string, value: string) {
+        const item = this.items.find((candidate) => candidate.id === id);
+        if (item) item.currentValue = value;
+      }
     },
     Input: class MockInput {
       value = "";
@@ -200,7 +204,7 @@ function createMockWizardCtx(stepResults: (string | undefined)[]) {
         const stepIndex = callCount++;
         // Call factory to create component (captured by pi-tui mocks)
         const theme = { fg: (c: string, t: string) => t, bold: (t: string) => t };
-        factory(null, theme, null, () => {});
+        factory({ requestRender: vi.fn() }, theme, null, () => {});
         return stepResults[stepIndex];
       }),
     },
@@ -367,12 +371,9 @@ function switchModel(to: string) {
 
 /** Pick a choice (a level, `parent`, or `pi default`) from the thinking submenu. */
 function pickThinking(value: string) {
-  row().submenu!("medium", vi.fn());
+  settingsListCalls[1].activate("thinkingLevel");
   const list = selectListInstances[selectListInstances.length - 1];
   list.onSelect!({ value, label: value });
-  // The real SettingsList writes the picked value into the row and fires
-  // onChange when the submenu completes — simulate that seam too.
-  settingsListCalls[1].onChange("thinkingLevel", value);
 }
 
 async function pickWorktree(path: string) {
@@ -1233,7 +1234,7 @@ describe("showSpawnAgentMenu — spawn action", () => {
     expect(options).not.toHaveProperty("signal");
   });
 
-  it("keeps edited Description and Prompt through option rebuilds and launch", async () => {
+  it("keeps edited Description and Prompt through later option changes and launch", async () => {
     const ctx = createMockWizardCtx(["general-purpose", "original prompt", undefined]);
     await completeWizard(ctx);
     const list = settingsListCalls[1];

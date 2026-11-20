@@ -4,7 +4,7 @@ import { formatStopReason } from "../status-note.ts";
  * tool-execution.ts — Agent tool execution handlers.
  *
  * Contains the execute callbacks registered for the Agent tool.
- * Spawn coordination and live-view tracking live in spawn-coordinator.ts.
+ * Spawn coordination lives in spawn-coordinator.ts.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -26,66 +26,48 @@ function successResult(text: string, details?: Record<string, unknown>) {
   return { content: [{ type: "text", text }], details };
 }
 
-/**
- * Build a details record from an AgentRecord. Always includes type and
- * description; includeStatus adds status/outputFile/stopReason, includeStats
- * adds turn/token/cost/context/compaction/model fields.
- */
+function buildAgentDisplayDetails({
+  type,
+  description,
+  worktreePath,
+}: Pick<AgentRecord["display"], "type" | "description" | "worktreePath">): Record<string, unknown> {
+  return { type, description, ...(worktreePath && { worktreePath }) };
+}
+
+/** Build details for callers that read the Subagent's current record. */
 export function buildAgentDetails(
   record: AgentRecord,
   opts?: { includeStats?: boolean; includeStatus?: boolean },
 ): Record<string, unknown> {
-  const details: Record<string, unknown> = {
-    type: record.display.type,
-    description: record.display.description,
-  };
-
-  if (record.display.worktreePath) {
-    details.worktreePath = record.display.worktreePath;
-  }
-
+  const details = buildAgentDisplayDetails(record.display);
   if (opts?.includeStatus) {
     details.status = record.lifecycle.status;
     details.outputFile = record.display.outputFile;
     const stopReason = formatStopReason(record.lifecycle);
     if (stopReason) details.stopReason = stopReason;
   }
-
   if (opts?.includeStats) {
     const elapsedMs = record.lifecycle.completedAt ? record.lifecycle.completedAt - record.lifecycle.startedAt : 0;
-
     Object.assign(details, formatResultStats(captureResultStats(record), elapsedMs));
   }
-
   return details;
-}
-
-/** Result text plus status note, for display. */
-export function formatResultContent(record: AgentRecord): string {
-  return formatTerminalContent({ ...record.lifecycle, result: record.result, error: record.error });
 }
 
 // --- Tool execute handlers ---
 
 export async function executeAgentTool(
   owner: ExtensionOwner,
-  _toolCallId: string,
+  toolCallId: string,
   params: Record<string, unknown>,
   signal: AbortSignal | undefined,
   _onUpdate: ((update: any) => void) | undefined,
   ctx: ExtensionContext,
 ): Promise<any> {
-  // Capture the session resources before any await. On-demand discovery can
-  // outlive a /new or /reload; it must never continue against the replacement.
-  const generation = owner.generation;
-  const store = getStore(owner);
+  // Retain the originating coordinator through target and type resolution.
   const coordinator = getCoordinator(owner);
   if (!coordinator) throw new Error("Subagents session has not started");
-  const assertCurrentSession = (): void => {
-    if (owner.generation !== generation || owner.store !== store || owner.coordinator !== coordinator) {
-      throw new Error("Subagents session changed while resolving the agent type");
-    }
-  };
+  coordinator.assertCurrentParent(ctx);
+  const store = getStore(owner);
 
   const spawn = await resolveSpawn(
     owner,
@@ -94,8 +76,9 @@ export async function executeAgentTool(
     params.worktree_path,
     toolModelChoice(params.model),
     parseThinkingChoice(params.thinking as string | undefined),
+    coordinator,
   );
-  assertCurrentSession();
+  coordinator.assertCurrentParent(ctx);
 
   const prompt = params.prompt as string;
   const description =
@@ -118,12 +101,12 @@ export async function executeAgentTool(
       maxTurns,
       graceTurns: store.agent.graceTurns,
       runInBackground: isBackground,
+      toolCallId,
       signal: isBackground ? undefined : signal,
     }),
   );
 
   const { agentId, record } = result;
-  if (_toolCallId) record.display.toolCallId = _toolCallId;
 
   if (isBackground) {
     const suffix = `Success! You delegated to an agent. A notification will arrive when done - USER: do not poll, don't check status and don't duplicate the delegated work!\n\nAgent ID: ${agentId}`;
@@ -139,15 +122,21 @@ export async function executeAgentTool(
     return successResult(`[${label}] ${suffix}`, details);
   }
 
-  // The coordinator awaits the parent gate, which Stop can open before execution settles.
-  const details = buildAgentDetails(record, { includeStats: true });
-  if (record.lifecycle.phase === "stopping") return successResult(stopRequestedText(record), details);
-
-  if (record.lifecycle.status === "error") {
-    throw new Error(`Agent failed: ${record.error || "unknown error"}`);
+  const report = result.foregroundReport;
+  if (!report) throw new Error("Foreground subagent did not report a result");
+  if (report.status === "error") {
+    throw new Error(`Agent failed: ${report.error || "unknown error"}`);
   }
 
-  return successResult(formatResultContent(record), details);
+  const details = {
+    ...buildAgentDisplayDetails(report),
+    ...formatResultStats(report.stats, report.status === "stopping" ? 0 : report.elapsedMs),
+  };
+  const text =
+    report.status === "stopping"
+      ? `Stop requested for ${agentId.slice(0, SHORT_ID_LENGTH)} — stopping.`
+      : formatTerminalContent(report);
+  return successResult(text, details);
 }
 
 // --- Agent id resolution and failure lists, shared by the agent tools ---

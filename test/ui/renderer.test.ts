@@ -534,11 +534,22 @@ describe("renderAgentToolCall — background agent icon", () => {
   it.each([false, true])("renders stopping on the existing call line (background=%s)", (background) => {
     const record = makeAgentRecord({
       lifecycle: { status: "running", phase: "stopping" },
-      display: { toolCallId: "call" },
+      display: { toolCall: { id: "call", background } },
     });
     const renderOwner = asExtensionOwner({
       ...owner,
-      manager: { listAgents: () => [record], getRecord: () => record },
+      manager: {
+        listAgents: () => [record],
+        getRecord: () => record,
+        getInitialRun: () => ({
+          id: "run-1",
+          agentId: record.id,
+          sequence: 1,
+          phase: "stopping",
+          acceptedAt: 0,
+          completion: Promise.resolve(),
+        }),
+      },
     });
     vi.mocked(getManager).mockReturnValueOnce(renderOwner.manager);
     renderAgentToolCall(renderOwner, { agent: "builder", run_in_background: background }, noopTheme, {

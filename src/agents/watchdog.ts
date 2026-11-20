@@ -48,7 +48,7 @@ export class Watchdog {
       state.toolCalls.delete(activity.toolCallId);
     } else {
       // Synthetic end events (e.g. extension-error) carry no toolCallId:
-      // clear the first matching call by name, mirroring the live-view bridge.
+      // clear the first matching call by name, as in the run's live view.
       for (const [callId, info] of state.toolCalls) {
         if (info.toolName === activity.toolName) {
           state.toolCalls.delete(callId);

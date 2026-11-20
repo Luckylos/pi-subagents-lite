@@ -32,6 +32,7 @@ export interface ModelSelectSubmenuOptions {
   theme: Theme;
   /** Effective model for pre-selecting the current value in the picker. */
   currentModel?: string | null;
+  fallbackLabel?: string;
   /** Opt-in availability for the nested clear picker; see target-select. */
   availableLevels?: AvailableLevels;
   onSet: (target: "session" | "global" | "project", model: string | null) => void;
@@ -66,7 +67,7 @@ export function createModelSelectSubmenu(
       const store = getStore(owner);
       const configuredModels = extractConfiguredModels(store.agentConfigSnapshot());
       return new SearchableSelectDialog(
-        buildModelOptions(options.modelOptions, currentModel, configuredModels),
+        buildModelOptions(options.modelOptions, currentModel, configuredModels, options.fallbackLabel),
         currentModel,
         {
           onSelect: (modelValue) => {

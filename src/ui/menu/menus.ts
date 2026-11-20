@@ -1,4 +1,4 @@
-import type { ExtensionOwner } from "../../shell.ts";
+import { getCoordinator, type ExtensionOwner } from "../../shell.ts";
 /**
  * menus.ts — /agents command dispatcher.
  *
@@ -98,6 +98,7 @@ export async function showAgentsMainMenu(
   ctx: ExtensionCommandContext,
   modelOptions: string[],
 ): Promise<void> {
+  const coordinator = getCoordinator(owner);
   const items: SelectItem[] = [
     { value: "running", label: "Running agents", description: "List running/queued agents" },
     { value: "spawn", label: "Spawn agent", description: "Manually spawn a new agent" },
@@ -111,13 +112,13 @@ export async function showAgentsMainMenu(
         await showRunningAgentsMenu(owner, ctx);
         break;
       case "spawn":
-        await showSpawnAgentMenu(owner, ctx, modelOptions);
+        await showSpawnAgentMenu(owner, ctx, modelOptions, coordinator);
         break;
       case "settings":
         await showSettingsMenu(owner, ctx, modelOptions);
         break;
       case "debug":
-        await showDebugMenu(owner, ctx);
+        await showDebugMenu(owner, ctx, coordinator);
         break;
     }
   });

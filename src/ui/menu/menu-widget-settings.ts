@@ -16,7 +16,7 @@ import type { Theme } from "../types.ts";
 import { createNumericSubmenu } from "./submenus/numeric-input.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
 import { getStore } from "../../shell.ts";
-import { MIN_FINISHED_RETENTION_MINUTES } from "../../config/config-io.ts";
+import { MIN_FINISHED_RETENTION_MINUTES } from "../../config/agent-settings.ts";
 
 /** One stat visibility toggle: menu label, description, and store get/set accessors. */
 type StatToggleConfig = { label: string; description: string; get: () => boolean; set: (v: boolean) => void };

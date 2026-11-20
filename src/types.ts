@@ -20,10 +20,10 @@ export interface ToolActivity {
   toolCallId?: string;
 }
 
-/** Widget live-view state: per-agent transient display data, fed by tool/stream callbacks. */
+/** Transient display data for one Subagent run, fed by tool and stream callbacks. */
 export interface LiveView {
-  activeTools: Map<string, string>; // keyed by toolName_timestamp
-  responseText: string;
+  readonly activeTools: ReadonlyMap<string, string>; // keyed by SDK toolCallId
+  readonly responseText: string;
 }
 
 /**
@@ -78,6 +78,11 @@ export interface SubagentRunResult extends SubagentRunOutcome {
   readonly elapsedMs: number;
   readonly stats: RunResultStats;
 }
+
+/** The run-owned report that releases a foreground Agent call. */
+export type SubagentParentReport =
+  | SubagentRunResult
+  | (Pick<SubagentRunResult, "type" | "description" | "worktreePath" | "stats"> & { readonly status: "stopping" });
 
 /** Delivery binding captured before execution, separate from retained result data. */
 export interface RunNotificationBinding {
@@ -164,6 +169,7 @@ export interface SpawnConfig extends RunTunables {
   modelKey?: string;
   worktreePath?: string;
   worktreeLabel?: string;
+  toolCallId?: string;
   /**
    * Whether the subagent session treats the target project as trusted.
    * Absent/true = load project resources; false = ignore them (untrusted
@@ -227,8 +233,8 @@ export interface AgentDisplayInfo {
   outputFile?: string;
   /** Resolved spawn params, captured for UI display. Fixed at spawn time. */
   invocation?: AgentInvocation;
-  /** The tool_use_id from the original Agent tool call. */
-  toolCallId?: string;
+  /** The original Agent tool call and its accepted execution mode. */
+  toolCall?: { readonly id: string; readonly background: boolean };
   worktreePath?: string;
   /** Short display label for the worktree (e.g., "feature" or "feature/packages/web"). */
   worktreeLabel?: string;
@@ -245,7 +251,7 @@ export interface AgentExecutionState {
    * Current run's parent wait gate. Opens on Stop acceptance or settlement;
    * distinct from the actual run execution and SubagentRun.completion.
    */
-  promise?: Promise<string>;
+  promise?: Promise<SubagentParentReport>;
   /** Lifecycle wrapper for the output file stream. */
   outputLog?: AgentOutputLog;
   /**
@@ -260,17 +266,9 @@ export interface AgentExecutionState {
    * the delta since the last tally.
    */
   talliedCost?: number;
-  /**
-   * Widget live-view state, attached by the coordinator at spawn. Retained
-   * across settlement so a continuation keeps feeding the same view.
-   */
-  liveView?: LiveView;
-  /**
-   * Coordinator-supplied live-view bridge (tool activity + streamed text),
-   * captured at spawn and re-wired on continuation. Without it the widget
-   * would show a static "thinking…" while a continued agent runs.
-   */
-  liveViewCallbacks?: Pick<RunCallbacks, "onToolActivity" | "onTextDelta">;
+  /** The current run's live view, projected when the manager accepts the run. */
+  /** Spawn caller's tool and text callbacks, also forwarded during continuations. */
+  continuationActivityCallbacks?: Pick<RunCallbacks, "onToolActivity" | "onTextDelta">;
 }
 
 /**

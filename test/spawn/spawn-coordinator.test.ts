@@ -4,10 +4,26 @@
 
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentRecord, RunNotificationBinding, SubagentRunResult, SubagentRunStatus } from "../../src/types.js";
+import type {
+  AgentRecord,
+  RunNotificationBinding,
+  SubagentParentReport,
+  SubagentRunResult,
+  SubagentRunStatus,
+} from "../../src/types.js";
 import { captureResultStats } from "../../src/agents/agent-result.js";
 import type { AgentManager, SpawnOptions } from "../../src/agents/agent-manager.js";
 import { asExtensionAPI, asExtensionContext } from "../pi-boundaries.js";
+import type { ExtensionOwner } from "../../src/shell.js";
+import { SpawnCoordinator as RealSpawnCoordinator } from "../../src/spawn/spawn-coordinator.js";
+
+/** Bind the real service to its owner, as session startup does. */
+class SpawnCoordinator extends RealSpawnCoordinator {
+  constructor(owner: ExtensionOwner, manager: AgentManager) {
+    super(owner, manager);
+    owner.coordinator = this;
+  }
+}
 
 // --- Mock modules ---
 
@@ -57,25 +73,44 @@ vi.mock("../../src/shell.js", async () =>
   ),
 );
 
+function settledResult(record: AgentRecord, sequence: number): SubagentRunResult {
+  const { id, lifecycle, display } = record;
+  const status = lifecycle.status === "queued" || lifecycle.status === "running" ? "completed" : lifecycle.status;
+  const completedAt = Date.now();
+  return Object.freeze({
+    runId: `${id}-run-${sequence}`,
+    agentId: id,
+    sequence,
+    type: display.type,
+    description: display.description,
+    started: lifecycle.started,
+    status,
+    completedAt,
+    elapsedMs: completedAt - lifecycle.startedAt,
+    result: record.result,
+    error: record.error,
+    stoppedBy: lifecycle.stoppedBy,
+    stopDetail: lifecycle.stopDetail,
+    stats: captureResultStats(record),
+  });
+}
+
 function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & MockManager {
   const records = new Map<string, AgentRecord>();
   // Capture forwarded spawn arguments (named fields, not positional indices) so
   // tests assert the coordinator's output to the manager without call indexing.
   const spawnCalls: SpawnCall[] = [];
   // Completion-gate resolvers for records whose gate the test holds open.
-  const gateResolvers = new Map<string, (value: string) => void>();
+  const gateResolvers = new Map<string, (value: SubagentParentReport) => void>();
   return asAgentManager({
     spawn: vi.fn((pi: ExtensionAPI, ctx: ExtensionContext, type: string, prompt: string, options: SpawnOptions) => {
       const id = `agent-${records.size}`;
       spawnCalls.push({ id, pi, ctx, type, prompt, options });
-      const promise = opts.pendingGate
-        ? new Promise<string>((resolve) => gateResolvers.set(id, resolve))
-        : Promise.resolve("done");
       const record: AgentRecord = {
         id,
         display: { type, description: options.description },
         lifecycle: { status: "running", startedAt: Date.now(), started: true },
-        execution: { promise },
+        execution: {},
         stats: {
           lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
           toolUses: 0,
@@ -85,6 +120,9 @@ function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & M
         },
         result: "done",
       };
+      record.execution.promise = opts.pendingGate
+        ? new Promise<SubagentParentReport>((resolve) => gateResolvers.set(id, resolve))
+        : Promise.resolve(settledResult(record, 1));
       records.set(id, record);
       return id;
     }),
@@ -94,25 +132,7 @@ function makeMockManager(opts: { pendingGate?: boolean } = {}): AgentManager & M
       const record = records.get(id);
       const spawn = spawnCalls.find((call) => call.id === id);
       if (!record || !spawn) return undefined;
-      const { lifecycle, display } = record;
-      const status = lifecycle.status === "queued" || lifecycle.status === "running" ? "completed" : lifecycle.status;
-      const completedAt = Date.now();
-      const result: SubagentRunResult = Object.freeze({
-        runId: `${id}-run-${sequence}`,
-        agentId: id,
-        sequence,
-        type: display.type,
-        description: display.description,
-        started: lifecycle.started,
-        status,
-        completedAt,
-        elapsedMs: completedAt - lifecycle.startedAt,
-        result: record.result,
-        error: record.error,
-        stoppedBy: lifecycle.stoppedBy,
-        stopDetail: lifecycle.stopDetail,
-        stats: captureResultStats(record),
-      });
+      const result = settledResult(record, sequence);
       const binding: RunNotificationBinding | undefined = spawn.options.notificationOwner && {
         ...spawn.options.notificationOwner,
         required: sequence > 1 || spawn.options.isBackground === true,
@@ -149,7 +169,7 @@ interface MockManager {
   spawn: (pi: ExtensionAPI, ctx: ExtensionContext, type: string, prompt: string, options: SpawnOptions) => string;
   getRecord: (id: string) => AgentRecord | undefined;
   getSpawnCalls: () => SpawnCall[];
-  getGateResolver: (id: string) => ((value: string) => void) | undefined;
+  getGateResolver: (id: string) => ((value: SubagentParentReport) => void) | undefined;
   mockSettlement: (
     id: string,
     sequence?: number,
@@ -169,8 +189,6 @@ function makeMockCtx() {
 // --- Tests ---
 
 describe("SpawnCoordinator", () => {
-  // Dynamically import after mocks are set up
-  let SpawnCoordinator: typeof import("../../src/spawn/spawn-coordinator.js").SpawnCoordinator;
   let manager: ReturnType<typeof makeMockManager>;
   let ctx: ExtensionContext;
 
@@ -186,8 +204,6 @@ describe("SpawnCoordinator", () => {
     mockPi.sendMessage.mockReset(); // full reset — no impl or calls leak between tests
     mockGetPiInstance.mockReturnValue(mockPiApi);
     owner = await createTestOwner();
-    const mod = await import("../../src/spawn/spawn-coordinator.js");
-    SpawnCoordinator = mod.SpawnCoordinator;
   });
 
   it("spawns a background agent and returns result", async () => {
@@ -222,37 +238,6 @@ describe("SpawnCoordinator", () => {
     expect(result.agentId).toBeTruthy();
     expect(result.record).toBeTruthy();
     expect(manager.getSpawnCalls()[0].options.isBackground).toBe(false);
-  });
-
-  it("creates a live view on spawn", async () => {
-    const coordinator = new SpawnCoordinator(owner, manager);
-    const result = await coordinator.spawn(mockPiApi, ctx, {
-      type: "builder",
-      prompt: "do something",
-      description: "Test",
-      graceTurns: 6,
-      runInBackground: true,
-    });
-
-    const view = coordinator.liveView(result.agentId);
-    expect(view).toBeDefined();
-    expect(view!.activeTools).toBeInstanceOf(Map);
-    expect(view!.responseText).toBe("");
-  });
-
-  it("keeps the live view after foreground completion (the agent can be continued)", async () => {
-    const coordinator = new SpawnCoordinator(owner, manager);
-    const result = await coordinator.spawn(mockPiApi, ctx, {
-      type: "builder",
-      prompt: "do something",
-      description: "Test",
-      graceTurns: 6,
-      runInBackground: false,
-    });
-
-    // The live view rides on the record: it survives settlement so a
-    // continuation can keep feeding the same view.
-    expect(coordinator.liveView(result.agentId)).toBeDefined();
   });
 
   it.each([true, false])(
@@ -412,22 +397,6 @@ describe("SpawnCoordinator", () => {
   });
 
   describe("onAgentComplete", () => {
-    it("keeps the live view after completion (a continuation re-feeds it)", async () => {
-      const coordinator = new SpawnCoordinator(owner, manager);
-      const result = await coordinator.spawn(mockPiApi, ctx, {
-        type: "builder",
-        prompt: "task",
-        description: "Test",
-        graceTurns: 6,
-        runInBackground: true,
-      });
-      expect(coordinator.liveView(result.agentId)).toBeDefined();
-
-      complete(coordinator, result.agentId);
-
-      expect(coordinator.liveView(result.agentId)).toBeDefined();
-    });
-
     it("schedules nudge for background agents", async () => {
       const coordinator = new SpawnCoordinator(owner, manager);
 
@@ -445,29 +414,6 @@ describe("SpawnCoordinator", () => {
       expect(mockPi.sendMessage).toHaveBeenCalledTimes(1);
 
       expect(manager.getSpawnCalls()[0].options.isBackground).toBe(true);
-    });
-
-    it("re-feeds the live view with activity after completion", async () => {
-      const coordinator = new SpawnCoordinator(owner, manager);
-      const result = await coordinator.spawn(mockPiApi, ctx, {
-        type: "builder",
-        prompt: "task",
-        description: "Test",
-        graceTurns: 6,
-        runInBackground: true,
-      });
-      const spawn = manager.getSpawnCalls()[0];
-
-      complete(coordinator, result.agentId);
-
-      // Continuation activity flows through the same spawn-time callbacks
-      // into the retained live view.
-      spawn.options.onToolActivity!({ type: "start", toolName: "bash", toolCallId: "c1" });
-      spawn.options.onTextDelta!("hel", "hello world");
-
-      const view = coordinator.liveView(result.agentId)!;
-      expect(view.activeTools.size).toBe(1);
-      expect(view.responseText).toBe("hello world");
     });
 
     it("does not schedule nudge for foreground agents", async () => {
@@ -758,24 +704,6 @@ describe("SpawnCoordinator", () => {
       vi.advanceTimersByTime(500);
       expect(mockPi.sendMessage).not.toHaveBeenCalled();
     });
-
-    it("clears live views", async () => {
-      const coordinator = new SpawnCoordinator(owner, manager);
-      const result = await coordinator.spawn(mockPiApi, ctx, {
-        type: "builder",
-        prompt: "task",
-        description: "Test",
-        graceTurns: 6,
-        runInBackground: true,
-      });
-      expect(coordinator.liveView(result.agentId)).toBeDefined();
-
-      // Teardown disposes both peers; the live view dies with its record.
-      void manager.dispose().catch(() => {});
-      coordinator.dispose();
-
-      expect(coordinator.liveView(result.agentId)).toBeUndefined();
-    });
   });
 
   describe("stale pi protection", () => {
@@ -901,10 +829,12 @@ describe("SpawnCoordinator", () => {
       expect(settled).toBe(false);
 
       const id = manager.getSpawnCalls()[0].id;
-      manager.getGateResolver(id)!("done");
+      const { result: terminal } = manager.mockSettlement(id)!;
+      manager.getGateResolver(id)!(terminal);
       const result = await spawnPromise;
 
       expect(result.agentId).toBe(id);
+      expect(result.foregroundReport).toBe(terminal);
       expect(settled).toBe(true);
     });
 
@@ -966,7 +896,6 @@ describe("SpawnCoordinator", () => {
 });
 
 describe("SpawnCoordinator parent messages", () => {
-  let SpawnCoordinator: typeof import("../../src/spawn/spawn-coordinator.js").SpawnCoordinator;
   let manager: ReturnType<typeof makeMockManager>;
   let ctx: ExtensionContext;
 
@@ -978,7 +907,6 @@ describe("SpawnCoordinator parent messages", () => {
     mockGetPiInstance.mockReturnValue(mockPiApi);
     parentState.idle = true;
     owner = await createTestOwner();
-    SpawnCoordinator = (await import("../../src/spawn/spawn-coordinator.js")).SpawnCoordinator;
   });
 
   async function spawnWith(coordinator: InstanceType<typeof SpawnCoordinator>, runInBackground: boolean) {

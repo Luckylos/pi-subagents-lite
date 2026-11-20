@@ -11,7 +11,12 @@ import { createExtensionOwner, type ExtensionOwner } from "../src/shell.js";
 // resource IO and the runner boundary are controlled; no settings/model IO.
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: () => "/test/instance-isolation/agent",
-  DynamicBorder: class {},
+  ProjectTrustStore: class {},
+  DynamicBorder: class {
+    render(width: number) {
+      return ["─".repeat(width)];
+    }
+  },
   SettingsManager: {
     create: () => ({
       getDefaultThinkingLevel: () => undefined,

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.4] - 2026-11-20
+
+### Fixed
+
+- Spawn, the Spawn wizard, and Restart last agents check parent session ownership before target resolution and launch. Late target previews update Model and Thinking without interrupting edits in the wizard.
+- Model settings label the layers that supply active models. Clearing an override reports the effective model and its source. Empty overrides are available in the Clear menu.
+- Foreground Agent results and call rows stay tied to the run the tool started. Early Stop acknowledgements include statistics recorded during synchronous cancellation.
+- The Widget tracks parallel tool calls by SDK call ID and starts each Continuation with fresh activity.
+- The Widget and the Running agents menu share ConversationViewer actions and display settings. The Widget keeps the editor area's width and keyboard focus routing. The Running agents menu reports viewer opening errors and keeps the action list open for retry.
+
+### Changed
+
+- Centralized Subagent settings validation, defaults, and layer rules. Existing configuration files work without migration.
+
 ## [1.17.3] - 2026-11-19
 
 ### Fixed

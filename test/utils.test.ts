@@ -164,18 +164,12 @@ describe("errorMessage", () => {
   });
 });
 describe("parseThinkingChoice", () => {
-  it("narrows a valid level string", () => {
-    expect(parseThinkingChoice("high")).toBe("high");
-  });
+  it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max", "parent"])("accepts %s", (choice) =>
+    expect(parseThinkingChoice(choice)).toBe(choice),
+  );
 
-  it("narrows the `parent` value", () => {
-    expect(parseThinkingChoice("parent")).toBe("parent");
-  });
-
-  it("returns undefined for an invalid level or undefined input", () => {
-    expect(parseThinkingChoice("ultra")).toBeUndefined();
-    expect(parseThinkingChoice("inherit")).toBeUndefined();
-    expect(parseThinkingChoice(undefined)).toBeUndefined();
+  it.each(["ultra", "inherit", "pi default", "", undefined])("rejects %j", (choice) => {
+    expect(parseThinkingChoice(choice)).toBeUndefined();
   });
 });
 

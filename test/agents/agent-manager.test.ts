@@ -427,7 +427,7 @@ describe("AgentManager", () => {
       expect(record2.lifecycle.stoppedBy).toBe("user");
       expect(record2.lifecycle.completedAt).toBeDefined();
       expect(record2.result).toBeUndefined();
-      await record2.execution.promise; // the gate opens on the queued stop
+      expect(await record2.execution.promise).toMatchObject({ status: "stopped", started: false, stoppedBy: "user" });
 
       // The slot frees — the cancelled record must never start.
       firstRun.resolve(mockRunResult());
@@ -563,7 +563,8 @@ describe("AgentManager", () => {
       const controller = new AbortController();
       const id = spawnForeground("task", { signal: controller.signal });
       const record = manager.getRecord(id)!;
-      expect(await record.execution.promise).toBe("done");
+      expect(await record.execution.promise).toBe(manager.getRuns(id)[0].outcome);
+      expect(manager.getRuns(id)[0].outcome).toMatchObject({ status: "completed", result: "done" });
 
       const abortSpy = vi.spyOn(manager, "abort");
       controller.abort();

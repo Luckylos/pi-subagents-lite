@@ -25,14 +25,16 @@ import {
 import { plainText } from "./sanitize.ts";
 import { agentColorAnsi } from "../agent-color.ts";
 import type { LiveView } from "../types.ts";
+import {
+  defaultCompactLines,
+  DEFAULT_FINISHED_RETENTION_MINUTES,
+  DEFAULT_MAX_WIDGET_LINES,
+} from "../config/agent-settings.ts";
 
 // Backward-compat re-export for consumers importing Theme from this module.
 export type { Theme } from "./types.ts";
 
 // ---- Constants ----
-
-/** Overflow collapse kicks in above this many rendered lines. */
-const DEFAULT_MAX_WIDGET_LINES = 12;
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -137,14 +139,14 @@ export class AgentWidget {
 
   private maxLines = DEFAULT_MAX_WIDGET_LINES;
 
-  private maxLinesCompact = Math.floor(DEFAULT_MAX_WIDGET_LINES / 2);
+  private maxLinesCompact = defaultCompactLines(DEFAULT_MAX_WIDGET_LINES);
 
   private navHint = true;
 
   private statusBarFormat: "full" | "compact" = "full";
 
   /** Retention window in minutes for finished rows. Mirrors the config default; never 0. */
-  private finishedRetentionMinutes = 1;
+  private finishedRetentionMinutes = DEFAULT_FINISHED_RETENTION_MINUTES;
 
   private modelDisplayStyle: "id" | "name" = "id";
 
@@ -171,7 +173,7 @@ export class AgentWidget {
   /** Scroll anchor: index of the first visible block in the window. */
   private scrollAnchor = 0;
 
-  /** Viewer overlay open — prevents deactivation while ConversationViewer is displayed. */
+  /** Prevents navigation deactivation while ConversationViewer is displayed. */
   private viewerOpen = false;
 
   constructor(

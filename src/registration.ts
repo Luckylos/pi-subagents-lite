@@ -92,8 +92,8 @@ export function registerAgentTool(pi: ExtensionAPI, owner: ExtensionOwner): void
       const isError = context?.isError ?? false;
       const store = getStore(owner);
       const backgroundId = result.details?.agentId as string | undefined;
-      // The call renderer already resolves foreground rows by toolCallId. Their
-      // historical result can be returned before the stopped run settles.
+      // The call renderer records the linked agent. Invalidate its row again
+      // when a foreground run settles after acknowledging Stop.
       const agentId = backgroundId ?? (context?.state?.agentId as string | undefined);
       if (agentId && context?.invalidate) {
         registerAgentInvalidation(owner, agentId, context.invalidate);

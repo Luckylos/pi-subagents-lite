@@ -106,7 +106,7 @@ vi.mock("../../src/shell.js", async () =>
   (await import("../owner-fixtures.js")).ownerShellMock(
     await (() =>
       shellMock({
-        coordinator: { spawn: mockCoordinatorSpawn },
+        coordinator: { spawn: mockCoordinatorSpawn, isCurrentParent: () => true, assertCurrentParent: vi.fn() },
         store: {
           get agent() {
             return {
@@ -208,7 +208,11 @@ describe("restart with a trusted or same-repo worktree_path", () => {
     expect(intent.projectTrusted).toBe(true);
     expect(intent.worktreePath).toBe("/repo-b-resolved");
     expect(intent.worktreeLabel).toBe("repo-b-resolved");
-    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", "/repo-b-resolved/.pi/agents");
+    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith(
+      "general-purpose",
+      "/repo-b-resolved/.pi/agents",
+      expect.any(Function),
+    );
   });
 
   it("discovers trusted agent definitions when implicit extension loading is disabled", async () => {
@@ -218,7 +222,11 @@ describe("restart with a trusted or same-repo worktree_path", () => {
     await handleRestartLastAgents(owner, commandCtx(entriesWithCalls([{ prompt: "Do it", worktree_path: "/repo-b" }])));
 
     expect(lastSpawnIntent().projectTrusted).toBe(true);
-    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", "/repo-b-resolved/.pi/agents");
+    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith(
+      "general-purpose",
+      "/repo-b-resolved/.pi/agents",
+      expect.any(Function),
+    );
   });
 });
 
@@ -239,7 +247,7 @@ describe("restart with an untrusted cross-repo worktree_path", () => {
     // Untrusted targets spawn with resources ignored — never degraded to a skip.
     expect(result.restarted).toEqual(["general-purpose: Do it"]);
     expect(lastSpawnIntent().projectTrusted).toBe(false);
-    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined);
+    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined, expect.any(Function));
   });
 
   it("surfaces the untrusted-project warning through the notify channel", async () => {
@@ -307,7 +315,7 @@ describe("restart without a worktree_path", () => {
     expect(mockResolveSubagentTrust).not.toHaveBeenCalled();
     expect(lastSpawnIntent().projectTrusted).toBe(true);
     expect(lastSpawnIntent().worktreePath).toBeUndefined();
-    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined);
+    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined, expect.any(Function));
   });
 
   it("treats a blank worktree_path as omitted (keys off the resolved target, not the raw string)", async () => {
@@ -317,7 +325,7 @@ describe("restart without a worktree_path", () => {
     const intent = lastSpawnIntent();
     expect(intent.projectTrusted).toBe(true);
     expect(intent.worktreePath).toBeUndefined();
-    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined);
+    expect(mockResolveTypeOrDiscover).toHaveBeenCalledWith("general-purpose", undefined, expect.any(Function));
   });
 
   it("treats a non-string worktree_path from history as omitted, not a spawn failure", async () => {
@@ -381,8 +389,13 @@ describe("restart resolves each call through the shared spawn target", () => {
     expect(result.restarted).toEqual(["general-purpose: One", "general-purpose: Two"]);
     expect(lastSpawnIntent(0).projectTrusted).toBe(true);
     expect(lastSpawnIntent(1).projectTrusted).toBe(false);
-    expect(mockResolveTypeOrDiscover).toHaveBeenNthCalledWith(1, "general-purpose", "/repo-a-resolved/.pi/agents");
-    expect(mockResolveTypeOrDiscover).toHaveBeenNthCalledWith(2, "general-purpose", undefined);
+    expect(mockResolveTypeOrDiscover).toHaveBeenNthCalledWith(
+      1,
+      "general-purpose",
+      "/repo-a-resolved/.pi/agents",
+      expect.any(Function),
+    );
+    expect(mockResolveTypeOrDiscover).toHaveBeenNthCalledWith(2, "general-purpose", undefined, expect.any(Function));
   });
 });
 

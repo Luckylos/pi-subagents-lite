@@ -11,7 +11,7 @@ import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-
 import { extractText } from "../prompt/context.ts";
 import type { AgentUsage } from "./usage.ts";
 import type { RunCallbacks } from "../types.ts";
-import { DEFAULT_GRACE_TURNS } from "../config/config-io.ts";
+import { DEFAULT_GRACE_TURNS } from "../config/agent-settings.ts";
 
 /** The session surface a run uses; AgentSession satisfies it. */
 export type RunSession = Pick<AgentSession, "subscribe" | "prompt" | "steer" | "abort" | "messages">;

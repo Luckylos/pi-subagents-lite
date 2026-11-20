@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vite-
 import { join } from "node:path";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import type { KnownAgentSettings } from "../../src/config/types.js";
 
 const MOCK_AGENT_DIR = mkdtempSync(join(tmpdir(), "pi-subagents-validate-global-"));
 const GLOBAL_CONFIG_PATH = join(MOCK_AGENT_DIR, "subagents-lite.json");
@@ -155,6 +156,132 @@ describe("load-time validation — project layer", () => {
       warn.mockRestore();
     }
   });
+});
+
+it.each(["off", "minimal", "low", "medium", "high", "xhigh", "max", "parent"])(
+  "loads %s as a persisted Thinking choice",
+  (choice) => {
+    writeGlobal({ agent: { defaultThinking: choice } });
+    expect(new ConfigStore(createConfigIO(projectDir)).agent.defaultThinking).toBe(choice);
+  },
+);
+
+it.each(["pi default", "", "ultra"])("rejects %j as a persisted Thinking choice", (choice) => {
+  writeGlobal({ agent: { defaultThinking: choice } });
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    expect(new ConfigStore(createConfigIO(projectDir)).agent.defaultThinking).toBeUndefined();
+    expect(warn).toHaveBeenCalled();
+  } finally {
+    warn.mockRestore();
+  }
+});
+
+it("uses the built-in behavior when there is no config file", () => {
+  const store = new ConfigStore(createConfigIO(projectDir));
+  expect(store.modelFor("Explore", "parent/model")).toBe("parent/model");
+  expect(store.concurrency).toEqual({ default: 4, providers: {}, models: {} });
+  expect(store.agent).toMatchObject({
+    forceBackground: false,
+    graceTurns: 6,
+    toolTimeoutMinutes: 45,
+    idleTimeoutMinutes: 45,
+    agentStatusLimit: 8,
+    widgetMaxLines: 12,
+    widgetMaxLinesCompact: 6,
+    finishedRetentionMinutes: 1,
+    loadSkillsImplicitly: true,
+    loadExtensionsImplicitly: true,
+    loadToolsImplicitly: true,
+    parentMessages: true,
+  });
+  expect(store.agentConfigSnapshot()).not.toHaveProperty("loadToolsImplicitly");
+  expect(store.agentConfigSnapshot()).not.toHaveProperty("defaultThinking");
+});
+
+it("validates every known setting and shares project eligibility with model Clear all", () => {
+  const globalOnly = {
+    forceBackground: true,
+    graceTurns: 0,
+    toolTimeoutMinutes: -1,
+    idleTimeoutMinutes: 0,
+    showCost: true,
+    showTools: true,
+    showTurns: false,
+    showInput: false,
+    showOutput: false,
+    showContext: false,
+    showTime: false,
+    widgetMaxLines: 9,
+    widgetMaxLinesCompact: 2,
+    widgetCompact: true,
+    showCompletionCards: false,
+    widgetShortcut: true,
+    widgetShowModel: false,
+    widgetShowThinking: false,
+    widgetNavHint: false,
+    systemPromptMode: "custom",
+    includeContextFiles: false,
+    loadSkillsImplicitly: false,
+    loadExtensionsImplicitly: false,
+    loadToolsImplicitly: false,
+    disableDefaultAgents: true,
+    agentToolStrictMode: true,
+    exposeDescriptions: true,
+    outputThinkingBufferSize: 16,
+    finishedRetentionMinutes: 0,
+    agentStatusLimit: 0,
+    modelDisplayStyle: "id",
+    modelThinkingPlacement: "metadata",
+    statusBarFormat: "compact",
+    outputTranscript: true,
+    parentMessages: false,
+    showAgentColors: false,
+  } as const;
+  const modelDefaults = { default: "global/model", defaultThinking: "parent", defaultMaxTurns: 5 } as const;
+  const known = { ...globalOnly, ...modelDefaults } satisfies Required<KnownAgentSettings>;
+  const dynamic = { Explore: "local/explore", Scout: "", Worker: null };
+  const globalConcurrency = { default: 3, providers: { local: 2 }, models: { "local/explore": 1 } };
+  const projectConcurrency = { default: 2, models: { "project/explore": 1 } };
+  const projectModels = { ...modelDefaults, default: "project/model", ...dynamic };
+  writeGlobal({ agent: { ...known, ...dynamic }, concurrency: globalConcurrency });
+  const ignoredProject = { ...globalOnly, showCost: false, parentMessages: true };
+  writeProject({ agent: { ...ignoredProject, ...projectModels }, concurrency: projectConcurrency });
+
+  const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const io = createConfigIO(projectDir);
+    const raw = io.load();
+    expect(raw.global).toEqual({ agent: { ...known, ...dynamic }, concurrency: globalConcurrency });
+    expect(raw.project).toEqual({ agent: { ...ignoredProject, ...projectModels }, concurrency: projectConcurrency });
+    expect(mergeLayers(raw.global, raw.project).agent).toEqual({ ...globalOnly, ...projectModels });
+    expect(warn).toHaveBeenCalledOnce();
+
+    const store = new ConfigStore(io);
+    expect(store.agent).toMatchObject({
+      defaultModel: "project/model",
+      graceTurns: 0,
+      toolTimeoutMinutes: -1,
+      finishedRetentionMinutes: 1 / 60,
+      agentStatusLimit: 4,
+      loadToolsImplicitly: false,
+      parentMessages: false,
+      showCost: true,
+      widgetMaxLinesCompact: 2,
+    });
+    store.mutate.session.setOverride("Explore", "session/model");
+    store.mutate.agent.clearAllModelOverrides("all");
+
+    const cleared = io.load();
+    expect(cleared.global).toEqual({ agent: globalOnly, concurrency: globalConcurrency });
+    expect(cleared.project).toEqual({ agent: ignoredProject, concurrency: projectConcurrency });
+    expect(mergeLayers(cleared.global, cleared.project).agent).toEqual(globalOnly);
+    expect(store.modelFor("Explore", "parent/model")).toBe("parent/model");
+    expect(store.agent.defaultThinking).toBeUndefined();
+    expect(store.agent.defaultMaxTurns).toBeUndefined();
+  } finally {
+    warn.mockRestore();
+  }
 });
 
 describe("load-time validation — runs and menus", () => {

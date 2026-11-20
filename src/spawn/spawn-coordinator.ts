@@ -3,7 +3,7 @@ import { getPiInstance, getSessionCtx, getWidget } from "../shell.ts";
 import { SHORT_ID_LENGTH } from "../types.ts";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { AgentRecord, LiveView, RunNotificationBinding, SubagentRunResult, ToolActivity } from "../types.ts";
+import type { AgentRecord, RunNotificationBinding, SubagentParentReport, SubagentRunResult } from "../types.ts";
 import type { AgentManager, SpawnOptions } from "../agents/agent-manager.ts";
 import { type SpawnIntent } from "./spawn-preparation.ts";
 export type { SpawnIntent } from "./spawn-preparation.ts";
@@ -20,8 +20,7 @@ import { createParentMessageTool } from "../agents/parent-message.ts";
  * spawn-coordinator.ts — Spawn-and-track coordination for subagents.
  *
  * Single entry point for both LLM tool and menu spawn paths.
- * Connects parent delivery and the manager's run lifecycle. Live-view state
- * rides on the record so continuations re-feed it. CompletionNotifications
+ * Connects parent delivery and the manager's run lifecycle. CompletionNotifications
  * owns the formatting and delivery of each run's notification.
  */
 
@@ -30,6 +29,7 @@ import { createParentMessageTool } from "../agents/parent-message.ts";
 export interface SpawnResult {
   agentId: string;
   record: AgentRecord;
+  foregroundReport?: SubagentParentReport;
 }
 
 export class SpawnCoordinator {
@@ -53,14 +53,19 @@ export class SpawnCoordinator {
   }
 
   private currentParent(): ExtensionContext | null {
-    if (
-      this.disposed ||
-      this.generation !== this.owner.generation ||
-      (this.owner.coordinator && this.owner.coordinator !== this)
-    )
-      return null;
     const ctx = getSessionCtx(this.owner);
-    return this.matchesParent(ctx) ? ctx : null;
+    return this.isCurrentParent(ctx) ? ctx : null;
+  }
+
+  /** A fresh SDK context can refer to the same parent; the coordinator cannot change. */
+  isCurrentParent(ctx: ExtensionContext | null): boolean {
+    if (this.disposed || this.generation !== this.owner.generation || this.owner.coordinator !== this) return false;
+    const current = getSessionCtx(this.owner);
+    return this.matchesParent(current) && (ctx === current || this.matchesParent(ctx));
+  }
+
+  assertCurrentParent(ctx: ExtensionContext): void {
+    if (!this.isCurrentParent(ctx)) throw new Error("Subagents parent session changed before spawn");
   }
 
   private matchesParent(ctx: ExtensionContext | null): boolean {
@@ -80,17 +85,8 @@ export class SpawnCoordinator {
    * Single entry point for the Agent tool, menu wizard and Restart.
    */
   async spawn(pi: ExtensionAPI, ctx: ExtensionContext, intent: SpawnIntent): Promise<SpawnResult> {
-    const sessionId = this.parentSessionId;
-    if (!sessionId || !this.currentParent() || !this.matchesParent(ctx)) {
-      throw new Error("Subagents parent session changed before spawn");
-    }
-    // Create live view BEFORE spawn so callbacks can close over it
-    const liveView: LiveView = {
-      activeTools: new Map(),
-      responseText: "",
-    };
-    const liveViewCallbacks = this.createLiveViewCallbacks(liveView);
-
+    this.assertCurrentParent(ctx);
+    const sessionId = this.parentSessionId!;
     // SpawnConfig fields pass through unchanged; only the intent-only fields
     // (type/prompt/runInBackground/signal) are handled explicitly.
     const { type, prompt, runInBackground, signal, ...config } = intent;
@@ -99,7 +95,6 @@ export class SpawnCoordinator {
       isBackground: runInBackground,
       notificationOwner: { ownerGeneration: this.generation, parentSessionId: sessionId },
       signal,
-      ...liveViewCallbacks,
     };
 
     // MessageParent is bound at session creation, before the id exists, so its
@@ -117,8 +112,7 @@ export class SpawnCoordinator {
     const agentId = this.manager.spawn(pi, ctx, type, prompt, spawnOptions);
     spawnedId = agentId;
     const record = this.manager.getRecord(agentId)!;
-    // The live view is re-fed by continuations.
-    record.execution.liveView = liveView;
+    const parentWait = runInBackground ? undefined : record.execution.promise;
 
     // Ensure widget timer is running so it displays the new agent
     // (menu path calls this explicitly, but tool path doesn't)
@@ -127,14 +121,8 @@ export class SpawnCoordinator {
       widget.ensureTimer();
     }
 
-    if (!runInBackground) await record.execution.promise;
-
-    return { agentId, record };
-  }
-
-  /** Read the live view for an agent. Widget calls this. */
-  liveView(id: string): LiveView | undefined {
-    return this.manager.getRecord(id)?.execution.liveView;
+    if (!parentWait) return { agentId, record };
+    return { agentId, record, foregroundReport: await parentWait };
   }
 
   /** Publish only the originating run's result, with its spawn-time delivery binding. */
@@ -165,29 +153,6 @@ export class SpawnCoordinator {
   dispose(): void {
     this.disposed = true;
     this.notifications.dispose();
-  }
-
-  // ── Private ──
-
-  /** Create callbacks that bridge manager events to a specific live view. */
-  private createLiveViewCallbacks(view: LiveView): Pick<SpawnOptions, "onToolActivity" | "onTextDelta"> {
-    return {
-      onToolActivity: (activity: ToolActivity) => {
-        if (activity.type === "start") {
-          view.activeTools.set(`${activity.toolName}_${Date.now()}`, activity.toolName);
-        } else {
-          for (const [key, name] of view.activeTools) {
-            if (name === activity.toolName) {
-              view.activeTools.delete(key);
-              break;
-            }
-          }
-        }
-      },
-      onTextDelta: (_delta: string, fullText: string) => {
-        view.responseText = fullText;
-      },
-    };
   }
 
   /**

@@ -7,8 +7,8 @@
 
 import { lstatSync, readFileSync } from "node:fs";
 import type { Model } from "@earendil-works/pi-ai";
-import type { ThinkingChoice, ThinkingLevel } from "./types.ts";
-import { PARENT_THINKING_CHOICE } from "./models/thinking-resolution.ts";
+import type { ThinkingChoice } from "./types.ts";
+import { CONFIGURED_THINKING_CHOICES } from "./models/thinking-resolution.ts";
 
 /** True if the name has characters outside the whitelist (alphanumeric, hyphen, underscore, dot — no leading dot). */
 export function isUnsafeName(name: string): boolean {
@@ -34,22 +34,9 @@ export function safeReadFile(filePath: string): string | undefined {
   }
 }
 
-/** The concrete Thinking levels. `parent` is a value of its own kind, never a clampable level. */
-export const VALID_THINKING_LEVELS: readonly ThinkingLevel[] = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-] as const;
-
-/** Validate and narrow a raw string to a thinking value; undefined if invalid. */
+/** Validate a raw string against the configured Thinking choices. */
 export function parseThinkingChoice(raw: string | undefined): ThinkingChoice | undefined {
-  if (raw === undefined) return undefined;
-  const accepted: readonly string[] = [...VALID_THINKING_LEVELS, PARENT_THINKING_CHOICE];
-  return accepted.includes(raw) ? (raw as ThinkingChoice) : undefined;
+  return CONFIGURED_THINKING_CHOICES.find((choice) => choice === raw);
 }
 
 /** Collapse newlines/CRs into spaces so a message renders on one line (line-based TUI output breaks on raw CR/LF). */

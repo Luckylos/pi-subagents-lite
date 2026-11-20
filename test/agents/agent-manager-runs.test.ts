@@ -255,7 +255,7 @@ describe("Subagent run ownership", () => {
       try {
         prompt.resolve(undefined);
         await run.completion;
-        expect(await record.execution.promise).toBe("");
+        expect(await record.execution.promise).toBe(manager.getRuns(id)[0].outcome);
         expect(session.clearQueue).toHaveBeenCalledTimes(1);
         expect(phaseAtCleanup).toHaveReturnedWith("queued");
         expect(completed).toHaveBeenCalledExactlyOnceWith(manager.getRuns(id)[0].outcome, undefined);

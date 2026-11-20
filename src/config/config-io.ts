@@ -16,8 +16,9 @@ import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { SubagentsConfig } from "../models/model-precedence.ts";
-import { CONFIG_AGENT_NON_MODEL_KEYS } from "./types.ts";
+import type { RawConfig, SubagentsConfig } from "./types.ts";
+import { isAgentModelKey } from "./agent-settings.ts";
+import { mergeDefaults } from "./config-layers.ts";
 import { isPlainObject, validateRawLayer } from "./config-validation.ts";
 
 /** File name of the config in both the global agent dir and a project's .pi dir. */
@@ -26,83 +27,16 @@ const CONFIG_DIR = getAgentDir();
 const CONFIG_PATH = path.join(CONFIG_DIR, CONFIG_FILE_NAME);
 /** Path to custom prompt file for subagent system prompts. */
 export const CUSTOM_PROMPT_PATH = path.join(CONFIG_DIR, "subagents-lite-prompt.md");
-/** Default number of grace turns before an agent is force-stopped. */
-export const DEFAULT_GRACE_TURNS = 6;
-/** Default watchdog timeout (tool and idle) in minutes. 0 disables a check. */
-export const DEFAULT_WATCHDOG_TIMEOUT_MINUTES = 45;
-/** Minimum finished retention: 1 second expressed in minutes. */
-export const MIN_FINISHED_RETENTION_MINUTES = 1 / 60;
+export { DEFAULT_AGENT, DEFAULT_GRACE_TURNS } from "./agent-settings.ts";
 
-export const VALID_SYSTEM_PROMPT_MODES = new Set<string>(["replace", "inherit", "custom"]);
-
-/** Default concurrency config — used for resets. */
-export const DEFAULT_CONCURRENCY: SubagentsConfig["concurrency"] = { default: 4 };
-
-/** Default agent settings — merged into loaded config so callers get a complete shape. */
-export const DEFAULT_AGENT: SubagentsConfig["agent"] = {
-  default: null,
-  forceBackground: false,
-  graceTurns: DEFAULT_GRACE_TURNS,
-  widgetMaxLines: 12,
-  toolTimeoutMinutes: DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
-  idleTimeoutMinutes: DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
-
-  widgetCompact: false,
-  showCompletionCards: true,
-  widgetShortcut: false,
-  widgetShowModel: true,
-  widgetShowThinking: true,
-  widgetNavHint: true,
-  systemPromptMode: "replace",
-  includeContextFiles: true,
-  disableDefaultAgents: false,
-  agentToolStrictMode: false,
-  exposeDescriptions: false,
-  showTools: false,
-  showTurns: true,
-  showInput: true,
-  showOutput: true,
-  showContext: true,
-  showCost: false,
-  showTime: true,
-  outputTranscript: false,
-  parentMessages: true,
-  finishedRetentionMinutes: 1,
-  /** 0 = auto: the AgentStatus settled limit derives as 2 × default concurrency at read time. */
-  agentStatusLimit: 0,
-  modelDisplayStyle: "name",
-  modelThinkingPlacement: "header",
-  statusBarFormat: "full",
-  showAgentColors: true,
-};
-
-/**
- * Stored form of agentStatusLimit: an explicit value ≥ 1 passes through;
- * anything below 1 (or unset) becomes 0, the auto marker — the effective
- * limit then derives as 2 × default concurrency at read time.
- */
-export function canonicalAgentStatusLimit(raw: number | undefined): number {
-  return raw != null && raw >= 1 ? raw : 0;
-}
+export { DEFAULT_CONCURRENCY, mergeDefaults, mergeLayers } from "./config-layers.ts";
+export type { RawConcurrency, RawConfig } from "./types.ts";
 
 /** A layer a persisted mutation can target. */
 export type ConfigTarget = "session" | "global" | "project";
 
 /** State of the project layer for the current IO instance. */
 export type ProjectLayerStatus = "untrusted" | "absent" | "loaded" | "malformed";
-
-/** Raw concurrency section as stored in a config file. */
-export interface RawConcurrency {
-  default?: number;
-  providers?: Record<string, number>;
-  models?: Record<string, number>;
-}
-
-/** Raw config file contents: only the keys that file carries. */
-export interface RawConfig {
-  agent?: Record<string, unknown>;
-  concurrency?: RawConcurrency;
-}
 
 /** Result of a load: the two raw layers plus the project layer's status. */
 export interface LoadedConfig {
@@ -122,14 +56,6 @@ export interface ConfigIO {
   /** Legacy direct saves retained for narrow integrations; ConfigStore uses updateLayer. */
   saveGlobal(config: RawConfig): void;
   saveProject(config: RawConfig): void;
-}
-
-/** Agent keys a project file may set: the model family plus per-type overrides. */
-export const MODEL_FAMILY_KEYS = new Set(["default", "defaultThinking", "defaultMaxTurns"]);
-
-/** True when a project file may carry this agent key (model keys only, ADR-0008). */
-export function isProjectAllowedAgentKey(key: string): boolean {
-  return MODEL_FAMILY_KEYS.has(key) || !CONFIG_AGENT_NON_MODEL_KEYS.includes(key);
 }
 
 /** Read + validate the project file. null = absent, "malformed" = invalid. */
@@ -212,60 +138,6 @@ export function loadConfig(): SubagentsConfig {
   return mergeDefaults(readGlobalRaw());
 }
 
-/**
- * Merge the two raw layers into one raw config: project keys win, absent keys
- * inherit from global. Project agent keys that are not model keys are dropped
- * (they were warned about at load). Concurrency merges per entry: default
- * wins, providers/models combine. Pure — no I/O.
- */
-export function mergeLayers(global: RawConfig, project: RawConfig | null): RawConfig {
-  const agent = { ...global.agent };
-  if (project?.agent) {
-    for (const [key, value] of Object.entries(project.agent)) {
-      if (isProjectAllowedAgentKey(key)) agent[key] = value;
-    }
-  }
-  return { agent, concurrency: mergeRawConcurrency(global.concurrency, project?.concurrency) };
-}
-
-/**
- * Merge raw concurrency layers, highest priority last. Never emits an explicit
- * undefined default: an explicit `default: undefined` would override the baked
- * default in mergeDefaults' spread.
- */
-function mergeRawConcurrency(...layers: Array<RawConcurrency | undefined>): RawConcurrency {
-  const out: RawConcurrency = {};
-  const providers: Record<string, number> = {};
-  const models: Record<string, number> = {};
-  for (const layer of layers) {
-    if (!layer) continue;
-    if (layer.default !== undefined) out.default = layer.default;
-    Object.assign(providers, layer.providers ?? {});
-    Object.assign(models, layer.models ?? {});
-  }
-  if (Object.keys(providers).length > 0) out.providers = providers;
-  if (Object.keys(models).length > 0) out.models = models;
-  return out;
-}
-
-/** Bake hardcoded defaults into a raw config; normalize legacy keys on it. */
-export function mergeDefaults(raw: RawConfig): SubagentsConfig {
-  // Spread form (not an explicit default key) so the loaded value wins
-  // without triggering TS2783; identical runtime semantics. Values come from
-  // JSON, so the casts are honest at this boundary.
-  const concurrency = {
-    ...DEFAULT_CONCURRENCY,
-    ...raw.concurrency,
-  } as SubagentsConfig["concurrency"];
-  const agent = { ...DEFAULT_AGENT, ...raw.agent } as SubagentsConfig["agent"];
-  // Legacy pre-ADR-0006 key: normalize without error, touching no other keys (US-15).
-  delete agent.finishedEvictTurns;
-  return {
-    agent,
-    concurrency,
-  };
-}
-
 // ── Load ─────────────────────────────────────────────────────────────
 
 /** Read the global file; any failure (missing, malformed) reads as {} — as today. */
@@ -309,7 +181,7 @@ function readProjectRaw(projectPath: string): ProjectRead {
   // twice (type error plus unknown-key). Unknown keys are computed on the
   // cleaned layer; the file bytes stay untouched.
   const cleaned = validateRawLayer(raw, projectPath);
-  const unknownKeys = Object.keys(cleaned.agent ?? {}).filter((key) => !isProjectAllowedAgentKey(key));
+  const unknownKeys = Object.keys(cleaned.agent ?? {}).filter((key) => !isAgentModelKey(key));
   return { raw: cleaned, unknownKeys };
 }
 

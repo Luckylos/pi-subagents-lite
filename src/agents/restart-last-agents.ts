@@ -7,7 +7,7 @@ import type { ExtensionOwner } from "../shell.ts";
  * Running agents are skipped.
  */
 
-import type { ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { UICtx } from "../ui/agent-widget.ts";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { getCoordinator, getManager, getPiInstance, getStore, getWidget } from "../shell.ts";
@@ -15,6 +15,7 @@ import { parseModelKey, parseThinkingChoice } from "../utils.ts";
 
 import { prepareResolvedSpawn, resolveSpawnSelection, toolModelChoice } from "../spawn/spawn-resolution.ts";
 import { prepareSpawnIntent } from "../spawn/spawn-preparation.ts";
+import type { SpawnCoordinator } from "../spawn/spawn-coordinator.ts";
 
 /** Extracted parameters from a historical Agent tool call. */
 export interface AgentCallParams {
@@ -90,23 +91,21 @@ async function resolveAndSpawn(
   call: AgentCallParams,
   ctx: ExtensionCommandContext,
   running: Set<string>,
-  coordinator: Awaited<ReturnType<typeof getCoordinator>>,
-  pi: Awaited<ReturnType<typeof getPiInstance>>,
+  coordinator: SpawnCoordinator,
+  pi: ExtensionAPI,
 ): Promise<{ restarted: string } | { skipped: string }> {
+  coordinator.assertCurrentParent(ctx);
   const type = call.agent || "general-purpose";
   const description = agentCallDescription(call);
   if (running.has(`${type}::${description}`)) {
     return { skipped: skippedCallLabel(call, "already running") };
   }
 
-  const generation = owner.generation;
   const store = getStore(owner);
   let spawn: ReturnType<typeof prepareResolvedSpawn>;
   try {
-    const selection = await resolveSpawnSelection(owner, ctx, type, call.worktree_path);
-    if (owner.generation !== generation || getCoordinator(owner) !== coordinator) {
-      return { skipped: skippedCallLabel(call, "Subagents session changed before restart") };
-    }
+    const selection = await resolveSpawnSelection(owner, ctx, type, call.worktree_path, { coordinator });
+    coordinator.assertCurrentParent(ctx);
     if (running.has(`${selection.type}::${description}`)) {
       return { skipped: skippedCallLabel(call, "already running") };
     }
@@ -128,8 +127,14 @@ async function resolveAndSpawn(
     return { skipped: skippedCallLabel(call, reason) };
   }
 
-  await coordinator!.spawn(
-    pi!,
+  // Prepare the widget only once there is a current launch to display.
+  coordinator.assertCurrentParent(ctx);
+  const widget = getWidget(owner);
+  // SAFETY: Pi's UI supplies the setStatus and setWidget operations used by AgentWidget.
+  widget?.setUICtx(ctx.ui as unknown as UICtx);
+
+  await coordinator.spawn(
+    pi,
     ctx,
     prepareSpawnIntent({
       ...spawn,
@@ -152,7 +157,9 @@ async function resolveAndSpawn(
 export async function handleRestartLastAgents(
   owner: ExtensionOwner,
   ctx: ExtensionCommandContext,
+  coordinator = getCoordinator(owner),
 ): Promise<RestartResult> {
+  if (!coordinator?.isCurrentParent(ctx)) return { restarted: [], skipped: [] };
   const entries = ctx.sessionManager.getEntries();
   const calls = findLastAgentCallsFromEntries(entries);
 
@@ -161,12 +168,8 @@ export async function handleRestartLastAgents(
   }
 
   const manager = getManager(owner);
-  const coordinator = getCoordinator(owner);
+  if (!manager) return { restarted: [], skipped: [] };
   const pi = getPiInstance(owner);
-
-  if (!manager || !coordinator || !pi) {
-    return { restarted: [], skipped: [] };
-  }
 
   const running = new Set(
     manager
@@ -174,13 +177,6 @@ export async function handleRestartLastAgents(
       .filter((a) => a.lifecycle.status === "running" || a.lifecycle.status === "queued")
       .map((a) => `${a.display.type}::${a.display.description}`),
   );
-
-  // Ensure widget is set up so spawned agents appear in the UI.
-  const widget = getWidget(owner);
-  if (widget) {
-    widget.setUICtx(ctx.ui as unknown as UICtx);
-    widget.ensureTimer();
-  }
 
   const restarted: string[] = [];
   const skipped: string[] = [];

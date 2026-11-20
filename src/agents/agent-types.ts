@@ -79,12 +79,17 @@ export class AgentRegistry {
     return mergeAgents(defaults, userAgents, sharedAgents, projectAgents);
   }
 
-  async discoverNewAgents(worktreeDir?: string, options?: RegisterAgentsOptions): Promise<number> {
+  async discoverNewAgents(
+    worktreeDir?: string,
+    options?: RegisterAgentsOptions,
+    assertCurrent?: () => void,
+  ): Promise<number> {
     const generation = this.generation;
     const [merged, worktreeAgents] = await Promise.all([
       this.scanAndMerge(options ?? { disableDefaultAgents: this.disableDefaultAgents }),
       worktreeDir ? scanAgentFilesInDir(worktreeDir, "project") : [],
     ]);
+    assertCurrent?.();
     if (generation !== this.generation) return 0;
     let count = 0;
     for (const [name, config] of merged) {
@@ -117,10 +122,10 @@ export class AgentRegistry {
     return { kind: "not-found" };
   }
 
-  async resolveTypeOrDiscover(type: string, worktreeDir?: string): Promise<TypeResolution> {
+  async resolveTypeOrDiscover(type: string, worktreeDir?: string, assertCurrent?: () => void): Promise<TypeResolution> {
     const resolution = this.resolveType(type);
     if (worktreeDir || resolution.kind === "not-found") {
-      await this.discoverNewAgents(worktreeDir);
+      await this.discoverNewAgents(worktreeDir, undefined, assertCurrent);
       return this.resolveType(type, worktreeDir);
     }
     return resolution;

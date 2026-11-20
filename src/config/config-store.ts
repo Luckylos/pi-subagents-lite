@@ -16,23 +16,24 @@
  * at session_start. `dispose()` drops deps at session_shutdown.
  */
 
-import type { SubagentsConfig, SessionModelOverrides } from "../models/model-precedence.ts";
+import type { SessionModelOverrides } from "../models/model-precedence.ts";
 import { resolveModel } from "../models/model-precedence.ts";
 import type { AgentWidget } from "../ui/agent-widget.ts";
 import type { AgentManager } from "../agents/agent-manager.ts";
-import { CONFIG_AGENT_NON_MODEL_KEYS, type ModelThinkingPlacement } from "./types.ts";
+import type { ModelThinkingPlacement, SubagentsConfig } from "./types.ts";
+import {
+  canonicalAgentStatusLimit,
+  defaultCompactLines,
+  isAgentModelKey,
+  normalizeFinishedRetention,
+  normalizeWatchdogMinutes,
+  resolveAgentSettings,
+  type ResolvedAgentSettings,
+} from "./agent-settings.ts";
 import type { SystemPromptMode } from "../agents/types.ts";
 import type { ThinkingChoice } from "../types.ts";
 import {
-  VALID_SYSTEM_PROMPT_MODES,
-  DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
-  MIN_FINISHED_RETENTION_MINUTES,
-  MODEL_FAMILY_KEYS,
   createConfigIO,
-  canonicalAgentStatusLimit,
-  isProjectAllowedAgentKey,
-  mergeDefaults,
-  mergeLayers,
   type ConfigIO,
   type ConfigTarget,
   type ProjectLayerStatus,
@@ -40,17 +41,18 @@ import {
   type RawConcurrency,
 } from "./config-io.ts";
 
+import { clearAgentModelKeys, mergeDefaults, mergeLayers, mergeRawConcurrency } from "./config-layers.ts";
+
 export type { ConfigIO, ConfigTarget, ProjectLayerStatus, RawConfig, RawConcurrency } from "./config-io.ts";
 
 export const fileConfigIO: ConfigIO = createConfigIO();
 
 /** True when a raw agent layer carries a model setting: the model family (default, defaultThinking,
- * defaultMaxTurns) or a per-type model key. Reuses the "is a model key" rule from config-io
- * (ADR-0008: only model keys may live in a project file). */
+ * defaultMaxTurns) or a per-type model key (ADR-0008). */
 export function agentLayerHasModelSettings(layer: RawConfig | null): boolean {
   const agent = layer?.agent;
   if (!agent) return false;
-  return Object.keys(agent).some((key) => isProjectAllowedAgentKey(key) && agent[key] !== undefined);
+  return Object.keys(agent).some((key) => isAgentModelKey(key) && agent[key] !== undefined);
 }
 
 /** True when the session layer carries a default model or any per-type override. */
@@ -67,83 +69,7 @@ export function concurrencyLayerHasSettings(layer: RawConcurrency): boolean {
   );
 }
 
-/** Agent keys that survive clear-all: non-model settings minus the model family. */
-export const CLEAR_ALL_KEPT_AGENT_KEYS: ReadonlySet<string> = new Set(
-  CONFIG_AGENT_NON_MODEL_KEYS.filter((key) => !MODEL_FAMILY_KEYS.has(key)),
-);
-
 /** Agent settings with all scalar defaults resolved. Model fields stay nullable. */
-export interface ResolvedAgentSettings {
-  /** null = inherit parent. Kept nullable to preserve resolveModel's null-skip. */
-  readonly defaultModel: string | null;
-  readonly forceBackground: boolean;
-  readonly showCost: boolean;
-  readonly graceTurns: number;
-  readonly widgetMaxLines: number;
-  readonly widgetMaxLinesCompact: number;
-  readonly widgetCompact: boolean;
-  readonly showCompletionCards: boolean;
-  readonly widgetShortcut: boolean;
-  readonly widgetShowModel: boolean;
-  readonly widgetShowThinking: boolean;
-  readonly widgetNavHint: boolean;
-
-  /** System prompt mode: replace (default), inherit parent, or custom file. */
-  readonly systemPromptMode: SystemPromptMode;
-  /** Whether to include AGENTS.md context files in the subagent system prompt. */
-  readonly includeContextFiles: boolean;
-  /** Default thinking level for spawned agents. Undefined = inherit from agent config. */
-  readonly defaultThinking: ThinkingChoice | undefined;
-  /** Default max turns for spawned agents. Undefined = unlimited. */
-  readonly defaultMaxTurns: number | undefined;
-  /** Global default for skills loading: true (load all) or false (none). */
-  readonly loadSkillsImplicitly: boolean;
-  /** Global default for extensions loading: true (load all) or false (none). */
-  readonly loadExtensionsImplicitly: boolean;
-  /** Global default for tools: true delegates tool setup to pi, false starts tool-less when frontmatter omits tool fields. */
-  readonly loadToolsImplicitly: boolean;
-  /** Whether to skip built-in default agents at registration. */
-  readonly disableDefaultAgents: boolean;
-  /** Whether to use strict-mode schema for the Agent tool. Costs more tokens. */
-  readonly agentToolStrictMode: boolean;
-  /** Whether the Agent tool's `agent` param description lists each visible agent's description. */
-  readonly exposeDescriptions: boolean;
-  /** Whether to show toolUses count in widget stats line. */
-  readonly showTools: boolean;
-  /** Whether to show turn count in widget stats line. */
-  readonly showTurns: boolean;
-  /** Whether to show input tokens in widget stats line. */
-  readonly showInput: boolean;
-  /** Whether to show output tokens in widget stats line. */
-  readonly showOutput: boolean;
-  /** Whether to show context percent and compactions in widget stats line. */
-  readonly showContext: boolean;
-  /** Whether to show elapsed time in widget stats line. */
-  readonly showTime: boolean;
-  /** Buffer size for streaming thinking blocks to output file. 0 = disabled. */
-  readonly outputThinkingBufferSize: number;
-  /** Minutes a finished agent stays visible in the widget after completion. */
-  readonly finishedRetentionMinutes: number;
-  /** Max settled agents the AgentStatus tool lists. Auto default: 2 × configured default concurrency. */
-  readonly agentStatusLimit: number;
-  /** Model display format: 'id' (short) or 'name' (full). */
-  readonly modelDisplayStyle: "id" | "name";
-  /** Model/thinking placement in full mode: 'header' (1st line) or 'metadata' (2nd line). */
-  readonly modelThinkingPlacement: ModelThinkingPlacement;
-  /** Status bar format: 'full' (default) or 'compact'. */
-  readonly statusBarFormat: "full" | "compact";
-  /** Stop an agent when a single tool call runs longer than this (minutes). 0 disables. */
-  readonly toolTimeoutMinutes: number;
-  /** Stop an agent showing no activity (tool events, streamed text) for this long (minutes). 0 disables. */
-  readonly idleTimeoutMinutes: number;
-  /** Whether to stream the agent transcript to the output file. Default: false. */
-  readonly outputTranscript: boolean;
-  /** Whether background agents get the MessageParent tool (ADR-0013). Default: true. */
-  readonly parentMessages: boolean;
-  /** Whether agent colors (spinner, status icons, picker bullets) are enabled. Default: true. */
-  readonly showAgentColors: boolean;
-}
-
 /** Side-effect targets, injected after construction. */
 export interface ConfigStoreDeps {
   widget?: AgentWidget;
@@ -193,56 +119,8 @@ export class ConfigStore {
   }
 
   get agent(): ResolvedAgentSettings {
-    const a = this.config.agent;
-    const widgetMaxLines = a.widgetMaxLines!; // guaranteed by the defaults merge
-    const widgetMaxLinesCompact = a.widgetMaxLinesCompact ?? Math.floor(widgetMaxLines / 2);
-    // 0 = auto: the cap tracks the default concurrency (the manager's own
-    // fallback chain, baked at 4) so it scales with the session.
-
-    return {
-      defaultModel: a.default ?? null,
-      forceBackground: a.forceBackground === true,
-      showCost: this.sessionShowCost ?? a.showCost === true,
-      graceTurns: a.graceTurns ?? 6,
-      widgetMaxLines,
-      widgetMaxLinesCompact,
-      widgetCompact: a.widgetCompact === true,
-      showCompletionCards: a.showCompletionCards !== false,
-      widgetShortcut: a.widgetShortcut === true,
-      widgetShowModel: a.widgetShowModel !== false,
-      widgetShowThinking: a.widgetShowThinking !== false,
-      widgetNavHint: a.widgetNavHint !== false,
-
-      systemPromptMode: VALID_SYSTEM_PROMPT_MODES.has(a.systemPromptMode as string)
-        ? (a.systemPromptMode as SystemPromptMode)
-        : "replace",
-      includeContextFiles: a.includeContextFiles ?? true,
-      defaultThinking: a.defaultThinking as ThinkingChoice | undefined,
-      defaultMaxTurns: a.defaultMaxTurns,
-      loadSkillsImplicitly: a.loadSkillsImplicitly !== false,
-      loadExtensionsImplicitly: a.loadExtensionsImplicitly !== false,
-      loadToolsImplicitly: a.loadToolsImplicitly !== false,
-      disableDefaultAgents: a.disableDefaultAgents === true,
-      agentToolStrictMode: a.agentToolStrictMode === true,
-      exposeDescriptions: a.exposeDescriptions === true,
-      showTools: a.showTools === true,
-      showTurns: a.showTurns !== false,
-      showInput: a.showInput !== false,
-      showOutput: a.showOutput !== false,
-      showContext: a.showContext !== false,
-      showTime: a.showTime !== false,
-      outputThinkingBufferSize: a.outputThinkingBufferSize ?? 0,
-      finishedRetentionMinutes: Math.max(MIN_FINISHED_RETENTION_MINUTES, a.finishedRetentionMinutes ?? 1),
-      agentStatusLimit: canonicalAgentStatusLimit(a.agentStatusLimit) || 2 * this.concurrency.default,
-      modelDisplayStyle: a.modelDisplayStyle === "id" ? "id" : "name",
-      modelThinkingPlacement: a.modelThinkingPlacement === "metadata" ? "metadata" : "header",
-      statusBarFormat: a.statusBarFormat === "compact" ? "compact" : "full",
-      toolTimeoutMinutes: a.toolTimeoutMinutes ?? DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
-      idleTimeoutMinutes: a.idleTimeoutMinutes ?? DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
-      outputTranscript: a.outputTranscript === true,
-      parentMessages: a.parentMessages !== false,
-      showAgentColors: a.showAgentColors !== false,
-    };
+    const defaultConcurrency = this.sessionConcurrencyLayer.default ?? this.config.concurrency.default;
+    return resolveAgentSettings(this.config.agent, defaultConcurrency, this.sessionShowCost);
   }
 
   get concurrency(): {
@@ -251,11 +129,11 @@ export class ConfigStore {
     models: Record<string, number>;
   } {
     const base = this.config.concurrency;
-    const session = this.sessionConcurrencyLayer;
+    const { providers = {}, models = {} } = mergeRawConcurrency(base, this.sessionConcurrencyLayer);
     return {
-      default: session.default ?? base.default,
-      providers: { ...base.providers, ...session.providers },
-      models: { ...base.models, ...session.models },
+      default: this.sessionConcurrencyLayer.default ?? base.default,
+      providers,
+      models,
     };
   }
 
@@ -370,7 +248,7 @@ export class ConfigStore {
           () => {
             this.sessionOverrides = { default: null };
           },
-          (layer) => this.clearAgentModelKeys(layer),
+          clearAgentModelKeys,
         );
       },
       setForceBackground: (enabled: boolean) => this.setAgentLayerEntry("forceBackground", enabled, "global"),
@@ -381,8 +259,10 @@ export class ConfigStore {
         });
       },
       setGraceTurns: (n: number) => this.setAgentLayerEntry("graceTurns", n, "global"),
-      setToolTimeoutMinutes: (n: number) => this.setAgentLayerEntry("toolTimeoutMinutes", Math.max(0, n), "global"),
-      setIdleTimeoutMinutes: (n: number) => this.setAgentLayerEntry("idleTimeoutMinutes", Math.max(0, n), "global"),
+      setToolTimeoutMinutes: (n: number) =>
+        this.setAgentLayerEntry("toolTimeoutMinutes", normalizeWatchdogMinutes(n), "global"),
+      setIdleTimeoutMinutes: (n: number) =>
+        this.setAgentLayerEntry("idleTimeoutMinutes", normalizeWatchdogMinutes(n), "global"),
       setOutputTranscript: (enabled: boolean) => this.setAgentLayerEntry("outputTranscript", enabled, "global"),
       setParentMessages: (enabled: boolean) => this.setAgentLayerEntry("parentMessages", enabled, "global"),
       setSystemPromptMode: (mode: SystemPromptMode) => this.setAgentLayerEntry("systemPromptMode", mode, "global"),
@@ -421,7 +301,7 @@ export class ConfigStore {
       setOutputThinkingBufferSize: (size: number) =>
         this.setAgentLayerEntry("outputThinkingBufferSize", size, "global"),
       setFinishedRetentionMinutes: (minutes: number): void => {
-        const n = Math.max(MIN_FINISHED_RETENTION_MINUTES, minutes);
+        const n = normalizeFinishedRetention(minutes);
         this.setAgentLayerEntry("finishedRetentionMinutes", n, "global");
       },
       /** Max settled agents AgentStatus lists. 0 = auto (2 × default concurrency); below 1 clamps to 0. */
@@ -440,7 +320,7 @@ export class ConfigStore {
           layer.agent ??= {};
           layer.agent.widgetMaxLines = lines;
           if (layer.agent.widgetMaxLinesCompact === undefined) {
-            layer.agent.widgetMaxLinesCompact = Math.floor(lines / 2);
+            layer.agent.widgetMaxLinesCompact = defaultCompactLines(lines);
           }
         });
       },
@@ -656,12 +536,6 @@ export class ConfigStore {
     this.config = mergeDefaults(mergeLayers(this.globalRaw, this.projectRaw));
   }
 
-  private clearAgentModelKeys(layer: RawConfig): void {
-    if (!layer.agent) return;
-    for (const key of Object.keys(layer.agent)) {
-      if (!CLEAR_ALL_KEPT_AGENT_KEYS.has(key)) delete layer.agent[key];
-    }
-  }
   /**
    * Clear the same model/concurrency key set at one target. Persisted writes
    * always mutate a fresh target layer; an all-layer failure reports whether

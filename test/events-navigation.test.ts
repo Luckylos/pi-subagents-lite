@@ -5,6 +5,7 @@
  * and a minimal ctx. Every assertion exercises the actual handler code.
  */
 
+import assert from "node:assert/strict";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { KeyId } from "@earendil-works/pi-tui";
@@ -12,6 +13,7 @@ import type { AgentManager } from "../src/agents/agent-manager.js";
 import type { AgentRecord, SubagentRun } from "../src/types.js";
 import { makeAgentRecord } from "./fixtures.js";
 import type { AgentConfig } from "../src/agents/types.js";
+import { ConversationViewer } from "../src/ui/conversation-viewer.js";
 import { asAgentSession, asExtensionContext } from "./pi-boundaries.js";
 import { createMockCtx, type ComponentFactory } from "./menu-test-helpers.js";
 
@@ -105,7 +107,8 @@ vi.mock("../src/registration.js", () => ({
   registerAgentTool: vi.fn(),
 }));
 
-vi.mock("../src/ui/format.js", () => ({
+vi.mock("../src/ui/format.js", async (importActual) => ({
+  ...(await importActual<typeof import("../src/ui/format.js")>()),
   formatMs: vi.fn(() => "0s"),
   buildStatsParts: vi.fn(() => []),
   getDisplayName: vi.fn((_owner: import("../src/shell.js").ExtensionOwner, type: string) => type),
@@ -116,6 +119,7 @@ const mockManager = {
   getTotalAgentCost: vi.fn(() => 0),
   getRecord: vi.fn<AgentManager["getRecord"]>(),
   getRuns: vi.fn<AgentManager["getRuns"]>(),
+  abort: vi.fn<AgentManager["abort"]>(),
   submitMessage: vi.fn<AgentManager["submitMessage"]>(),
 };
 
@@ -135,7 +139,7 @@ const mockWidget = {
 };
 
 const mockStore = {
-  agent: { modelDisplayStyle: "id" },
+  agent: { modelDisplayStyle: "name" },
   notifyToolsExpanded: vi.fn(),
 };
 
@@ -167,6 +171,7 @@ describe("navigation key handler (createNavInputHandler)", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     mockWidget.isViewerOpen.mockReturnValue(false);
+    mockWidget.setViewerOpen.mockReset();
     mockWidget.isEditorFocused.mockReturnValue(true);
     mockWidget.isNavActive.mockReturnValue(false);
     mockWidget.highlightedIndex.mockReturnValue(0);
@@ -304,34 +309,105 @@ describe("navigation key handler (createNavInputHandler)", () => {
       expect(mockWidget.navSelect).toHaveBeenCalled();
     });
 
-    it("routes the widget viewer's Continue through structured submission", () => {
-      const session = asAgentSession({ messages: [], state: {}, subscribe: vi.fn(() => () => {}) });
-      const record = makeAgentRecord({ lifecycle: { status: "completed", phase: "settled" }, execution: { session } });
-      const run: SubagentRun = {
-        id: "old-run",
-        agentId: record.id,
-        sequence: 1,
-        phase: "settled",
-        acceptedAt: 1,
-        completion: Promise.resolve(),
-      };
-      mockWidget.navSelect.mockReturnValueOnce(record);
-      mockManager.getRecord.mockReturnValue(record);
-      mockManager.getRuns.mockReturnValue([run]);
-      mockManager.submitMessage.mockResolvedValue({ accepted: false, reason: "capacity", message: "Full." });
-      mockMatchesKey.mockImplementation((data, key) => data === "\r" && key === "enter");
-      const custom = vi.fn((factory: ComponentFactory) => {
-        const tui = { terminal: { rows: 40 }, requestRender: vi.fn() };
-        const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-        const view = factory(tui, theme, undefined, () => {});
-        if (!view || typeof view !== "object" || !("handleInput" in view) || typeof view.handleInput !== "function") {
-          throw new Error("Expected a viewer");
+    it.each(["Continue", "Stop"] as const)(
+      "opens the viewer in the editor, routes %s and resets navigation on close",
+      async (action) => {
+        const running = action === "Stop";
+        const unsubscribe = vi.fn();
+        const session = asAgentSession({
+          messages: [],
+          state: {},
+          model: { name: "Display model", id: "model-id" },
+          subscribe: vi.fn(() => unsubscribe),
+        });
+        const record = makeAgentRecord({
+          lifecycle: running ? { status: "running", phase: "running" } : { status: "completed", phase: "settled" },
+          execution: { session },
+        });
+        const run: SubagentRun = {
+          id: "current-run",
+          agentId: record.id,
+          sequence: 1,
+          phase: running ? "running" : "settled",
+          acceptedAt: 1,
+          completion: Promise.resolve(),
+        };
+        mockWidget.navSelect.mockReturnValueOnce(record);
+        mockWidget.setViewerOpen.mockImplementation((open: boolean) => mockWidget.isViewerOpen.mockReturnValue(open));
+        mockManager.getRecord.mockReturnValue(record);
+        mockManager.getRuns.mockReturnValue([run]);
+        mockManager.abort.mockReturnValue(false);
+        mockManager.submitMessage.mockResolvedValue({ accepted: false, reason: "capacity", message: "Full." });
+        mockMatchesKey.mockImplementation((data, key) => data === (key === "enter" ? "\r" : key));
+        let viewer: ConversationViewer | undefined;
+        const custom = vi.fn((factory: ComponentFactory, _options?: { overlay?: boolean }) => {
+          return new Promise<void>((resolve) => {
+            const tui = { terminal: { rows: 40 }, requestRender: vi.fn() };
+            const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+            const view = factory(tui, theme, undefined, () => {
+              viewer?.dispose();
+              resolve();
+            });
+            if (!(view instanceof ConversationViewer)) throw new Error("Expected a conversation viewer");
+            viewer = view;
+          });
+        });
+        const viewCtx = createMockCtx([], [], [], { ui: { custom } });
+        const handler = createNavInputHandler(owner, viewCtx);
+        expect(handler("\r")).toEqual({ consume: true });
+        expect(custom).toHaveBeenCalledExactlyOnceWith(expect.any(Function), undefined);
+        expect(mockWidget.setViewerOpen.mock.calls).toEqual([[true]]);
+        assert(viewer);
+        expect(viewer.render(120).join("\n")).toContain("Display model");
+
+        mockWidget.isEditorFocused.mockReturnValue(false);
+        expect(handler("down")).toBeUndefined();
+        expect(mockWidget.navDeactivate).not.toHaveBeenCalled();
+        if (running) {
+          viewer.handleInput("s");
+          expect(mockManager.abort).not.toHaveBeenCalled();
+          viewer.handleInput("s");
+          expect(mockManager.abort).toHaveBeenCalledExactlyOnceWith(record.id, "user");
+          expect(viewer.render(120).join("\n")).toContain("The manager refused the request.");
+        } else {
+          for (const key of ["\r", " ", "a", " ", "\r"]) viewer.handleInput(key);
+          expect(mockManager.submitMessage).toHaveBeenCalledExactlyOnceWith(record.id, " a ");
+          await Promise.resolve();
+          expect(viewer.render(120).join("\n")).toContain("Continue not accepted: Full.");
+          viewer.handleInput("\x1b");
         }
-        for (const key of ["\r", " ", "a", " ", "\r"]) view.handleInput(key);
+
+        viewer.handleInput("q");
+        expect(unsubscribe).toHaveBeenCalledOnce();
+        await custom.mock.results[0].value;
+        expect(mockWidget.setViewerOpen.mock.calls).toEqual([[true], [false]]);
+        expect(handler("down")).toBeUndefined();
+        expect(mockWidget.navDeactivate).toHaveBeenCalledOnce();
+      },
+    );
+
+    it("keeps navigation available when the selected agent has no session", () => {
+      mockWidget.navSelect.mockReturnValueOnce(makeAgentRecord());
+      mockMatchesKey.mockImplementation((data, key) => data === "\r" && key === "enter");
+      const viewCtx = createMockCtx();
+      expect(createNavInputHandler(owner, viewCtx)("\r")).toEqual({ consume: true });
+      expect(viewCtx.ui.custom).not.toHaveBeenCalled();
+      expect(mockWidget.setViewerOpen).not.toHaveBeenCalled();
+    });
+
+    it("resets viewer-open when the UI fails to open", async () => {
+      const session = asAgentSession({ messages: [] });
+      mockWidget.navSelect.mockReturnValueOnce(makeAgentRecord({ execution: { session } }));
+      mockMatchesKey.mockImplementation((data, key) => data === "\r" && key === "enter");
+      const custom = vi.fn(async () => {
+        throw new Error("host failure");
       });
       const viewCtx = createMockCtx([], [], [], { ui: { custom } });
       expect(createNavInputHandler(owner, viewCtx)("\r")).toEqual({ consume: true });
-      expect(mockManager.submitMessage).toHaveBeenCalledWith(record.id, " a ");
+      await vi.waitFor(() =>
+        expect(viewCtx.ui.notify).toHaveBeenCalledWith("Failed to open agent viewer: Error: host failure", "error"),
+      );
+      expect(mockWidget.setViewerOpen.mock.calls).toEqual([[true], [false]]);
     });
 
     it("deactivates on non-navigation key", () => {

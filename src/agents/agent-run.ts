@@ -4,10 +4,12 @@ import type {
   AgentSubmissionResult,
   RunNotificationBinding,
   RunResultStats,
+  SubagentParentReport,
   SubagentRun,
   SubagentRunOutcome,
   SubagentRunPhase,
   SubagentRunResult,
+  ToolActivity,
 } from "../types.ts";
 
 const QUEUE_CLEANUP_FAILED = "The previous run's message queue could not be cleared. This subagent cannot continue.";
@@ -18,6 +20,7 @@ export class AgentRun {
   readonly id = randomUUID();
   readonly controller = new AbortController();
   readonly acceptedAt = Date.now();
+  readonly liveView = { activeTools: new Map<string, string>(), responseText: "" };
   private currentPhase: SubagentRunPhase;
   startedAt?: number;
   private stopRequestedAt?: number;
@@ -28,9 +31,9 @@ export class AgentRun {
   private queueCleanupFailed = false;
   private pendingSteers?: string[];
   private callbacks = new Set<Promise<void>>();
-  readonly parentWait: Promise<string>;
+  readonly parentWait: Promise<SubagentParentReport>;
   readonly completion: Promise<void>;
-  private resolveParent?: (value: string) => void;
+  private resolveParent?: (report: SubagentParentReport) => void;
   private resolveCompletion!: () => void;
 
   constructor(
@@ -71,6 +74,27 @@ export class AgentRun {
 
   get acceptsCallbacks(): boolean {
     return !this.executionFinished && (this.phase === "running" || this.phase === "stopping");
+  }
+
+  recordToolActivity({ type, toolCallId, toolName }: ToolActivity): void {
+    const tools = this.liveView.activeTools;
+    if (type === "start") {
+      if (toolCallId) tools.set(toolCallId, toolName);
+    } else if (toolCallId) {
+      tools.delete(toolCallId);
+    } else {
+      // Synthetic end events have only a tool name, as in the watchdog.
+      for (const [id, name] of tools) {
+        if (name === toolName) {
+          tools.delete(id);
+          break;
+        }
+      }
+    }
+  }
+
+  recordText(fullText: string): void {
+    this.liveView.responseText = fullText;
   }
 
   recordPromptState(state: "started" | "finished"): void {
@@ -172,8 +196,15 @@ export class AgentRun {
     publish();
   }
 
-  openParent(value = ""): void {
-    this.resolveParent?.(value);
+  acknowledgeStop(
+    { type, description, worktreePath }: Pick<SubagentRunResult, "type" | "description" | "worktreePath">,
+    stats: RunResultStats,
+  ): void {
+    this.openParent(Object.freeze({ status: "stopping", type, description, worktreePath, stats }));
+  }
+
+  private openParent(report: SubagentParentReport): void {
+    this.resolveParent?.(report);
     this.resolveParent = undefined;
   }
 
@@ -206,7 +237,9 @@ export class AgentRun {
     });
     this.terminalResult = result;
     this.currentPhase = "settled";
-    this.openParent(result.result);
+    this.liveView.activeTools.clear();
+    this.liveView.responseText = "";
+    this.openParent(result);
     this.resolveCompletion();
     return result;
   }

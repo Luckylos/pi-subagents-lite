@@ -108,7 +108,7 @@ describe("AgentManager", () => {
 
     await manager.steer(id, "keep going");
     expect(record.execution.promise).not.toBe(gate);
-    expect(await gate).toBe("done");
+    expect(await gate).toBe(manager.getRuns(id)[0].outcome);
 
     await settleRun(deferred);
     expect(record.lifecycle.phase).toBe("settled");

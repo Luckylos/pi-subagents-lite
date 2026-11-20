@@ -28,7 +28,7 @@ import {
 } from "../../spawn/spawn-resolution.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, buildSelectListTheme, createSearchableSelect } from "./helpers.ts";
 import { plainText } from "../sanitize.ts";
-import { DEFAULT_GRACE_TURNS } from "../../config/config-io.ts";
+import { DEFAULT_GRACE_TURNS } from "../../config/agent-settings.ts";
 import { prepareSpawnIntent } from "../../spawn/spawn-preparation.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createNumericSubmenu, createInputSubmenu } from "./submenus/numeric-input.ts";
@@ -130,13 +130,12 @@ async function isInGitRepo(owner: ExtensionOwner, cwd: string): Promise<boolean>
 function createThinkingLevelSubmenu(
   resolveModel: () => Model<any> | undefined,
   theme: Theme,
-  onThinkingChoice: (choice: string) => void,
 ): (_currentValue: string, done: (v?: string) => void) => any {
   return (_currentValue, done) => {
     const model = resolveModel();
     if (!model) {
       done();
-      return {} as any;
+      return undefined;
     }
 
     const supported = getSupportedThinkingLevels(model);
@@ -151,10 +150,7 @@ function createThinkingLevelSubmenu(
     items.push(...THINKING_CHOICE_TAIL.map((choice) => ({ value: choice, label: choice })));
 
     const list = new SelectList(items, 10, buildSelectListTheme(theme));
-    list.onSelect = (item) => {
-      onThinkingChoice(item.value);
-      done(item.value);
-    };
+    list.onSelect = (item) => done(item.value);
     list.onCancel = () => done();
 
     return list;
@@ -171,12 +167,12 @@ export async function showSpawnAgentMenu(
   owner: ExtensionOwner,
   ctx: ExtensionCommandContext,
   modelOptions: string[],
+  menuCoordinator = getCoordinator(owner),
 ): Promise<void> {
   // Bind the draft before the first UI or Git probe can outlive its parent.
-  const menuGeneration = owner.generation;
-  const menuSession = getSessionCtx(owner);
-  const menuCoordinator = getCoordinator(owner);
-  const isCurrentMenu = () => owner.generation === menuGeneration && getCoordinator(owner) === menuCoordinator;
+  if (!menuCoordinator?.isCurrentParent(ctx)) return;
+  const isCurrentMenu = () => menuCoordinator.isCurrentParent(ctx);
+  const parentCwd = getSessionCtx(owner)?.cwd ?? ctx.cwd;
 
   // ---- Step 1: Type selection ----
   let selectedType: string;
@@ -234,7 +230,6 @@ export async function showSpawnAgentMenu(
   }
 
   // ---- Step 3: Options sub-menu with spawn ----
-  const parentCwd = menuSession?.cwd ?? "";
   const inGitRepo = parentCwd ? await isInGitRepo(owner, parentCwd) : false;
   if (!isCurrentMenu()) return;
   const worktrees = inGitRepo ? ((await listWorktrees(owner, parentCwd)) ?? []) : [];
@@ -243,7 +238,10 @@ export async function showSpawnAgentMenu(
   const store = getStore(owner);
   let selection: SpawnSelection | undefined;
   try {
-    selection = await resolveSpawnSelection(owner, ctx, selectedType, undefined, { preview: true });
+    selection = await resolveSpawnSelection(owner, ctx, selectedType, undefined, {
+      preview: true,
+      coordinator: menuCoordinator,
+    });
   } catch (err) {
     if (isCurrentMenu()) ctx.ui.notify(err instanceof Error ? err.message : String(err), "error");
     return;
@@ -271,9 +269,6 @@ export async function showSpawnAgentMenu(
     background: true,
     worktreeLabel: "Inherits parent cwd",
   };
-  const setThinkingChoice = (choice: string) => {
-    draft.thinkingChoice = parseThinkingChoice(choice);
-  };
   const preview = () => {
     if (!selection) return undefined;
     try {
@@ -294,33 +289,48 @@ export async function showSpawnAgentMenu(
     return formatDisplayedThinking(choices.displayThinking());
   };
 
-  let optionsClosed = false;
-  let launchPending = false;
-  let previewSequence = 0;
-  const updateTargetPreview = async (path: string | undefined) => {
-    const sequence = ++previewSequence;
-    selection = undefined;
-    try {
-      const updated = await resolveSpawnSelection(owner, ctx, selectedType, path, { preview: true });
-      if (sequence !== previewSequence || !isCurrentMenu()) return;
-      selection = updated;
-    } catch {
-      // Leave the preview empty when a target disappeared or fails validation.
-      if (sequence !== previewSequence || !isCurrentMenu()) return;
-    }
-    rebuild?.(buildItems());
-  };
-
-  const buildItems = (): SettingItem[] => {
-    const fmtNum = (v: number | undefined) => (v != null ? String(v) : "(not set)");
+  const previewValues = () => {
     const choices = preview();
     const { modelChoice } = draft;
-    const displayModel =
+    const model =
       modelChoice.kind === "explicit"
         ? modelChoice.name
         : modelChoice.kind === "parent"
           ? "(inherits parent)"
           : (choices?.modelKey ?? "(inherits parent)");
+    return { model, thinking: thinkingDisplay(choices) };
+  };
+
+  let optionsClosed = false;
+  let launchPending = false;
+  let previewRequest: AbortController | undefined;
+  let refreshPreview: () => void;
+  const updateTargetPreview = async (path: string | undefined) => {
+    if (optionsClosed || !isCurrentMenu()) return;
+    previewRequest?.abort();
+    const request = new AbortController();
+    previewRequest = request;
+    selection = undefined;
+    refreshPreview();
+    let updated: SpawnSelection;
+    try {
+      updated = await resolveSpawnSelection(owner, ctx, selectedType, path, {
+        preview: true,
+        coordinator: menuCoordinator,
+        signal: request.signal,
+      });
+    } catch {
+      // Leave the preview empty when the current target fails validation.
+      return;
+    }
+    if (request.signal.aborted || !isCurrentMenu()) return;
+    selection = updated;
+    refreshPreview();
+  };
+
+  const buildItems = (theme: Theme): SettingItem[] => {
+    const fmtNum = (v: number | undefined) => (v != null ? String(v) : "(not set)");
+    const values = previewValues();
     return [
       {
         id: "spawn",
@@ -328,7 +338,7 @@ export async function showSpawnAgentMenu(
         currentValue: "",
         description: "Spawn the agent with current settings",
         submenu: (_v, done) => {
-          if (launchPending || optionsClosed) {
+          if (launchPending || optionsClosed || !isCurrentMenu()) {
             done();
             return undefined as any;
           }
@@ -348,24 +358,23 @@ export async function showSpawnAgentMenu(
           const validateModelBeforeClosing = modelChoice.kind === "explicit";
 
           const doSpawn = async () => {
-            if (!menuCoordinator || !menuSession) {
-              ctx.ui.notify("Subagents session has not started", "error");
-              return;
-            }
-            if (!isCurrentMenu()) {
-              ctx.ui.notify("Subagents session changed before spawn", "warning");
-              return;
-            }
+            if (!isCurrentMenu()) return;
             try {
-              const spawn = await resolveSpawn(owner, ctx, selectedType, worktreePath, modelChoice, thinkingChoice);
-              if (!isCurrentMenu()) {
-                ctx.ui.notify("Subagents session changed during agent discovery", "warning");
-                return;
-              }
+              const spawn = await resolveSpawn(
+                owner,
+                ctx,
+                selectedType,
+                worktreePath,
+                modelChoice,
+                thinkingChoice,
+                menuCoordinator,
+              );
+              if (!isCurrentMenu()) return;
               if (validateModelBeforeClosing) {
                 if (optionsClosed) return;
                 doneRef();
               }
+              if (!isCurrentMenu()) return;
               const widget = getWidget(owner);
               if (widget) {
                 widget.setUICtx(ctx.ui as unknown as import("../agent-widget.ts").UICtx);
@@ -389,10 +398,7 @@ export async function showSpawnAgentMenu(
 
               if (!background && isCurrentMenu()) getWidget(owner)?.update();
             } catch (err) {
-              if (!isCurrentMenu()) {
-                ctx.ui.notify("Subagents session changed during agent discovery", "warning");
-                return;
-              }
+              if (!isCurrentMenu()) return;
               if (err instanceof SpawnModelUnavailableError) {
                 ctx.ui.notify(err.message, "error");
                 return;
@@ -420,7 +426,7 @@ export async function showSpawnAgentMenu(
       {
         id: "model",
         label: "Model",
-        currentValue: displayModel,
+        currentValue: values.model,
         description: "Override the default model for this agent",
         submenu: createModelSelectSubmenu(owner, {
           modelOptions,
@@ -430,7 +436,7 @@ export async function showSpawnAgentMenu(
           onSet: (_target, model) => {
             draft.modelChoice =
               model === "(inherits parent)" || model === null ? { kind: "parent" } : { kind: "explicit", name: model };
-            rebuild?.(buildItems());
+            refreshPreview();
           },
         }),
       },
@@ -478,9 +484,9 @@ export async function showSpawnAgentMenu(
       {
         id: "thinkingLevel",
         label: "Thinking level",
-        currentValue: thinkingDisplay(choices),
+        currentValue: values.thinking,
         description: "Set the reasoning effort level",
-        submenu: createThinkingLevelSubmenu(() => preview()?.model, theme, setThinkingChoice),
+        submenu: createThinkingLevelSubmenu(() => preview()?.model, theme),
       },
       {
         id: "maxTokens",
@@ -539,22 +545,21 @@ export async function showSpawnAgentMenu(
     ];
   };
 
-  let theme: Theme;
   let doneRef: () => void;
-  let rebuild: ((items: SettingItem[]) => void) | undefined;
 
-  await ctx.ui.custom((_tui, t, _kb, done) => {
-    theme = t;
+  await ctx.ui.custom((tui, theme, _kb, done) => {
     doneRef = () => {
       optionsClosed = true;
+      previewRequest?.abort();
       done(undefined);
     };
 
-    const items = buildItems();
+    const items = buildItems(theme);
     const onChange = (id: string, newValue: string) => {
       switch (id) {
         case "thinkingLevel":
-          setThinkingChoice(newValue);
+          draft.thinkingChoice = parseThinkingChoice(newValue);
+          refreshPreview();
           break;
         case "background":
           draft.background = newValue === "ON";
@@ -566,17 +571,19 @@ export async function showSpawnAgentMenu(
           draft.prompt = newValue;
           break;
       }
-      // Rebuild items so displayed values stay in sync after any change
-      rebuild?.(buildItems());
     };
     const settingsList = new SettingsList(items, 15, buildSettingsListTheme(theme), onChange, doneRef);
+    refreshPreview = () => {
+      // Keep the SettingsList and its active editor intact while updating derived rows.
+      const values = previewValues();
+      settingsList.updateValue("model", values.model);
+      settingsList.updateValue("thinkingLevel", values.thinking);
+      tui.requestRender();
+    };
     return new SettingsListWrapper(settingsList, {
       title: "Spawn Options",
       theme,
-      onCancel: () => doneRef(),
-      onRebuild: (r) => {
-        rebuild = r;
-      },
+      onCancel: doneRef,
     });
   });
 }

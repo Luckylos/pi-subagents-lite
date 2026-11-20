@@ -22,9 +22,8 @@ import {
   DEFAULT_GRACE_TURNS,
   DEFAULT_WATCHDOG_TIMEOUT_MINUTES,
   canonicalAgentStatusLimit,
-} from "../../config/config-io.ts";
-import { VALID_THINKING_LEVELS } from "../../utils.ts";
-import { PI_DEFAULT_CHOICE, THINKING_CHOICE_TAIL } from "../../models/thinking-resolution.ts";
+} from "../../config/agent-settings.ts";
+import { CONFIGURED_THINKING_CHOICES, PI_DEFAULT_CHOICE } from "../../models/thinking-resolution.ts";
 import { getStore } from "../../shell.ts";
 
 export async function showSpawnOptionsMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
@@ -96,7 +95,7 @@ export async function showSpawnOptionsMenu(owner: ExtensionOwner, ctx: Extension
       currentValue: `${store.agent.defaultThinking ?? PI_DEFAULT_CHOICE}${projectTag("defaultThinking")}`,
 
       submenu: persistedTargetSubmenu(theme, (target, pickDone) => {
-        const choiceItems = [...VALID_THINKING_LEVELS, ...THINKING_CHOICE_TAIL].map((v) => ({
+        const choiceItems = [...CONFIGURED_THINKING_CHOICES, PI_DEFAULT_CHOICE].map((v) => ({
           value: v,
           label: v,
         }));

@@ -8,6 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mockModules, resetConfig } from "../../menu-mock-setup.js";
+import assert from "node:assert/strict";
 import { createMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
 import { asAgentSession, selectListView } from "../../pi-boundaries.js";
 import type {
@@ -27,7 +28,7 @@ interface SelectListCapture {
   items: SelectItem[];
   maxVisible: number;
   selectedIndex: number;
-  onSelect?: (item: SelectItem) => void;
+  onSelect?: (item: SelectItem) => void | Promise<void>;
   onCancel?: () => void;
 }
 
@@ -55,7 +56,10 @@ vi.mock("@earendil-works/pi-tui", () => ({
     render() {
       return [];
     }
-    handleInput() {}
+    handleInput(data: string) {
+      if (data === "\r") this.onSelect?.(this.items[this.selectedIndex]);
+      else if (data === "\x1b") this.onCancel?.();
+    }
   },
   Input: class MockInput {
     value = "";
@@ -80,6 +84,7 @@ vi.mock("@earendil-works/pi-tui", () => ({
       pageUp: ["\x1b[5~"],
       pageDown: ["\x1b[6~"],
       home: ["\x1b[H"],
+      enter: ["\r"],
       escape: ["\x1b"],
       q: ["q"],
       s: ["s"],
@@ -92,6 +97,7 @@ vi.mock("@earendil-works/pi-tui", () => ({
 
 // Import AFTER mock setup
 import { showRunningAgentsMenu, buildAgentActionsList } from "../../../src/ui/menu/menu-running-agents.js";
+import { ConversationViewer } from "../../../src/ui/conversation-viewer.js";
 import { getCoordinator } from "../../../src/shell.js";
 
 /** Nested-partial overrides the record factory merges over its base record. */
@@ -104,8 +110,7 @@ interface RecordOverrides {
   error?: string;
 }
 
-/** A session handle the menu only checks for truthiness; the real
- * ConversationViewer (never constructed here) would consume it. */
+/** A minimal session handle for menu action availability tests. */
 function makeMockSession(messages: { role: string; content: string }[]) {
   return asAgentSession({ messages, subscribe: vi.fn(() => () => {}) });
 }
@@ -257,6 +262,111 @@ describe("showRunningAgentsMenu", () => {
     await showRunningAgentsMenu(owner, ctx);
     expect(selectListCalls[0].items[0].label).toContain("general-purpose");
   });
+
+  it("keeps the action list available after opening the conversation fails", async () => {
+    const record = makeRecord({ execution: { session: asAgentSession({ messages: [] }) } });
+    mockModules.mockManager.listAgents.mockReturnValue([record]);
+    registerTargets(record);
+
+    let menu: Component | undefined;
+    const close = vi.fn();
+    const custom = vi.fn((factory: ComponentFactory, options?: { overlay?: boolean }) => {
+      if (options?.overlay) return Promise.resolve();
+      const tui = { terminal: { rows: 40 }, requestRender: vi.fn() };
+      menu = asComponent(factory(tui, noopTheme, undefined, close));
+      return Promise.resolve();
+    });
+    const ctx = createMockCtx([], [], [], { ui: { custom } });
+    await showRunningAgentsMenu(owner, ctx);
+    assert(menu?.handleInput);
+    menu.handleInput("\r");
+    const actions = selectListCalls.at(-1);
+    const view = actions?.items[0];
+    assert(actions?.onSelect && view);
+
+    custom.mockRejectedValueOnce(new Error("terminal mount failed"));
+    await actions.onSelect(view);
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Failed to open agent viewer: Error: terminal mount failed", "error");
+    expect(close).not.toHaveBeenCalled();
+
+    menu.handleInput("\r");
+    expect(custom).toHaveBeenCalledTimes(3);
+    expect(custom).toHaveBeenNthCalledWith(3, expect.any(Function), { overlay: true });
+  });
+
+  it.each(["Continue", "Stop"] as const)(
+    "opens an overlay from Running agents, routes %s and returns to the actions list on close",
+    async (action) => {
+      const running = action === "Stop";
+      const unsubscribe = vi.fn();
+      const session = asAgentSession({
+        messages: [],
+        state: {},
+        model: { name: "Display model", id: "model-id" },
+        subscribe: vi.fn(() => unsubscribe),
+      });
+      const record = makeRecord({
+        lifecycle: running ? { status: "running", phase: "running" } : { status: "completed", phase: "settled" },
+        execution: { session },
+      });
+      const manager = mockModules.mockManager;
+      manager.listAgents.mockReturnValue([record]);
+      registerTargets(record);
+      manager.abort.mockReturnValue(false);
+      manager.submitMessage.mockResolvedValue({ accepted: false, reason: "capacity", message: "Full." });
+      mockModules.mockConfig.agent.modelDisplayStyle = "name";
+
+      let menu: Component | undefined;
+      let viewer: ConversationViewer | undefined;
+      const menuClosed = vi.fn();
+      const custom = vi.fn((factory: ComponentFactory, options?: { overlay?: boolean }) => {
+        const tui = { terminal: { rows: 40 }, requestRender: vi.fn() };
+        if (!options?.overlay) {
+          menu = asComponent(factory(tui, noopTheme, undefined, menuClosed));
+          return Promise.resolve();
+        }
+        return new Promise<void>((resolve) => {
+          const view = factory(tui, noopTheme, undefined, () => {
+            viewer?.dispose();
+            resolve();
+          });
+          if (!(view instanceof ConversationViewer)) throw new Error("Expected a conversation viewer");
+          viewer = view;
+        });
+      });
+      const ctx = createMockCtx([], [], [], { ui: { custom } });
+      await showRunningAgentsMenu(owner, ctx);
+      assert(menu?.handleInput);
+      menu.handleInput("\r");
+      menu.handleInput("\r");
+      expect(custom).toHaveBeenCalledTimes(2);
+      expect(custom).toHaveBeenNthCalledWith(2, expect.any(Function), { overlay: true });
+      assert(viewer);
+      expect(viewer.render(120).join("\n")).toContain("Display model");
+
+      if (running) {
+        viewer.handleInput("s");
+        expect(manager.abort).not.toHaveBeenCalled();
+        viewer.handleInput("s");
+        expect(manager.abort).toHaveBeenCalledExactlyOnceWith(record.id, "user");
+        expect(viewer.render(120).join("\n")).toContain("The manager refused the request.");
+      } else {
+        for (const key of ["\r", " ", "a", " ", "\r"]) viewer.handleInput(key);
+        expect(manager.submitMessage).toHaveBeenCalledExactlyOnceWith(record.id, " a ");
+        await Promise.resolve();
+        expect(viewer.render(120).join("\n")).toContain("Continue not accepted: Full.");
+        viewer.handleInput("\x1b");
+      }
+      viewer.handleInput("q");
+      expect(unsubscribe).toHaveBeenCalledOnce();
+      await custom.mock.results[1].value;
+
+      menu.handleInput("\x1b");
+      expect(menuClosed).not.toHaveBeenCalled();
+      menu.handleInput("\x1b");
+      expect(menuClosed).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe("buildAgentActionsList — actions submenu", () => {
@@ -313,7 +423,7 @@ describe("buildAgentActionsList — actions submenu", () => {
       { value: second.id, label: "Run 2 · error · 12s" },
       { value: first.id, label: "Run 1 · completed · 40s" },
     ]);
-    history.onSelect!(history.items[0]);
+    await history.onSelect!(history.items[0]);
     expect(selectListCalls.at(-1)?.items).toEqual([
       { value: "view-result", label: "View result" },
       { value: "view-error", label: "View error" },
