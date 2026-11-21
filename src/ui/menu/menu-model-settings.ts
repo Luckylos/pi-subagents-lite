@@ -25,7 +25,7 @@ import { agentBulletPrefix } from "../format.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createClearAllSubmenu, type AvailableLevels, type TargetChoice } from "./submenus/target-select.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
-import { getSessionCtx, getStore } from "../../shell.ts";
+import { getStore } from "../../shell.ts";
 import {
   buildModelGroups,
   describeModelSetting,
@@ -35,7 +35,7 @@ import {
   type ModelSettingsLayers,
 } from "../../models/model-groups.ts";
 import { formatDisplayedThinking } from "../../models/thinking-resolution.ts";
-import { findModelInRegistry } from "../../utils.ts";
+import { resolveConfiguredModel } from "../../models/model-availability.ts";
 import { getPiDefaultThinkingLevel, getPiModelThinkingLevels } from "../../pi-settings.ts";
 import type { SessionModelOverrides } from "../../models/model-precedence.ts";
 
@@ -47,11 +47,16 @@ export async function showModelSettingsMenu(
   const buildItems = (store: ReturnType<typeof getStore>, theme: Theme): SettingItem[] => {
     const items: SettingItem[] = [];
     const projectOffered = store.projectTargetOffered;
+    const parentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "";
+    const autoModelLabel = "Pi selects on spawn";
+    const resolveModel = (configuredId: string | undefined) => resolveConfiguredModel(configuredId, ctx);
+    const fallbackNote = () =>
+      parentModelId
+        ? `Unavailable. Spawn uses parent model ${plainText(parentModelId)}.`
+        : "Unavailable. No parent model is set. Pi selects the model on spawn.";
 
     const clearOverride = (key: string, target: TargetChoice) => {
       store.mutate.agent.clearModelOverride(key, target);
-      const parent = getSessionCtx(owner)?.model ?? ctx.model;
-      const parentModelId = parent ? `${parent.provider}/${parent.id}` : undefined;
       const { model, layer } = describeModelSetting(
         {
           ...layers,
@@ -62,8 +67,12 @@ export async function showModelSettingsMenu(
         parentModelId,
         key === "default" ? undefined : owner.registry.getAgentConfig(key),
       );
-      const effective =
-        layer === "parent" && !parent ? "Inherits parent model" : `Effective model ${plainText(model)} (${layer})`;
+      const { unavailable } = resolveModel(layer === "parent" ? undefined : model);
+      const effective = unavailable
+        ? `Configured model ${plainText(model)} (${layer}). ${fallbackNote()}`
+        : model
+          ? `Effective model ${plainText(model)} (${layer})`
+          : "Pi selects the model on spawn.";
       ctx.ui.notify(`${key} override cleared (${target}). ${effective}`, "info");
     };
 
@@ -97,13 +106,15 @@ export async function showModelSettingsMenu(
       hasGlobalModelKey: (key) => store.hasGlobalModelKey(key),
       hasProjectModelKey: (key) => store.hasProjectModelKey(key),
     };
-    const defaultModel = describeModelSetting(layers, "default");
+    const defaultModel = describeModelSetting(layers, "default", parentModelId ? "(inherits parent)" : "");
 
     items.push({
       id: "defaultModel",
       label: "Global default model",
-      currentValue: [defaultModel.model, defaultModel.tag].filter(Boolean).join(" "),
-      description: "Model used when no session default, per-type override, or frontmatter model applies.",
+      currentValue: [defaultModel.model || autoModelLabel, defaultModel.tag].filter(Boolean).join(" "),
+      description: resolveModel(defaultModel.layer === "parent" ? undefined : defaultModel.model).unavailable
+        ? fallbackNote()
+        : "Model used when no session default, per-type override, or frontmatter model applies.",
       submenu: modelSubmenuFor("default", defaultModel.model, defaultModel.clearable),
     });
 
@@ -112,10 +123,6 @@ export async function showModelSettingsMenu(
     // default), alphabetical by model id. Rows show the type name, the
     // spawn-effective thinking level with its winning thinking source in
     // brackets, and the winning model layer's provenance tag.
-    const session = getSessionCtx(owner);
-    const parentModel = session?.model ?? ctx.model;
-    const parentModelId = parentModel ? `${parentModel.provider}/${parentModel.id}` : "(inherits parent)";
-    const registry = session?.modelRegistry ?? ctx.modelRegistry;
     const types = owner.registry.getAllTypes();
 
     const agentConfigs: Record<string, AgentTypeModelConfig | undefined> = {};
@@ -125,18 +132,17 @@ export async function showModelSettingsMenu(
       agentConfigs[type] = owner.registry.getAgentConfig(type);
     }
 
-    // One settings read per build feeds both thinking displays: the global
-    // default and the per-model map (the prediction of what a spawn would
-    // run with — the session is the source of truth once it exists).
-    const modelThinkingLevels = getPiModelThinkingLevels(ctx.cwd);
+    // Use the same settings scope as Spawn without a worktree target.
+    const scope = { projectTrusted: ctx.isProjectTrusted?.() ?? true };
+    const modelThinkingLevels = getPiModelThinkingLevels(ctx.cwd, scope);
     const groups = buildModelGroups({
       types,
       agentConfigs,
       ...layers,
       parentModelId,
-      piDefaultThinking: getPiDefaultThinkingLevel(ctx.cwd),
+      piDefaultThinking: getPiDefaultThinkingLevel(ctx.cwd, scope),
       piModelThinking: (modelKey) => modelThinkingLevels[modelKey],
-      findModel: (modelId) => findModelInRegistry(modelId, registry, undefined),
+      resolveModel,
       parentLevel: ctx.thinkingLevel,
     });
 
@@ -145,16 +151,18 @@ export async function showModelSettingsMenu(
       // separator are the same row; the long rule divides after the last group.
       items.push({ id: SEPARATOR_ID, label: " ", currentValue: "" });
       // Section title: bare model id in bold accent, matching the menu title
-      items.push(headerItem(theme, group.modelId));
+      items.push(headerItem(theme, group.modelId || autoModelLabel));
       for (const row of group.rows) {
-        const thinkingLabel = formatDisplayedThinking({ level: row.thinking, source: row.source });
+        const thinkingLabel = formatDisplayedThinking(row.thinking);
         items.push({
           id: `type:${row.type}`,
           label: `${agentBulletPrefix(owner, row.type)}${plainText(row.type)}`,
           // SettingsList truncates the value with no ellipsis, so the row carries no
           // reserved padding: an empty tag contributes no space.
           currentValue: [thinkingLabel, row.tag].filter(Boolean).join(" "),
-          description: `Model for the ${row.type} agent type. Select to set or clear its override.`,
+          description: row.unavailable
+            ? fallbackNote()
+            : `Model for the ${row.type} agent type. Select to set or clear its override.`,
           submenu: modelSubmenuFor(row.type, group.modelId, modelSettingLevels(layers, row.type)),
         });
       }

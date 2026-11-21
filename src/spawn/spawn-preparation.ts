@@ -1,9 +1,10 @@
 import type { AgentInvocation } from "../agents/types.ts";
 import type { SpawnConfig } from "../types.ts";
+import { normalizeMaxTurns, resolveSpawnLimits } from "../agents/run-limits.ts";
 
 /**
- * Input for SpawnCoordinator.spawn(). Callers resolve their own source-specific
- * values, then this module builds the common intent and display metadata.
+ * Input for SpawnCoordinator.spawn(), with caller-specific choices and limits
+ * resolved after target and agent type selection.
  */
 export interface SpawnIntent extends SpawnConfig {
   type: string;
@@ -19,6 +20,7 @@ export interface SpawnIntent extends SpawnConfig {
 }
 
 export interface SpawnPreparationInput extends Omit<SpawnIntent, "invocation"> {
+  defaultMaxTurns?: number;
   /**
    * Menu invocations historically record the selected run mode; tool and
    * replay invocations omit it. Keep that representation difference explicit.
@@ -26,14 +28,15 @@ export interface SpawnPreparationInput extends Omit<SpawnIntent, "invocation"> {
   includeRunModeInInvocation?: boolean;
 }
 
-/** Build one normalized spawn intent from already-resolved caller values. */
+/** Build one spawn intent and its display metadata after target and type selection. */
 export function prepareSpawnIntent(input: SpawnPreparationInput): SpawnIntent {
-  const { includeRunModeInInvocation = false, model, maxTurns, thinkingLevel, runInBackground, ...rest } = input;
+  const { includeRunModeInInvocation = false, defaultMaxTurns, model, thinkingLevel, runInBackground, ...rest } = input;
+  const limits = resolveSpawnLimits(rest, rest.agentConfig, defaultMaxTurns);
 
   const invocation: AgentInvocation = {
     modelName: model?.id,
     thinkingLevel,
-    maxTurns,
+    maxTurns: normalizeMaxTurns(limits.maxTurns),
   };
   if (includeRunModeInInvocation) {
     invocation.runInBackground = runInBackground;
@@ -41,8 +44,8 @@ export function prepareSpawnIntent(input: SpawnPreparationInput): SpawnIntent {
 
   return {
     ...rest,
+    ...limits,
     model,
-    maxTurns,
     thinkingLevel,
     runInBackground,
     invocation,

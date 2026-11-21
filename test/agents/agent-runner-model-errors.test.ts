@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vite-plus/test";
-import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { assistantMessage, userMessage } from "./session-messages.js";
 import { fakeCtx, fakePi as makeFakePi } from "../fixtures.js";
 import { mockModules, resetMocks, createMockSession } from "./agent-runner-mocks.js";
@@ -25,10 +25,10 @@ describe("runAgent — model error detection", () => {
     const messages: AgentSession["messages"] = [];
     const session = sessionWithMessages(messages);
     session.prompt.mockImplementation(async () => {
-      messages.push(
-        userMessage("task"),
-        assistantMessage({ stopReason: "error", errorMessage: "model failed to load into memory" }),
-      );
+      const message = assistantMessage({ stopReason: "error", errorMessage: "model failed to load into memory" });
+      messages.push(userMessage("task"), message);
+      const event: AgentSessionEvent = { type: "message_end", message };
+      for (const listener of session._getListeners()) listener(event);
     });
 
     const result = await runAgent(owner, fakeCtx(), "test-agent", "do something", { pi: fakePi });

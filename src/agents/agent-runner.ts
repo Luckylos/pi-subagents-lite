@@ -11,6 +11,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import {
   type AgentSession,
   createAgentSession,
+  type CreateAgentSessionResult,
   DefaultResourceLoader,
   type ExtensionAPI,
   getAgentDir,
@@ -34,6 +35,7 @@ import { announceChildSessionBound, announceChildSessionCreated } from "./child-
 import { CUSTOM_PROMPT_PATH } from "../config/config-io.ts";
 import { patchRetryClassifier } from "./stream-retry.ts";
 import { runSessionPrompt, type SessionPromptOptions, type SessionRunResult } from "./session-run.ts";
+import { guardSteeringCommit } from "./sdk-run-steering.ts";
 
 export { subscribeToSessionEvents, type SessionPromptOptions } from "./session-run.ts";
 import { applyOutputLimit, resolveOutputLimit } from "./max-tokens-field.ts";
@@ -107,6 +109,8 @@ interface RunOptions extends RunTunables, SessionPromptOptions {
   /** Snapshot of the definition chosen by Spawn, including when the run was queued. */
   agentConfig?: AgentConfig;
   deferredDefaultThinking?: RunTunables["thinkingLevel"];
+  /** Admit the model selected by extension startup. Later prompt-time model changes are outside this gate. */
+  onStartupModel?: (model: AgentSession["model"]) => void | Promise<void>;
   /**
    * Trust state for the target project. False = ignore the target's project
    * resources (untrusted cross-repo target). Absent/true = load them.
@@ -299,9 +303,9 @@ function buildExtToolMap(extensions: Array<{ path: string; tools: Map<string, un
   for (const ext of extensions) {
     const name = extensionPackageName(ext.path) ?? extractExtensionName(ext.path);
     const tools = [...ext.tools.keys()];
-    if (tools.length > 0) {
-      map.set(name, [...new Set([...(map.get(name) ?? []), ...tools])]);
-    }
+    // Keep loaded aliases even when their factory registered no tools. The
+    // pre-bind snapshot is also the expansion used for Pi's registry gate.
+    map.set(name, [...new Set([...(map.get(name) ?? []), ...tools])]);
   }
   return map;
 }
@@ -392,6 +396,7 @@ function createResourceLoader(
     extensionsOverride: buildExtOverride(extensions, agentConfig?.excludeExtensions, notify),
   };
   const loader = new DefaultResourceLoader(loaderOpts);
+  guardSteeringCommit(loader);
 
   // Mark only actual SDK resource loading. Parent announcements, bind callbacks
   // and the child prompt stay outside this async context.
@@ -432,7 +437,7 @@ interface SessionSetup {
   settingsManager: SettingsManager;
 }
 
-async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<AgentSession> {
+async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<CreateAgentSessionResult> {
   const { ctx, options, agentConfig, cwd, loader, extToolMap, settingsManager } = setup;
   const model = options.agentConfig
     ? options.model
@@ -488,7 +493,8 @@ async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<
   // both google APIs nest it at config.maxOutputTokens; mistral uses
   // top-level maxTokens; pi-messages nests it at options.maxTokens.
   const maxTokens = options.maxTokens ?? agentConfig?.maxTokens;
-  if (maxTokens != null && maxTokens > 0 && model) {
+  // The SDK may select the initial model when none was passed at spawn.
+  if (maxTokens != null && maxTokens > 0) {
     const origOnPayload = session.agent.onPayload;
     session.agent.onPayload = async (payload, m) => {
       const applied = origOnPayload ? ((await origOnPayload(payload, m)) ?? payload) : payload;
@@ -504,7 +510,7 @@ async function initSession(owner: ExtensionOwner, setup: SessionSetup): Promise<
     };
   }
 
-  return session;
+  return result;
 }
 
 async function createAndConfigureSession(
@@ -512,11 +518,12 @@ async function createAndConfigureSession(
   setup: SessionSetup,
   notify: (msg: string) => void,
 ): Promise<AgentSession> {
-  const session = await initSession(owner, setup);
+  const { session, modelFallbackMessage } = await initSession(owner, setup);
   const { agentConfig, ctx, options, type, extToolMap } = setup;
   const baseName = agentConfig?.name ?? type;
-  session.setSessionName(options.agentId ? `${baseName}#${options.agentId.slice(0, SHORT_ID_LENGTH)}` : baseName);
   try {
+    if (options.signal?.aborted) throw new Error(`agent "${type}": aborted during setup (before session binding)`);
+    session.setSessionName(options.agentId ? `${baseName}#${options.agentId.slice(0, SHORT_ID_LENGTH)}` : baseName);
     announceChildSessionCreated(session, options.pi.events, ctx.sessionManager.getSessionId());
     await session.bindExtensions({
       onError: (err) =>
@@ -526,21 +533,33 @@ async function createAndConfigureSession(
         }),
     });
 
+    const tools = agentConfig?.tools;
     const filteredTools = resolveVisibleTools({
       activeTools: session.getActiveToolNames(),
-      tools: agentConfig?.tools,
+      registeredToolNames: Array.isArray(tools) ? session.getAllTools().map(({ name }) => name) : undefined,
+      tools,
       excludeTools: agentConfig?.excludeTools,
       extToolMap,
       notify,
     });
     if (filteredTools) session.setActiveToolsByName(filteredTools);
+    announceChildSessionBound(session);
+
+    if (!options.signal?.aborted && options.onStartupModel) {
+      // In a fresh session the fallback warning means Pi selected no model,
+      // although session.model can expose an agent-core placeholder. A
+      // successful startup setModel records the selection in the transcript.
+      const selectedModel =
+        modelFallbackMessage && !session.sessionManager.buildSessionContext().model ? undefined : session.model;
+      const admission = options.onStartupModel(selectedModel);
+      if (admission) await admission;
+    }
   } catch (err) {
     // Setup failed with a live session: terminate it through the shared
     // teardown so built-in extension resources never outlive the failure.
     await disposeChildSession(session);
     throw err;
   }
-  announceChildSessionBound(session);
   return session;
 }
 
@@ -605,9 +624,10 @@ function flushWarnings(ctx: ExtensionContext, warnings: string[]): void {
  * The full child-session setup, prompt-free: settings, tool resolution, the
  * resource loader with pi's built-in factories, session creation, extension
  * binding, and tool visibility. The child loader marks only its own SDK loading
- * calls, so parent announcements and bind callbacks remain unmarked. The contract
- * suite drives this directly against the real SDK; runAgentImpl adds only the
- * prompt and warning flush. Returns the buffered warnings (flush after the
+ * calls, so parent announcements and bind callbacks remain unmarked. Capacity
+ * admission runs after binding and filtering, before handing out the session.
+ * The contract suite drives this directly against the real SDK. runAgentImpl adds
+ * only the prompt and warning flush. Returns the buffered warnings (flush after the
  * run's tool_result lands) and the agent config (for maxTurns).
  */
 export async function createChildSession(

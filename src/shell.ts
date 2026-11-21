@@ -15,6 +15,7 @@ export interface ExtensionOwner {
   manager: AgentManager | null;
   widget: AgentWidget | null;
   coordinator: SpawnCoordinator | null;
+  restartInProgress?: SpawnCoordinator;
   generation: number;
   unregisterTerminalInput: (() => void) | null;
 }

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { PromptState } from "./session-run.ts";
+import { RunSteerClosed, steerForRun } from "./sdk-run-steering.ts";
 import type {
   AgentSubmissionResult,
   RunNotificationBinding,
@@ -21,14 +23,16 @@ export class AgentRun {
   readonly controller = new AbortController();
   readonly acceptedAt = Date.now();
   readonly liveView = { activeTools: new Map<string, string>(), responseText: "" };
+  turnCount = 0;
   private currentPhase: SubagentRunPhase;
   startedAt?: number;
   private stopRequestedAt?: number;
   private terminalResult?: SubagentRunResult;
   private settlementPublished = false;
-  private promptState?: "started" | "finished";
+  private promptState?: PromptState;
   private executionFinished = false;
   private queueCleanupFailed = false;
+  private readonly steerLifetime = new AbortController();
   private pendingSteers?: string[];
   private callbacks = new Set<Promise<void>>();
   readonly parentWait: Promise<SubagentParentReport>;
@@ -61,7 +65,11 @@ export class AgentRun {
 
   start(): void {
     this.currentPhase = "running";
-    this.startedAt = Date.now();
+    this.startedAt ??= Date.now();
+  }
+
+  waitForCapacity(): void {
+    this.currentPhase = "queued";
   }
 
   requestStop(): boolean {
@@ -69,6 +77,7 @@ export class AgentRun {
     this.stopRequestedAt = Date.now();
     this.currentPhase = "stopping";
     this.pendingSteers = undefined;
+    this.steerLifetime.abort();
     return true;
   }
 
@@ -97,13 +106,19 @@ export class AgentRun {
     this.liveView.responseText = fullText;
   }
 
-  recordPromptState(state: "started" | "finished"): void {
+  recordPromptState(state: PromptState): void {
     this.promptState = state;
+    if (state !== "started") this.steerLifetime.abort();
+  }
+
+  get promptSettled(): boolean {
+    return this.promptState === "settled" || this.promptState === "finished";
   }
 
   finishExecution(): void {
     this.executionFinished = true;
     this.currentPhase = this.stopRequestedAt !== undefined ? "stopping" : "settling";
+    this.steerLifetime.abort();
   }
 
   admitMessage(
@@ -146,27 +161,31 @@ export class AgentRun {
   private async steer(session: AgentSession, message: string): Promise<AgentSubmissionResult> {
     if (this.isPromptClosed(session.isStreaming)) return { accepted: false, reason: "settling", message: RUN_SETTLING };
     try {
-      await this.trackCallback(session.steer(message));
-      // Input hooks can outlive both the prompt and the stop request.
-      if (this.controller.signal.aborted || this.isPromptClosed(session.isStreaming)) {
-        return {
-          accepted: false,
-          reason: this.controller.signal.aborted ? "stopping" : "settling",
-          message: "The run ended before the message could be delivered. Retry after settlement.",
-        };
+      await this.trackCallback(
+        steerForRun(session, message, this.steerLifetime.signal, () => !this.isPromptClosed(session.isStreaming)),
+      );
+    } catch (err) {
+      if (!(err instanceof RunSteerClosed)) {
+        return { accepted: false, reason: "delivery_failed", message: "The session refused the message." };
       }
-      return { accepted: true, agentId: this.agentId, runId: this.id, delivery: "steer" };
-    } catch {
-      return { accepted: false, reason: "delivery_failed", message: "The session refused the message." };
+      return this.closedSteer();
     }
+    if (this.steerLifetime.signal.aborted || this.isPromptClosed(session.isStreaming)) return this.closedSteer();
+    return { accepted: true, agentId: this.agentId, runId: this.id, delivery: "steer" };
   }
 
-  /** The SDK stays streaming through tools, but clears it before publishing agent_settled. */
+  private closedSteer(): AgentSubmissionResult {
+    return {
+      accepted: false,
+      reason: this.stopRequestedAt !== undefined ? "stopping" : "settling",
+      message: "The run ended before the message could be delivered. Retry after settlement.",
+    };
+  }
+
+  /** Independent SDK activity can become streaming again after this run's agent_settled. */
   private isPromptClosed(isStreaming: boolean): boolean {
     // Before startup, a bound session can already queue steering for this run.
-    return (
-      this.executionFinished || this.promptState === "finished" || (this.promptState === "started" && !isStreaming)
-    );
+    return this.executionFinished || this.promptSettled || (this.promptState === "started" && !isStreaming);
   }
 
   private trackCallback<T>(work: Promise<T>): Promise<T> {
@@ -185,9 +204,12 @@ export class AgentRun {
 
   async finishSettlement(getSession: () => AgentSession | undefined, publish: () => void): Promise<void> {
     await this.drainCallbacks();
+    // The SDK can still consume independent inputs after agent_settled. Read
+    // the session after draining because owner teardown can detach it.
+    const session = getSession();
     try {
-      // Read after draining: owner teardown can detach the session while we wait.
-      getSession()?.clearQueue();
+      if (session?.isStreaming) this.queueCleanupFailed = true;
+      else session?.clearQueue();
     } catch {
       // Completion and capacity release still proceed. Reuse does not.
       this.queueCleanupFailed = true;

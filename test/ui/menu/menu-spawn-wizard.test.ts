@@ -17,7 +17,7 @@ import type { Component, SelectItem, SettingItem, SettingsListTheme, SelectListT
 import type { ThinkingLevel } from "../../../src/types.js";
 import type { PiSettingsScope } from "../../../src/pi-settings.js";
 import type { SpawnOptions } from "../../../src/agents/agent-manager.js";
-import type { WorktreeValidationResult } from "../../../src/spawn/worktree-validator.js";
+import { validateWorktreePath, type WorktreeValidationResult } from "../../../src/spawn/worktree-validator.js";
 
 // The picker lists mock worktrees whose paths need not exist on this host.
 vi.mock("../../../src/spawn/worktree-validator.js", () => ({
@@ -363,8 +363,7 @@ function typeWithoutThinking(model = "anthropic/claude-sonnet-4-20250514") {
 
 /** Trigger the model submenu's session-target picker and select a model. */
 function switchModel(to: string) {
-  const modelItem = settingsListCalls[1].items.find((i) => i.id === "model")!;
-  modelItem.submenu!("anthropic/claude-sonnet-4-20250514", vi.fn());
+  settingsListCalls[1].activate("model");
   settingsListCalls[settingsListCalls.length - 1].activate("session");
   selectDialogInstances[selectDialogInstances.length - 1].callbacks.onSelect(to);
 }
@@ -802,6 +801,46 @@ describe("showSpawnAgentMenu — max turns submenu", () => {
     setupMocks();
   });
 
+  it("shows inherited limits only once the target is valid and re-resolves them at launch", async () => {
+    const path = "/test-feature";
+    setupExecMock({ worktrees: [{ path, branch: "feature" }] });
+    mockModules.mockConfig.agent.defaultMaxTurns = 50;
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name, dir) => ({
+      name,
+      description: "",
+      systemPrompt: "",
+      maxTurns: dir ? 7 : undefined,
+      maxTokens: dir ? 800 : undefined,
+    }));
+    vi.mocked(validateWorktreePath).mockResolvedValueOnce({ ok: false, error: "Invalid worktree" });
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    const items = settingsListCalls[1].items;
+    const limitValues = () => ["maxTurns", "maxTokens"].map((id) => items.find((item) => item.id === id)!.currentValue);
+    expect(limitValues()).toEqual(["50", "(not set)"]);
+
+    items.find((item) => item.id === "worktree")!.submenu!("Inherits parent cwd", vi.fn());
+    const picker = selectDialogInstances.at(-1)!;
+    picker.callbacks.onSelect(path);
+    expect(limitValues()).toEqual(["(not set)", "(not set)"]);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(limitValues()).toEqual(["(not set)", "(not set)"]);
+
+    await pickWorktree(path);
+    expect(limitValues()).toEqual(["7", "800"]);
+
+    // Launch resolves the selected type again, after the default changed.
+    vi.mocked(owner.registry.getAgentConfig).mockImplementationOnce((name) => ({
+      name,
+      description: "",
+      systemPrompt: "",
+      maxTokens: 900,
+    }));
+    mockModules.mockConfig.agent.defaultMaxTurns = 60;
+    await spawnOptions();
+    expect(vi.mocked(owner.coordinator!.spawn).mock.lastCall?.[2]).toMatchObject({ maxTurns: 60, maxTokens: 900 });
+  });
+
   it("shows agent config max turns", async () => {
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
@@ -1046,7 +1085,7 @@ describe("showSpawnAgentMenu — model", () => {
     expect(typeof item.submenu).toBe("function");
   });
 
-  it("shows '(inherits parent)' when no model in precedence chain", async () => {
+  it("shows that Pi selects the model when the precedence chain has no model", async () => {
     vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
         return { name: "general-purpose", description: "", extensions: true, skills: true, systemPrompt: "" };
@@ -1060,7 +1099,7 @@ describe("showSpawnAgentMenu — model", () => {
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
     const item = settingsListCalls[1].items.find((i) => i.id === "model")!;
-    expect(item.currentValue).toBe("(inherits parent)");
+    expect(item.currentValue).toBe("Pi selects on spawn");
     mockModules.mockSessionCtx.model = origModel;
     owner.sessionCtx = origSessionCtx;
   });

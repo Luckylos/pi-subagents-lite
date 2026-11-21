@@ -98,8 +98,8 @@ describe("findLastAgentCallsFromEntries", () => {
     ];
     const result = findLastAgentCallsFromEntries(entries);
     expect(result).toHaveLength(2);
-    expect(result[0].prompt).toBe("task one");
-    expect(result[1].prompt).toBe("task two");
+    expect(result[0]).toHaveProperty("prompt", "task one");
+    expect(result[1]).toHaveProperty("prompt", "task two");
   });
 
   it("ignores non-Agent tool calls in the same message", () => {
@@ -112,7 +112,7 @@ describe("findLastAgentCallsFromEntries", () => {
     ];
     const result = findLastAgentCallsFromEntries(entries);
     expect(result).toHaveLength(1);
-    expect(result[0].prompt).toBe("do something");
+    expect(result[0]).toHaveProperty("prompt", "do something");
   });
 
   it("uses only the most recent assistant message with Agent calls", () => {
@@ -125,7 +125,7 @@ describe("findLastAgentCallsFromEntries", () => {
     ];
     const result = findLastAgentCallsFromEntries(entries);
     expect(result).toHaveLength(1);
-    expect(result[0].prompt).toBe("new task");
+    expect(result[0]).toHaveProperty("prompt", "new task");
   });
 
   it("skips non-message entries gracefully", () => {
@@ -144,7 +144,7 @@ describe("findLastAgentCallsFromEntries", () => {
     ];
     const result = findLastAgentCallsFromEntries(entries);
     expect(result).toHaveLength(1);
-    expect(result[0].prompt).toBe("task");
+    expect(result[0]).toHaveProperty("prompt", "task");
   });
 
   it("preserves all original arguments from the tool call", () => {

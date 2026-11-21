@@ -42,6 +42,10 @@ describe("Subagent run ownership", () => {
     expect(manager.abort(a, "user")).toBe(true);
     await flush();
     expect(returned).toBe(true);
+    expect.soft(await record.execution.promise).toMatchObject({
+      status: "stopping",
+      stats: { turnCount: 0, runTurnCount: 0 },
+    });
     expect(completed).toBe(false);
     expect(record.lifecycle.status).toBe("running");
     expect(record.lifecycle.phase).toBe("stopping");
@@ -64,6 +68,7 @@ describe("Subagent run ownership", () => {
       phase: "settled",
       outcome: { status: "stopped", result: "partial" },
     });
+    expect.soft(manager.getRuns(a)[0].outcome?.stats).toMatchObject({ turnCount: 0, runTurnCount: 0 });
     expect(manager.getRecord(b)!.lifecycle.status).toBe("running");
     const c = spawn("third");
     expect(manager.getRecord(c)!.lifecycle.status).toBe("queued");
@@ -101,16 +106,23 @@ describe("Subagent run ownership", () => {
     old.onTextDelta("late", "late");
     old.onCompaction({ reason: "manual", tokensBefore: 1 });
     old.onSessionCreated(mockAgentSession());
-    expect(manager.getRecord(id)!.stats).toMatchObject({
+    expect.soft(manager.getRecord(id)!.stats).toMatchObject({
       toolUses: 0,
-      turnCount: 1,
+      turnCount: 0,
+      runTurnCount: 0,
       compactionCount: 0,
       lifetimeUsage: { cost: 0 },
     });
     expect(text).not.toHaveBeenCalled();
+    mockModules.mockContinueAgentSession.mock.calls[0][2].onTurnEnd(1);
     continuation.resolve(mockRunResult({ responseText: "second answer" }));
     await flush();
-    expect(manager.getRuns(id).map((run) => run.outcome?.result)).toEqual(["first answer", "second answer"]);
+    const outcomes = manager.getRuns(id).map((run) => run.outcome);
+    expect(outcomes.map((outcome) => outcome?.result)).toEqual(["first answer", "second answer"]);
+    expect.soft(outcomes.map((outcome) => [outcome?.stats.turnCount, outcome?.stats.runTurnCount])).toEqual([
+      [0, 0],
+      [1, 1],
+    ]);
     expect(first.outcome).toMatchObject({ result: "first answer" });
     expect(manager.getRecord(id)!.result).toBe("second answer");
   });
@@ -264,6 +276,7 @@ describe("Subagent run ownership", () => {
           status: "error",
           error: expect.stringContaining("prompt failed"),
         });
+        expect.soft(manager.getRuns(id)[0].outcome?.stats).toMatchObject({ turnCount: 0, runTurnCount: 0 });
         expect(manager.getRuns(replacement)[0].phase).toBe("running");
         replacementPrompt.resolve(mockRunResult());
         await replacementRun.completion;

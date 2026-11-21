@@ -19,6 +19,7 @@ import { SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { SelectList, type SelectItem } from "@earendil-works/pi-tui";
 
 import { plainText } from "../sanitize.ts";
+import { resolveSessionToolOptions, resolveVisibleTools } from "../../agents/agent-types.ts";
 import type { AgentConfig } from "../../agents/types.ts";
 import { buildSelectListTheme } from "./helpers.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
@@ -26,26 +27,70 @@ import { getCoordinator, getPiInstance, getStore } from "../../shell.ts";
 import type { SpawnCoordinator } from "../../spawn/spawn-coordinator.ts";
 import { handleRestartLastAgents } from "../../agents/restart-last-agents.ts";
 
-/** pi's DEFAULT_TOOL_NAMES fallback when defaultTools is unconfigured (unexported; pinned by the contract suite). */
+// Pi's unconfigured defaultTools fallback, pinned by the child-session contract tests.
 const PI_DEFAULT_ACTIVE_TOOLS = ["read", "bash", "edit", "write"];
+const EMPTY_TOOL_REGISTRY = "(none). The tool registry is empty.";
+const LAUNCH_TOOL_RESOLUTION = "Extension and per-spawn tools are resolved at launch.";
 
-/** Render a tool set; the zero-tool state is explicit, not a glitch. */
 function formatTools(tools: string[]): string {
   return tools.length > 0 ? tools.join(", ") : "(none)";
 }
 
-/**
- * The tool set an agent starts with: explicit frontmatter registeredTools,
- * else the delegated child's active set — pi's resolved defaultTools for the
- * menu's cwd, or pi's own fallback when defaultTools is unconfigured. Implicit
- * OFF starts tool-less. One SettingsManager per action, with default trust
- * (matching the spawn default when projectTrusted is unset).
- */
-function displayToolsFor(owner: ExtensionOwner, cwd: string, config: AgentConfig): string {
-  if (config.registeredTools) return formatTools(config.registeredTools);
-  if (!getStore(owner).agent.loadToolsImplicitly) return "(none)";
-  const defaultTools = SettingsManager.create(cwd, getAgentDir()).getDefaultTools();
-  return formatTools(defaultTools ?? PI_DEFAULT_ACTIVE_TOOLS);
+function formatToolCandidates(tools: string[]): string {
+  return `${formatTools(tools)} (startup candidates for this directory).`;
+}
+
+function formatToolAllowlist(entries: string[], names: string[]): string {
+  // Only wildcard aliases can yield more names once the child loads extensions.
+  const aliases = entries.filter((entry) => /^[^/]*\/(?:\*|all)$/.test(entry));
+  if (names.length === 0 && aliases.length === 0) return EMPTY_TOOL_REGISTRY;
+
+  const parts = [formatToolCandidates(names)];
+  if (names.length > 0) parts.push(`Known allowlist names for registration and activation are ${formatTools(names)}.`);
+  if (aliases.length > 0) parts.push(`The allowlist includes extension aliases ${formatTools(aliases)}.`);
+  return [...parts, LAUNCH_TOOL_RESOLUTION].join(" ");
+}
+
+/** One trust-scoped defaults read per action, only if a type delegates tool selection to Pi. */
+function createToolDisplay(owner: ExtensionOwner, ctx: ExtensionCommandContext): (config: AgentConfig) => string {
+  const loadToolsImplicitly = getStore(owner).agent.loadToolsImplicitly;
+  let defaultTools: string[] | undefined;
+
+  return (config) => {
+    const { tools, noTools } = resolveSessionToolOptions({
+      registeredTools: config.registeredTools,
+      tools: config.tools,
+      loadToolsImplicitly,
+    });
+    if (noTools || config.tools === false) return EMPTY_TOOL_REGISTRY;
+    if (Array.isArray(config.tools)) return formatToolAllowlist(config.tools, tools ?? []);
+
+    // Without a child loader or binding, unknown names may never register and
+    // extension aliases cannot be expanded. Report candidates and retain the rules.
+    const candidates =
+      tools ??
+      (defaultTools ??=
+        SettingsManager.create(ctx.cwd, getAgentDir(), {
+          projectTrusted: ctx.isProjectTrusted?.() ?? true,
+        }).getDefaultTools() ?? PI_DEFAULT_ACTIVE_TOOLS);
+    const activeTools = [...new Set(candidates)];
+    const visible = resolveVisibleTools({ activeTools, tools: config.tools, excludeTools: config.excludeTools });
+    const parts = [formatToolCandidates(visible ?? activeTools)];
+
+    if (tools) {
+      parts.push(
+        tools.length > 0
+          ? `The registry allows ${formatTools(tools)} and tools from loaded extensions.`
+          : "The registry allows tools from loaded extensions.",
+      );
+    } else {
+      parts.push("Pi defaults select startup tools from the available registry.");
+    }
+    if (config.excludeTools?.length) {
+      parts.push(`The activation filter excludes ${formatTools(config.excludeTools)}.`);
+    }
+    return [...parts, LAUNCH_TOOL_RESOLUTION].join(" ");
+  };
 }
 
 async function showAgentTypes(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
@@ -55,13 +100,14 @@ async function showAgentTypes(owner: ExtensionOwner, ctx: ExtensionCommandContex
     return;
   }
 
+  const displayTools = createToolDisplay(owner, ctx);
   const lines: string[] = ["Available agent types:\n"];
   for (const name of types) {
     const cfg = owner.registry.getAgentConfig(name);
     if (!cfg) continue;
     const hidden = cfg.hidden === true ? " [HIDDEN]" : "";
     const model = cfg.model ? `  Model: ${cfg.model}` : "";
-    const tools = `  Tools: ${displayToolsFor(owner, ctx.cwd, cfg)}`;
+    const tools = `  Tools: ${displayTools(cfg)}`;
     const source = cfg.source ? `  Source: ${cfg.source}` : "";
     lines.push(`  ${name}${hidden}`);
     lines.push(`    ${cfg.description}`);
@@ -77,6 +123,7 @@ async function showAgentTypes(owner: ExtensionOwner, ctx: ExtensionCommandContex
 async function handleAgentBriefing(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
   const types = owner.registry.getAvailableTypes();
   const agents = types.map((t) => ({ name: t, config: owner.registry.getAgentConfig(t) }));
+  const displayTools = createToolDisplay(owner, ctx);
   const lines: string[] = [
     "# Agent Types and Capabilities\n",
     "The following agent types are available. Use the `agent` parameter to select one.\n",
@@ -88,8 +135,7 @@ async function handleAgentBriefing(owner: ExtensionOwner, ctx: ExtensionCommandC
     lines.push(config.description);
     lines.push("");
 
-    // Always present: the effective set, whether explicit or delegated to pi.
-    lines.push(`**Tools:** ${displayToolsFor(owner, ctx.cwd, config)}`);
+    lines.push(`**Tools:** ${displayTools(config)}`);
     if (config.model) {
       lines.push(`**Default model:** ${config.model}`);
     }
@@ -104,11 +150,8 @@ async function handleAgentBriefing(owner: ExtensionOwner, ctx: ExtensionCommandC
   lines.push("| Parameter | Description |");
   lines.push("|-----------|-------------|");
   lines.push("| `prompt` | The task for the agent (required) |");
-  lines.push("| `description` | One-line summary of what the agent should do (required) |");
+  lines.push("| `description` | Optional one-line summary of what the agent should do |");
   lines.push("| `agent` | Which agent type to use (default: general-purpose) |");
-  lines.push(
-    "| `thinking` | Optional thinking mode override (e.g., `off`, `minimal`, `low`, `medium`, `high`, `xhigh`) |",
-  );
   lines.push(
     "| `run_in_background` | When `true`, result is auto-delivered — do NOT poll. Continue working while waiting. |",
   );
@@ -197,7 +240,11 @@ export async function showDebugMenu(
       } else if (item.value === "agent-briefing") {
         await handleAgentBriefing(owner, ctx);
       } else if (item.value === "restart-last-agents") {
-        await handleRestartLastAgentsMenu(owner, ctx, coordinator);
+        await handleRestartLastAgentsMenu(owner, ctx, coordinator).catch((err: unknown) => {
+          if (!coordinator?.isCurrentParent(ctx)) return;
+          const message = err instanceof Error ? err.message : String(err);
+          ctx.ui.notify(plainText(`Failed to restart agents: ${message}`), "error");
+        });
       }
     };
     return new SettingsListWrapper(selectList, { title: "Debug", theme, onCancel: () => done(undefined) });

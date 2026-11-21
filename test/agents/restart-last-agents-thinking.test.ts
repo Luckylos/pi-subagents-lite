@@ -29,7 +29,7 @@ const { mockCoordinatorSpawn, mockGetAgentConfig, storeState } = vi.hoisted(() =
     systemPrompt: "test prompt",
     maxTurns: 25,
   })),
-  storeState: { defaultThinking: undefined as ThinkingChoice | undefined },
+  storeState: { defaultThinking: undefined as ThinkingChoice | undefined, defaultMaxTurns: 25 },
 }));
 
 function fakeRecord(): AgentRecord {
@@ -63,7 +63,7 @@ vi.mock("../../src/shell.js", async () =>
             return {
               graceTurns: 6,
               forceBackground: false,
-              defaultMaxTurns: 25,
+              defaultMaxTurns: storeState.defaultMaxTurns,
               defaultThinking: storeState.defaultThinking,
             };
           },
@@ -111,6 +111,7 @@ function lastSpawnIntent(): SpawnIntent {
 beforeEach(() => {
   vi.clearAllMocks();
   storeState.defaultThinking = undefined;
+  storeState.defaultMaxTurns = 25;
   mockGetAgentConfig.mockReturnValue(agentConfig({}));
 });
 
@@ -148,6 +149,25 @@ describe("restart — thinking resolution", () => {
 
     expect(lastSpawnIntent().thinkingLevel).toBe("minimal");
     expect(lastSpawnIntent().invocation?.thinkingLevel).toBe("minimal");
+  });
+});
+
+describe("restart — historical max turns", () => {
+  it.each([
+    [undefined, undefined, 40],
+    [null, 12, 12],
+    [undefined, 0, 0],
+    [0, 12, 0],
+    [5, 12, 5],
+  ])("replays max_turns=%s with frontmatter maxTurns=%s as %s", async (savedTurns, frontmatter, expected) => {
+    const args = { prompt: "Do it", ...(savedTurns === undefined ? {} : { max_turns: savedTurns }) };
+    const ctx = historyWithCall(args);
+    mockGetAgentConfig.mockReturnValue(agentConfig({ maxTurns: frontmatter, maxTokens: 400 }));
+    storeState.defaultMaxTurns = 40;
+
+    expect(await handleRestartLastAgents(owner, ctx)).toEqual({ restarted: ["general-purpose: Do it"], skipped: [] });
+    expect(lastSpawnIntent()).toMatchObject({ maxTurns: expected, maxTokens: 400 });
+    expect(lastSpawnIntent().invocation?.maxTurns).toBe(expected || undefined);
   });
 });
 

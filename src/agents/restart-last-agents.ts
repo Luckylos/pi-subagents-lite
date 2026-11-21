@@ -4,32 +4,37 @@ import type { ExtensionOwner } from "../shell.ts";
  *
  * Reads the current session's entry list, locates the most recent assistant
  * message containing Agent tool calls, and replays them via the coordinator.
- * Running agents are skipped.
+ * Agents already running or queued are skipped.
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { UICtx } from "../ui/agent-widget.ts";
-import type { ToolCall } from "@earendil-works/pi-ai";
+import { Type, type Static } from "typebox";
+import { Check } from "typebox/value";
 import { getCoordinator, getManager, getPiInstance, getStore, getWidget } from "../shell.ts";
+import type { AgentRecord } from "../types.ts";
 import { parseModelKey, parseThinkingChoice } from "../utils.ts";
+import type { AgentManager } from "./agent-manager.ts";
 
 import { prepareResolvedSpawn, resolveSpawnSelection, toolModelChoice } from "../spawn/spawn-resolution.ts";
 import { prepareSpawnIntent } from "../spawn/spawn-preparation.ts";
 import type { SpawnCoordinator } from "../spawn/spawn-coordinator.ts";
 
-/** Extracted parameters from a historical Agent tool call. */
-export interface AgentCallParams {
-  prompt: string;
-  description?: string;
-  agent?: string;
-  worktree_path?: string;
-  model?: string;
-  /** Older callers could persist the listener's inferred model and display key. */
-  _modelOverride?: string;
-  thinking?: string;
-  run_in_background?: boolean;
-  max_turns?: number;
-}
+// History spans optional, strict-nullable, and older internal tool arguments.
+const optionalString = Type.Optional(Type.Union([Type.String(), Type.Null()]));
+const historicalAgentCall = Type.Object({
+  prompt: Type.String(),
+  description: optionalString,
+  agent: optionalString,
+  // The shared target resolver treats non-string paths as omitted, as on live calls.
+  worktree_path: Type.Optional(Type.Unknown()),
+  run_in_background: Type.Optional(Type.Union([Type.Boolean(), Type.Null()])),
+  model: optionalString,
+  _modelOverride: optionalString,
+  thinking: optionalString,
+  max_turns: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+});
+export type AgentCallParams = Static<typeof historicalAgentCall>;
 
 /** Result of a restart attempt. */
 export interface RestartResult {
@@ -43,7 +48,7 @@ export interface RestartResult {
  * Returns the arguments of every `Agent` tool call found in the latest assistant
  * message that contains at least one. Returns an empty array if none exist.
  */
-export function findLastAgentCallsFromEntries(entries: SessionEntry[]): AgentCallParams[] {
+export function findLastAgentCallsFromEntries(entries: SessionEntry[]): unknown[] {
   // Walk backwards to find the most recent assistant message with Agent tool calls.
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -53,15 +58,10 @@ export function findLastAgentCallsFromEntries(entries: SessionEntry[]): AgentCal
     if (msg.role !== "assistant") continue;
     if (!Array.isArray(msg.content)) continue;
 
-    const agentCalls: AgentCallParams[] = [];
+    const agentCalls: unknown[] = [];
     for (const block of msg.content) {
-      if (
-        block &&
-        typeof block === "object" &&
-        (block as ToolCall).type === "toolCall" &&
-        (block as ToolCall).name === "Agent"
-      ) {
-        agentCalls.push((block as ToolCall).arguments as unknown as AgentCallParams);
+      if (block?.type === "toolCall" && block.name === "Agent") {
+        agentCalls.push(block.arguments);
       }
     }
 
@@ -81,23 +81,29 @@ function skippedCallLabel(call: AgentCallParams, reason: string): string {
   return `${call.agent || "general-purpose"}: ${agentCallDescription(call)} (${reason})`;
 }
 
-/**
- * Resolve and spawn a single agent from historical parameters.
- *
- * Returns a status string for the caller to collect: "restarted: ..." or "skipped: ...".
- */
+interface RestartBatch {
+  manager: AgentManager;
+  initiallyActive: Set<string>;
+  restartedIds: Set<string>;
+}
+
+function isActiveAgent({ lifecycle }: AgentRecord): boolean {
+  return lifecycle.status === "running" || lifecycle.status === "queued";
+}
+
+/** Resolve and spawn a single agent from historical parameters. */
 async function resolveAndSpawn(
   owner: ExtensionOwner,
   call: AgentCallParams,
   ctx: ExtensionCommandContext,
-  running: Set<string>,
+  batch: RestartBatch,
   coordinator: SpawnCoordinator,
   pi: ExtensionAPI,
 ): Promise<{ restarted: string } | { skipped: string }> {
   coordinator.assertCurrentParent(ctx);
   const type = call.agent || "general-purpose";
   const description = agentCallDescription(call);
-  if (running.has(`${type}::${description}`)) {
+  if (batch.initiallyActive.has(`${type}::${description}`)) {
     return { skipped: skippedCallLabel(call, "already running") };
   }
 
@@ -106,7 +112,20 @@ async function resolveAndSpawn(
   try {
     const selection = await resolveSpawnSelection(owner, ctx, type, call.worktree_path, { coordinator });
     coordinator.assertCurrentParent(ctx);
-    if (running.has(`${selection.type}::${description}`)) {
+    // Independent spawns can enter the manager during resolution. Replays from
+    // this batch must leave the remaining historical calls eligible to launch.
+    if (
+      batch.initiallyActive.has(`${selection.type}::${description}`) ||
+      batch.manager
+        .listAgents()
+        .some(
+          (agent) =>
+            agent.display.type === selection.type &&
+            agent.display.description === description &&
+            !batch.restartedIds.has(agent.id) &&
+            isActiveAgent(agent),
+        )
+    ) {
       return { skipped: skippedCallLabel(call, "already running") };
     }
     // Pi saves original arguments. The old render marker matched the ID of
@@ -119,7 +138,7 @@ async function resolveAndSpawn(
       ctx,
       selection,
       toolModelChoice(inferredModel ? undefined : call.model),
-      parseThinkingChoice(call.thinking),
+      parseThinkingChoice(call.thinking ?? undefined),
     );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -133,26 +152,28 @@ async function resolveAndSpawn(
   // SAFETY: Pi's UI supplies the setStatus and setWidget operations used by AgentWidget.
   widget?.setUICtx(ctx.ui as unknown as UICtx);
 
-  await coordinator.spawn(
+  const { agentId } = await coordinator.spawn(
     pi,
     ctx,
     prepareSpawnIntent({
       ...spawn,
       prompt: call.prompt,
       description,
-      maxTurns: call.max_turns ?? spawn.agentConfig?.maxTurns ?? store.agent.defaultMaxTurns,
+      maxTurns: call.max_turns ?? undefined,
+      defaultMaxTurns: store.agent.defaultMaxTurns,
       graceTurns: store.agent.graceTurns,
       runInBackground: true,
     }),
   );
+  batch.restartedIds.add(agentId);
   return { restarted: `${spawn.type}: ${description}` };
 }
 
 /**
  * Restart agents from the most recent Agent tool calls in session history.
  *
- * Skips agents whose type + description match a currently running agent.
- * Returns what was restarted and what was skipped.
+ * Skips overlapping batches in the same parent and calls whose type and
+ * description match an active agent outside the batch.
  */
 export async function handleRestartLastAgents(
   owner: ExtensionOwner,
@@ -160,36 +181,44 @@ export async function handleRestartLastAgents(
   coordinator = getCoordinator(owner),
 ): Promise<RestartResult> {
   if (!coordinator?.isCurrentParent(ctx)) return { restarted: [], skipped: [] };
-  const entries = ctx.sessionManager.getEntries();
-  const calls = findLastAgentCallsFromEntries(entries);
+  if (owner.restartInProgress === coordinator) return { restarted: [], skipped: ["Restart already in progress"] };
 
-  if (calls.length === 0) {
-    return { restarted: [], skipped: [] };
-  }
+  owner.restartInProgress = coordinator;
+  try {
+    const calls = findLastAgentCallsFromEntries(ctx.sessionManager.getEntries());
+    const manager = getManager(owner);
+    if (calls.length === 0 || !manager) return { restarted: [], skipped: [] };
+    const pi = getPiInstance(owner);
+    const batch: RestartBatch = {
+      manager,
+      initiallyActive: new Set(
+        manager
+          .listAgents()
+          .filter(isActiveAgent)
+          .map((agent) => `${agent.display.type}::${agent.display.description}`),
+      ),
+      restartedIds: new Set(),
+    };
+    const restarted: string[] = [];
+    const skipped: string[] = [];
 
-  const manager = getManager(owner);
-  if (!manager) return { restarted: [], skipped: [] };
-  const pi = getPiInstance(owner);
-
-  const running = new Set(
-    manager
-      .listAgents()
-      .filter((a) => a.lifecycle.status === "running" || a.lifecycle.status === "queued")
-      .map((a) => `${a.display.type}::${a.display.description}`),
-  );
-
-  const restarted: string[] = [];
-  const skipped: string[] = [];
-
-  for (const call of calls) {
-    try {
-      const result = await resolveAndSpawn(owner, call, ctx, running, coordinator, pi);
-      if ("restarted" in result) restarted.push(result.restarted);
-      else skipped.push(result.skipped);
-    } catch (err) {
-      skipped.push(skippedCallLabel(call, `spawn failed: ${String(err).slice(0, 80)}`));
+    for (const [index, call] of calls.entries()) {
+      if (!Check(historicalAgentCall, call)) {
+        skipped.push(`Agent call #${index + 1} (invalid arguments)`);
+        continue;
+      }
+      try {
+        const result = await resolveAndSpawn(owner, call, ctx, batch, coordinator, pi);
+        if ("restarted" in result) restarted.push(result.restarted);
+        else skipped.push(result.skipped);
+      } catch (err) {
+        skipped.push(skippedCallLabel(call, `spawn failed: ${String(err).slice(0, 80)}`));
+      }
     }
-  }
 
-  return { restarted, skipped };
+    return { restarted, skipped };
+  } finally {
+    // A replacement session may already own a new batch.
+    if (owner.restartInProgress === coordinator) owner.restartInProgress = undefined;
+  }
 }

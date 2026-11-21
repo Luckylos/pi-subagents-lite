@@ -310,6 +310,11 @@ describe("ConversationViewer", () => {
       subscriber!({ type: "message_update", assistantMessageEvent: { type: "text_end", content: "done" } });
       vi.runAllTimers();
       expect(mockRequestRender).toHaveBeenCalledTimes(3);
+
+      // A turn can end after the last message event has already rendered.
+      subscriber!({ type: "turn_end" });
+      vi.runAllTimers();
+      expect(mockRequestRender).toHaveBeenCalledTimes(4);
       vi.useRealTimers();
     });
 

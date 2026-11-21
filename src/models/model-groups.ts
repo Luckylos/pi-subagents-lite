@@ -9,9 +9,9 @@
  *
  * A type gets a row iff it has an explicit per-type Model override at the
  * session, project, or global layer (the anti-spam rule: frontmatter and
- * inherited models are never listed, regardless of the model they resolve
- * to). The row is grouped under the model the type actually
- * resolves to and tagged with the layer that won: [session] when the
+ * inherited models alone never add a row). Each row stays grouped under the
+ * winning ID, even if Spawn uses a fallback, and is tagged with its layer:
+ * [session] when the
  * session per-type override or the session default won; [project] for a
  * project per-type win with no session default; untagged for a global
  * per-type win with no session default. Groups are ordered alphabetically
@@ -24,11 +24,11 @@
  *     the menu's "Override another type..." list)
  */
 
-import type { Model } from "@earendil-works/pi-ai";
 import type { SubagentsConfig } from "../config/types.ts";
+import type { ConfiguredModelResolution } from "./model-availability.ts";
 import type { SessionModelOverrides } from "./model-precedence.ts";
 import { resolveModelSource } from "./model-precedence.ts";
-import { resolveDisplayedThinking, type DisplayedThinking, type ThinkingSource } from "./thinking-resolution.ts";
+import { resolveDisplayedThinking, type DisplayedThinking } from "./thinking-resolution.ts";
 import type { ThinkingChoice, ThinkingLevel } from "../types.ts";
 
 /** Frontmatter fields the group builder reads per type. */
@@ -52,17 +52,14 @@ export interface ModelGroupsInput extends ModelSettingsLayers {
   types: readonly string[];
   /** Frontmatter config per type (undefined = no config). */
   agentConfigs: Readonly<Record<string, AgentTypeModelConfig | undefined>>;
-  /** Parent session model id; "(inherits parent)" when unknown. */
+  /** Parent session model ID; empty when there is no parent model. */
   parentModelId: string;
   /** pi's defaultThinkingLevel setting (project over global). */
   piDefaultThinking?: ThinkingLevel;
-  /**
-   * pi's per-model thinking lookup, keyed `provider/modelId` (the group
-   * model id's format). Undefined = read not available.
-   */
+  /** pi's per-model thinking lookup, keyed by the chosen model's `provider/modelId`. */
   piModelThinking?: (modelKey: string) => ThinkingLevel | undefined;
-  /** Registry lookup for clamping; undefined model = no clamp. */
-  findModel: (modelId: string) => Model<any> | undefined;
+  /** The model Spawn will use; undefined input means pure inheritance, not a configured ID. */
+  resolveModel: (configuredId: string | undefined) => ConfiguredModelResolution;
   /** The parent session's current level, for a source holding `parent`. */
   parentLevel?: ThinkingLevel;
 }
@@ -70,12 +67,12 @@ export interface ModelGroupsInput extends ModelSettingsLayers {
 /** One Agent type listed under a model group. */
 export interface ModelGroupRow {
   type: string;
-  /** Effective thinking level, clamped to the group model's supported levels. */
-  thinking: ThinkingLevel;
-  /** Which thinking source won, in the words the menu prints; `tag` carries the model layer. */
-  source: ThinkingSource;
+  /** Thinking preview for the model Spawn will use, or its preference while Pi selects a model. */
+  thinking: DisplayedThinking;
   /** Model provenance tag when the winning model comes from the session or project layer. */
   tag: string;
+  /** Set when the winning configured ID is unavailable, never for pure inheritance. */
+  unavailable?: true;
 }
 
 export interface ModelGroup {
@@ -134,12 +131,17 @@ export function buildModelGroups(input: ModelGroupsInput): ModelGroups {
   for (const type of types) {
     if (!hasExplicitPerTypeOverride(sessionOverrides, config, type)) continue;
     const cfg = agentConfigs[type];
-    const { model: resolved, tag } = describeModelSetting(input, type, parentModelId, cfg);
+    const { model: modelId, layer, tag } = describeModelSetting(input, type, parentModelId, cfg);
+    const { model, unavailable } = input.resolveModel(layer === "parent" ? undefined : modelId);
 
-    const rows = byModel.get(resolved) ?? [];
-    const displayed = displayThinking(cfg, resolved, input);
-    rows.push({ type, thinking: displayed.level, source: displayed.source, tag });
-    byModel.set(resolved, rows);
+    const rows = byModel.get(modelId) ?? [];
+    rows.push({
+      type,
+      thinking: displayThinking(cfg, model, input),
+      tag,
+      ...(unavailable ? { unavailable } : {}),
+    });
+    byModel.set(modelId, rows);
   }
 
   return [...byModel.entries()]
@@ -161,24 +163,20 @@ export function hasExplicitPerTypeOverride(
   return sessionOverrides[type] != null || typeof agentConfig[type] === "string";
 }
 
-/**
- * The thinking level a spawn under `modelId` would actually run with, and the
- * source that decided it: frontmatter > pi per-model > defaultThinking > pi's
- * defaultThinkingLevel > medium, clamped to the model's supported levels.
- */
+/** Resolve the Thinking preview using the model that Spawn can actually pass to Pi. */
 function displayThinking(
   cfg: AgentTypeModelConfig | undefined,
-  modelId: string,
+  model: ConfiguredModelResolution["model"],
   input: ModelGroupsInput,
 ): DisplayedThinking {
   return resolveDisplayedThinking(
     {
       frontmatter: cfg?.thinkingLevel,
-      perModel: input.piModelThinking?.(modelId),
+      perModel: model ? input.piModelThinking?.(`${model.provider}/${model.id}`) : undefined,
       defaultThinking: input.config.defaultThinking,
       parentLevel: input.parentLevel,
     },
     input.piDefaultThinking,
-    input.findModel(modelId),
+    model,
   );
 }

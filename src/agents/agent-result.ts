@@ -9,6 +9,7 @@ export function captureResultStats(record: AgentRecord): RunResultStats {
   return Object.freeze({
     lifetimeUsage: Object.freeze({ ...stats.lifetimeUsage }),
     turnCount: stats.turnCount,
+    runTurnCount: stats.runTurnCount,
     maxTurns: stats.maxTurns,
     toolUses: stats.toolUses,
     contextPercent: getSessionContextPercent(session),
@@ -22,6 +23,7 @@ export function captureResultStats(record: AgentRecord): RunResultStats {
 export function formatResultStats(stats: RunResultStats, elapsedMs: number): Record<string, unknown> {
   return {
     turnCount: stats.turnCount,
+    ...(stats.runTurnCount !== undefined && { runTurnCount: stats.runTurnCount }),
     maxTurns: stats.maxTurns,
     toolUses: stats.toolUses,
     input: stats.lifetimeUsage.input,

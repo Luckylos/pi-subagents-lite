@@ -10,15 +10,6 @@ import { scanAgentFilesInDir, mergeAgents } from "./agent-discovery.ts";
 import { DEFAULT_AGENTS } from "./default-agents.ts";
 import type { AgentConfig } from "./types.ts";
 
-/**
- * All pi built-in tool names for validation/warning suppression.
- *
- * This set contains ALL built-in tools (including grep, find, ls)
- * and is used ONLY for name recognition in agent configs.
- * It is not a gate: the session tool options own what registers.
- */
-export const BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "edit", "write", "grep", "find", "ls"];
-
 export type TypeResolution =
   | { kind: "resolved"; key: string }
   | { kind: "ambiguous"; candidates: string[] }
@@ -195,10 +186,14 @@ function resolveToolEntries(
       const toolPart = entry.slice(slashIdx + 1);
       if (toolPart === "*" || toolPart === "all") {
         const extTools = extToolMap?.get(extName);
-        if (extTools && extTools.length > 0) {
-          for (const t of extTools) resolved.add(t);
-        } else {
+        if (extTools === undefined) {
           notify?.(`extension "${extName}" is not loaded, "${entry}" will have no effect`);
+        } else if (extTools.length === 0) {
+          notify?.(
+            `extension "${extName}" is loaded but declares no tools before binding, "${entry}" will have no effect`,
+          );
+        } else {
+          for (const t of extTools) resolved.add(t);
         }
       } else if (toolPart === "none") {
         // ext/none: acknowledge extension exists without adding any tools
@@ -231,12 +226,15 @@ function resolveToolEntries(
  */
 export function resolveVisibleTools(opts: {
   activeTools: string[];
+  /** Bound session registry for bare-name diagnostics, omitted for candidate previews. */
+  registeredToolNames?: readonly string[];
   tools?: true | string[] | false;
   excludeTools?: string[];
+  /** Loaded extension aliases mapped to names declared before binding. An empty list still marks a loaded alias. */
   extToolMap?: Map<string, string[]>;
   notify?: (msg: string) => void;
 }): string[] | null {
-  const { activeTools, tools, excludeTools, extToolMap, notify } = opts;
+  const { activeTools, registeredToolNames, tools, excludeTools, extToolMap, notify } = opts;
 
   // Blacklist mode: excludeTools set and tools not set as whitelist
   if (excludeTools && !Array.isArray(tools)) {
@@ -246,22 +244,12 @@ export function resolveVisibleTools(opts: {
   }
 
   if (Array.isArray(tools)) {
-    const allBuiltinSet = new Set(BUILTIN_TOOL_NAMES);
     const allowedTools = resolveToolEntries(tools, extToolMap, notify);
-
-    for (const entry of tools) {
-      const slashIdx = entry.indexOf("/");
-      if (slashIdx === -1 && !allBuiltinSet.has(entry)) {
-        // Bare name, not a known built-in — check if it's an extension tool
-        let foundInExt = false;
-        for (const [, extToolNames] of extToolMap ?? []) {
-          if (extToolNames.includes(entry)) {
-            foundInExt = true;
-            break;
-          }
-        }
-        if (!foundInExt) {
-          notify?.(`tool "${entry}" not found in any loaded extension`);
+    if (registeredToolNames && notify) {
+      const registered = new Set(registeredToolNames);
+      for (const entry of tools) {
+        if (!entry.includes("/") && !registered.has(entry)) {
+          notify(`tool "${entry}" is not registered in the child session`);
         }
       }
     }
@@ -285,6 +273,7 @@ export function resolveVisibleTools(opts: {
       }
 
       for (const [extName, extTools] of extToolMap) {
+        if (extTools.length === 0) continue;
         const hasAny = extTools.some((t) => allowedTools.has(t));
         if (!hasAny && !acknowledgedExts.has(extName)) {
           notify?.(`extension "${extName}" is loaded but none of its tools are in tools: [${tools.join(", ")}]`);

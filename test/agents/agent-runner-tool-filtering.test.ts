@@ -769,7 +769,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
     expect(sessionOpts!.tools).not.toContain("Agent");
   });
 
-  it("warning: tool name not found in any loaded extension", async () => {
+  it("warning: bare tool name is not registered in the child session", async () => {
     const session = createMockSession();
     session.getActiveToolNames.mockReturnValue(["read", "bash", "edit", "web_search"]);
     mockModules.mockCreateAgentSession.mockResolvedValue({ session, extensionsResult: {} });
@@ -792,7 +792,7 @@ describe("tools field — extension tool names and ext/all syntax", () => {
 
     await runAgent(owner, fakeCtx({ ui: undefined }), "test-agent", "do something", { pi: fakePi });
 
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('tool "foobar" not found in any loaded extension'));
+    expect(warnSpy).toHaveBeenCalledWith('[pi-subagents-lite] tool "foobar" is not registered in the child session');
 
     const activeTools = session.getActiveTools()!;
     expect(activeTools).toContain("read");

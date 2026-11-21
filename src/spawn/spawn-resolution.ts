@@ -5,7 +5,7 @@ import { clampThinkingToModel, resolveDisplayedThinking, resolveThinkingLevel } 
 import type { ConfigStore } from "../config/config-store.ts";
 import { getStore, type ExtensionOwner } from "../shell.ts";
 import type { ThinkingChoice } from "../types.ts";
-import { findModelInRegistry } from "../utils.ts";
+import { findAvailableModel, resolveConfiguredModel } from "../models/model-availability.ts";
 import type { SpawnCoordinator } from "./spawn-coordinator.ts";
 import { computeSpawnTarget, surfaceSpawnTargetWarnings, type SpawnTarget } from "./spawn-target.ts";
 
@@ -67,30 +67,22 @@ export class SpawnModelUnavailableError extends Error {
   }
 }
 
-function findAvailableModel(name: string, registry: ExtensionContext["modelRegistry"]) {
-  const model = findModelInRegistry(name, registry, undefined);
-  return model && registry.getAvailable().some((entry) => entry.provider === model.provider && entry.id === model.id)
-    ? model
-    : undefined;
-}
-
 function resolveSpawnModel(
   store: ConfigStore,
   ctx: ExtensionContext,
   { type, agentConfig }: SpawnSelection,
   choice: SpawnModelChoice,
-) {
+): { model: ExtensionContext["model"]; unavailableModel?: string } {
   if (choice.kind === "explicit") {
     const model = findAvailableModel(choice.name, ctx.modelRegistry);
     if (!model) throw new SpawnModelUnavailableError(choice.name);
-    return model;
+    return { model };
   }
-  const parent = ctx.model;
-  if (choice.kind === "parent") return parent;
-  const parentKey = parent ? `${parent.provider}/${parent.id}` : "";
-  const configured = store.modelFor(type, parentKey, agentConfig);
-  if (!configured || configured === parentKey) return parent;
-  return findAvailableModel(configured, ctx.modelRegistry) ?? parent;
+  if (choice.kind === "parent") return { model: ctx.model };
+  // Resolve configured IDs separately so an explicit match with the parent still gets checked.
+  const configured = store.modelFor(type, "", agentConfig);
+  const { model, unavailable } = resolveConfiguredModel(configured, ctx);
+  return { model, unavailableModel: unavailable ? configured : undefined };
 }
 
 /** Resolve against the current parent/model registry and the selected target's Pi settings. */
@@ -102,7 +94,7 @@ export function resolveSpawnChoices(
   explicit: ThinkingChoice | undefined,
 ) {
   const { agentConfig, target } = selection;
-  const model = resolveSpawnModel(store, ctx, selection, modelChoice);
+  const { model, unavailableModel } = resolveSpawnModel(store, ctx, selection, modelChoice);
 
   const modelKey = model ? `${model.provider}/${model.id}` : undefined;
   const cwd = target.resolvedPath ?? ctx.cwd;
@@ -125,15 +117,13 @@ export function resolveSpawnChoices(
       ? undefined
       : clampThinkingToModel(model, configuredThinking)
     : modelIndependentThinking;
-  const selectedThinking = explicit === "parent" ? ctx.thinkingLevel : explicit;
   return {
     model,
     modelKey,
+    unavailableModel,
     thinkingLevel,
     deferredDefaultThinking,
-    // Pi owns its own fallback when every configured source is absent.
     displayThinking: () => resolveDisplayedThinking(sources, getPiDefaultThinkingLevel(cwd, scope), model),
-    explicitThinkingLevel: selectedThinking === undefined ? undefined : clampThinkingToModel(model, selectedThinking),
   };
 }
 

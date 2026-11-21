@@ -5,7 +5,7 @@
  * Drives runSessionPrompt() against the typed in-memory session from
  * run-session-harness.ts; no SDK module mocks are installed.
  */
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { runSessionPrompt, type SessionPromptOptions } from "../../src/agents/session-run.js";
 import { createRunSessionHarness } from "./run-session-harness.js";
@@ -19,7 +19,10 @@ async function runPrompt(before: Messages, added: Messages, options: SessionProm
   const h = createRunSessionHarness(messages);
   const run = runSessionPrompt(h.session, "keep going", options);
   await h.promptStarted;
-  messages.push(...added);
+  for (const message of added) {
+    messages.push(message);
+    h.emit({ type: "message_end", message });
+  }
   h.finishPrompt();
   return { result: await run, h };
 }
@@ -92,18 +95,86 @@ describe("runSessionPrompt — response text scoped to this prompt", () => {
     expect(result.responseText).toBe("continued answer");
   });
 
-  it("prefers the streamed text over the message fallback", async () => {
-    const messages = [...priorRun];
+  it.each([
+    {
+      message: assistantMessage({ content: [{ type: "text", text: " current output " }] }),
+      responseText: "current output",
+      modelError: undefined,
+    },
+    {
+      message: assistantMessage({ stopReason: "error", errorMessage: "current provider failure" }),
+      responseText: "",
+      modelError: "current provider failure",
+    },
+  ])("collects the current result after the message list shrinks ($message.stopReason)", async (c) => {
+    const messages = [...priorRun, userMessage("another old request")];
     const h = createRunSessionHarness(messages);
     const run = runSessionPrompt(h.session, "keep going", {});
     await h.promptStarted;
+    messages.splice(0, messages.length, c.message);
+    h.emit({ type: "message_end", message: c.message });
+    h.finishPrompt();
+    expect(await run).toMatchObject({ responseText: c.responseText, modelError: c.modelError });
+  });
+
+  it("prefers the whole streamed response and ignores non-assistant messages", async () => {
+    const messages = [...priorRun];
+    const h = createRunSessionHarness(messages);
+    const onTextDelta = vi.fn();
+    const run = runSessionPrompt(h.session, "keep going", { onTextDelta });
+    const message = assistantMessage({ content: [{ type: "text", text: "stored" }] });
+    const trailing = userMessage("not assistant output");
+    await h.promptStarted;
+    h.emit({ type: "message_start", message });
     h.emit({
       type: "message_update",
-      assistantMessageEvent: { type: "text_delta", delta: " streamed " },
-    } as unknown as Parameters<typeof h.emit>[0]);
-    messages.push(assistantMessage({ content: [{ type: "text", text: "stored" }] }));
+      message,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " streamed", partial: message },
+    });
+    h.emit({
+      type: "message_update",
+      message,
+      assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: " answer ", partial: message },
+    });
+    h.emit({ type: "message_end", message });
+    h.emit({ type: "message_start", message: trailing });
+    h.emit({ type: "message_end", message: trailing });
+    messages.push(message, trailing);
     h.finishPrompt();
-    expect((await run).responseText).toBe("streamed");
+    expect(onTextDelta.mock.calls).toEqual([
+      [" streamed", " streamed"],
+      [" answer ", " streamed answer "],
+    ]);
+    expect((await run).responseText).toBe("streamed answer");
+  });
+
+  it.each([
+    assistantMessage({
+      stopReason: "error",
+      errorMessage: "transient",
+      content: [{ type: "text", text: "partial answer" }],
+    }),
+    assistantMessage({
+      stopReason: "toolUse",
+      content: [
+        { type: "text", text: "partial answer" },
+        { type: "toolCall", id: "call", name: "read", arguments: {} },
+      ],
+    }),
+  ])("uses the last textful assistant message ($stopReason) when the final output is non-text", async (message) => {
+    const { result } = await runPrompt(priorRun, [
+      message,
+      assistantMessage({ content: [{ type: "thinking", thinking: "private reasoning" }] }),
+    ]);
+    expect(result).toMatchObject({ responseText: "partial answer", modelError: undefined });
+  });
+
+  it("returns no old result when the prompt emits no assistant message", async () => {
+    const { result } = await runPrompt(
+      [...priorRun, assistantMessage({ stopReason: "error", errorMessage: "old error" })],
+      [userMessage("new request")],
+    );
+    expect(result).toMatchObject({ responseText: "", modelError: undefined });
   });
 });
 

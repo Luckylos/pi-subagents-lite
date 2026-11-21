@@ -134,7 +134,7 @@ focusing on injection flaws, auth bypasses, and insecure defaults.
 
 frontmatter 没写 `tools`、且该类型没有显式的已注册工具集时，由配置 `loadToolsImplicitly`（默认开）决定：开启时交给 pi 处理，`defaultTools` 和普通会话一样生效，未激活的工具仍保持注册，供调度类工具按名字调用；关闭时这类子代理没有工具。显式 frontmatter 总是优先。
 
-`tools` 和 `exclude_tools` 接受内置工具名（`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`）和扩展工具名（`codemode`、`web_search`）。用 `tavily/*` 或 `tavily/all` 表示某个扩展的全部工具。排除工具不会阻止扩展加载；要阻止加载用 `exclude_extensions: [tavily]`。
+`tools` 和 `exclude_tools` 接受内置工具名（`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`）和扩展工具名（`codemode`、`web_search`）。`tavily/*` 和 `tavily/all` 展开为该扩展在子会话绑定前注册的工具名。对仅在 `session_start` 等钩子里注册的工具，请在白名单或黑名单中写明确的工具名。排除工具不会阻止扩展加载；要阻止加载用 `exclude_extensions: [tavily]`。
 
 `loadSkillsImplicitly`、`loadExtensionsImplicitly`、`loadToolsImplicitly`（配置，默认开）分别决定 frontmatter 没写 `skills`、`extensions` 或工具字段时子代理拿到什么。三个开关互相独立：比如单独关掉隐式扩展来停止加载扩展，再在需要的子代理里显式开启。
 

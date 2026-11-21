@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentSession, ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { continueAgentSession, runAgent, type RunResult } from "./agent-runner.ts";
 import type { SessionPromptOptions } from "./session-run.ts";
+import { normalizeMaxTurns, resolveSpawnLimits } from "./run-limits.ts";
 import { disposeChildSession } from "./session-teardown.ts";
 import { AgentOutputLog } from "./output-file.ts";
 import { Watchdog } from "./watchdog.ts";
@@ -81,6 +82,12 @@ interface ConcurrencySlot {
   modelKey?: string;
 }
 
+interface QueueEntry {
+  id: string;
+  modelKey: string;
+  start: (slot: ConcurrencySlot) => void;
+}
+
 interface SpawnArgs {
   pi: ExtensionAPI;
   ctx: ExtensionContext;
@@ -136,7 +143,7 @@ export class AgentManager {
 
   private defaultConcurrency: number;
 
-  private queue: { id: string; modelKey: string; args: SpawnArgs }[] = [];
+  private queue: QueueEntry[] = [];
 
   constructor(
     private owner: ExtensionOwner,
@@ -201,41 +208,57 @@ export class AgentManager {
     }
   }
 
-  /**
-   * Get or create a concurrency slot for a model key.
-   * Precedence: per-model slot > per-provider shared slot > default (per-model).
-   */
+  private poolKey(modelKey: string): string {
+    if (this.concurrencySlots.has(modelKey)) return `model:${modelKey}`;
+    const provider = modelKey.split("/")[0];
+    return this.providerSlots.has(provider) ? `provider:${provider}` : `model:${modelKey}`;
+  }
+
+  /** Precedence: per-model slot > per-provider shared slot > default (per-model). */
   private getSlot(modelKey: string): ConcurrencySlot {
-    const pool = (key: string): string => {
-      if (this.concurrencySlots.has(key)) return `model:${key}`;
-      const provider = key.split("/")[0];
-      return this.providerSlots.has(provider) ? `provider:${provider}` : `model:${key}`;
-    };
     const provider = modelKey.split("/")[0];
     const limit =
       this.concurrencySlots.get(modelKey)?.limit ?? this.providerSlots.get(provider)?.limit ?? this.defaultConcurrency;
-    const key = pool(modelKey);
-    const running = [...this.activeLeases].filter((lease) => lease.modelKey && pool(lease.modelKey) === key).length;
+    const pool = this.poolKey(modelKey);
+    const running = [...this.activeLeases].filter(
+      (lease) => lease.modelKey && this.poolKey(lease.modelKey) === pool,
+    ).length;
     return { modelKey, limit: Math.max(1, limit), running };
+  }
+
+  private availableSlot(modelKey: string): ConcurrencySlot | undefined {
+    const pool = this.poolKey(modelKey);
+    // New admissions (including a reentrant completion callback) cannot pass
+    // work already waiting in the same pool. Other pools remain independent.
+    if (this.queue.some((entry) => this.poolKey(entry.modelKey) === pool)) return undefined;
+    const slot = this.getSlot(modelKey);
+    return slot.running < slot.limit ? slot : undefined;
+  }
+
+  private acquireLease(run: AgentRun, slot: ConcurrencySlot): void {
+    this.activeLeases.add(slot);
+    this.runLeases.set(run, slot);
   }
 
   /** Spawn an agent, returning its ID immediately; queued when the concurrency limit is reached. */
   spawn(pi: ExtensionAPI, ctx: ExtensionContext, type: SubagentType, prompt: string, options: SpawnOptions): string {
     if (this.disposed) throw new Error("Agent manager is disposed.");
     const id = randomUUID().slice(0, AGENT_ID_PREFIX_LENGTH);
+    const agentConfig = options.agentConfig ?? this.owner.registry.getAgentConfig(type);
+    const limits = resolveSpawnLimits(options, agentConfig);
+    // Freeze the run limits before a queued launch. Zero prevents the SDK adapter
+    // from re-inheriting a type default when the chosen limit is unlimited.
+    options = {
+      ...options,
+      maxTurns: limits.maxTurns ?? 0,
+      maxTokens: limits.maxTokens ?? 0,
+      graceTurns: options.graceTurns ?? DEFAULT_GRACE_TURNS,
+    };
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
-    let queued = false;
-    let concurrencySlot: ConcurrencySlot | undefined;
-    if (options.modelKey) {
-      const slot = this.getSlot(options.modelKey);
-      if (slot.running >= slot.limit) {
-        queued = true;
-        this.queue.push({ id, modelKey: options.modelKey, args });
-      } else {
-        concurrencySlot = slot;
-      }
-    }
+    const modelKey = options.modelKey || (options.model && `${options.model.provider}/${options.model.id}`);
+    const concurrencySlot = modelKey ? this.availableSlot(modelKey) : undefined;
+    const queued = modelKey !== undefined && concurrencySlot === undefined;
 
     const record: AgentRecord = {
       id,
@@ -256,14 +279,15 @@ export class AgentManager {
         worktreeLabel: options.worktreeLabel,
       },
       execution: {
-        modelKey: options.modelKey,
+        modelKey,
+        graceTurns: options.graceTurns,
       },
       stats: {
         lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
         toolUses: 0,
-        turnCount: 1,
+        turnCount: 0,
         compactionCount: 0,
-        maxTurns: options.maxTurns,
+        maxTurns: normalizeMaxTurns(options.maxTurns),
       },
     };
     record.execution.continuationActivityCallbacks = {
@@ -295,7 +319,10 @@ export class AgentManager {
       this.parentBindings.set(record, { signal: options.signal, handler });
     }
 
-    if (queued) return id;
+    if (queued) {
+      this.queue.push({ id, modelKey, start: (slot) => this.startAgent(id, record, args, slot) });
+      return id;
+    }
 
     // startAgent can throw — clean up record so callers don't see an orphan
     try {
@@ -316,10 +343,7 @@ export class AgentManager {
     concurrencySlot?: ConcurrencySlot,
   ) {
     const run = this.currentRun(record);
-    if (concurrencySlot) {
-      this.activeLeases.add(concurrencySlot);
-      this.runLeases.set(run, concurrencySlot);
-    }
+    if (concurrencySlot) this.acquireLease(run, concurrencySlot);
     run.start();
     this.projectRun(record, run);
 
@@ -360,10 +384,8 @@ export class AgentManager {
       projectTrusted: options.projectTrusted,
       customTools: options.customTools,
       signal: run.controller.signal,
-      ...this.runTrackingCallbacks(record, run, options, (turnCount) => {
-        record.stats.turnCount = turnCount;
-        options.onTurnEnd?.(turnCount);
-      }),
+      ...this.runTrackingCallbacks(record, run, options),
+      onStartupModel: (model) => this.admitStartupModel(record, run, model && `${model.provider}/${model.id}`),
       onSessionCreated: (session) => {
         if (!this.isCurrentRun(record, run)) return;
         record.execution.session = session;
@@ -375,6 +397,57 @@ export class AgentManager {
       },
     });
     this.attachSettlementChain(record, run, promise);
+  }
+
+  /** Reconcile the run's provisional lease with Pi's post-bind model, before the first prompt. */
+  private admitStartupModel(record: AgentRecord, run: AgentRun, modelKey: string | undefined): void | Promise<void> {
+    const { signal } = run.controller;
+    if (signal.aborted) return;
+
+    // Retain admission order when both models share a provider pool. Record
+    // the actual model so future concurrency changes route this lease correctly.
+    record.execution.modelKey = modelKey;
+    const lease = this.runLeases.get(run);
+    if (lease?.modelKey && modelKey && this.poolKey(lease.modelKey) === this.poolKey(modelKey)) {
+      lease.modelKey = modelKey;
+      return;
+    }
+
+    // Binding may change the selected model, but the run has not prompted.
+    // Release a mismatched provisional lease and give the new pool's queue priority.
+    this.releaseLease(run);
+    const slot = modelKey ? this.availableSlot(modelKey) : undefined;
+    if (slot) this.acquireLease(run, slot);
+    if (!modelKey || slot) {
+      if (lease) this.drainQueue();
+      return;
+    }
+
+    run.waitForCapacity();
+    this.projectRun(record, run);
+    const wait = new Promise<void>((resolve, reject) => {
+      const stop = () => resolve(); // Runner checks the signal before handing out the session and owns teardown.
+      signal.addEventListener("abort", stop, { once: true });
+      this.queue.push({
+        id: record.id,
+        modelKey,
+        start: (slot) => {
+          signal.removeEventListener("abort", stop);
+          this.acquireLease(run, slot);
+          run.start();
+          this.projectRun(record, run);
+          this.watchdog.start(record.id);
+          try {
+            this.onStart?.(record);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        },
+      });
+    });
+    if (lease) this.drainQueue();
+    return wait;
   }
 
   /** Settle only the execution promise; Stop opens the parent gate separately. */
@@ -500,8 +573,10 @@ export class AgentManager {
   /** Central compatibility projection; old outcomes never read mutable record results. */
   private projectRun(record: AgentRecord, run: AgentRun): void {
     if (this.currentRun(record) !== run) return;
+    record.stats.runTurnCount = run.turnCount;
     record.lifecycle.phase = run.phase;
-    record.lifecycle.status = run.outcome?.status ?? (run.startedAt === undefined ? "queued" : "running");
+    record.lifecycle.status =
+      run.outcome?.status ?? (run.phase === "queued" || run.startedAt === undefined ? "queued" : "running");
     record.lifecycle.startedAt = run.startedAt ?? run.acceptedAt;
     record.lifecycle.completedAt = run.outcome?.completedAt;
     record.result = run.outcome?.result;
@@ -576,14 +651,13 @@ export class AgentManager {
   /**
    * Callback set shared by a first run and a continuation. Updates run activity
    * and record stats, feeds the watchdog, and forwards the caller's callbacks.
-   * writeTurnCount is the per-path policy: the first run records the absolute
-   * count, a continuation adds to the previous total.
+   * Continuations carry forward the conversation's total before this run.
    */
   private runTrackingCallbacks(
     record: AgentRecord,
     run: AgentRun,
     forward: RunCallbacks | undefined,
-    writeTurnCount: (turnCount: number) => void,
+    previousTurns = 0,
   ): SessionPromptOptions {
     return {
       onPromptStateChange: (state) => {
@@ -592,8 +666,9 @@ export class AgentManager {
       onToolActivity: (activity) => {
         if (!this.isCurrentRun(record, run)) return;
         if (activity.type === "end") record.stats.toolUses++;
-        run.recordToolActivity(activity);
         this.watchdog.recordActivity(record.id, activity);
+        if (run.promptSettled) return; // Accounting and watchdogs cover the still-active SDK prompt.
+        run.recordToolActivity(activity);
         forward?.onToolActivity?.(activity);
       },
       onAssistantUsage: (usage) => {
@@ -614,34 +689,44 @@ export class AgentManager {
         forward?.onTextDelta?.(delta, fullText);
       },
       onTurnEnd: (turnCount) => {
-        if (this.isCurrentRun(record, run)) writeTurnCount(turnCount);
+        if (!this.isCurrentRun(record, run)) return;
+        run.turnCount = turnCount;
+        record.stats.runTurnCount = run.turnCount;
+        record.stats.turnCount = previousTurns + run.turnCount;
+        forward?.onTurnEnd?.(turnCount);
       },
     };
   }
 
   private drainQueue() {
-    if (this.disposed) return;
-    const started = new Set<string>();
-    for (const entry of this.queue) {
+    // Rescan after starting an entry: callbacks can change the configuration
+    // or the queue synchronously, including adding work for newly free slots.
+    for (let index = 0; !this.disposed && index < this.queue.length;) {
+      const entry = this.queue[index];
       const record = this.agents.get(entry.id);
-      if (!record || record.lifecycle.status !== "queued") continue;
+      if (!record || record.lifecycle.status !== "queued") {
+        this.queue.splice(index, 1);
+        continue;
+      }
 
       const slot = this.getSlot(entry.modelKey);
-      if (slot.running >= slot.limit) continue;
+      if (slot.running >= slot.limit) {
+        index++;
+        continue;
+      }
 
+      this.queue.splice(index, 1);
+      index = 0;
       try {
-        this.startAgent(entry.id, record, entry.args, slot);
-        started.add(entry.id);
+        entry.start(slot);
       } catch (err) {
         // Late failure — surface on the record so the user can see it
         const run = this.currentRun(record);
         const terminal = this.failStart(record, err);
-        started.add(entry.id);
         // Failed starts notify but aren't tallied as completed agents.
         if (terminal) this.notifyComplete(terminal, run.notification);
       }
     }
-    this.queue = this.queue.filter((e) => !started.has(e.id));
   }
 
   /** Structured admission: live steering waits for the SDK's input handlers. */
@@ -658,8 +743,8 @@ export class AgentManager {
     const admission = this.currentRun(record).admitMessage(message, record.execution.session);
     if (!("continuationSession" in admission)) return admission;
     const modelKey = record.execution.modelKey;
-    const slot = modelKey ? this.getSlot(modelKey) : undefined;
-    if (slot && slot.running >= slot.limit)
+    const slot = modelKey ? this.availableSlot(modelKey) : undefined;
+    if (modelKey && !slot)
       return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
     const run = this.continueSettledAgent(record, admission.continuationSession, message, slot);
     return { accepted: true, agentId: id, runId: run.id, delivery: "continuation" };
@@ -681,10 +766,7 @@ export class AgentManager {
     const parent = this.currentRun(record).notification;
     const notification = parent && Object.freeze({ ...parent, required: true });
     const run = this.acceptRun(record, false, notification);
-    if (concurrencySlot) {
-      this.activeLeases.add(concurrencySlot);
-      this.runLeases.set(run, concurrencySlot);
-    }
+    if (concurrencySlot) this.acquireLease(run, concurrencySlot);
     run.start();
     this.projectRun(record, run);
     // A stale idle clock from the first run would kill the continuation
@@ -694,11 +776,9 @@ export class AgentManager {
     const previousTurns = record.stats.turnCount ?? 0;
     const promise = (async () =>
       continueAgentSession(session, message, {
-        ...this.runTrackingCallbacks(record, run, record.execution.continuationActivityCallbacks, (turnCount) => {
-          record.stats.turnCount = previousTurns + turnCount;
-        }),
+        ...this.runTrackingCallbacks(record, run, record.execution.continuationActivityCallbacks, previousTurns),
         maxTurns: record.stats.maxTurns,
-        graceTurns: getStore(this.owner).agent.graceTurns ?? DEFAULT_GRACE_TURNS,
+        graceTurns: record.execution.graceTurns,
         signal: run.controller.signal,
       }))();
     this.attachSettlementChain(record, run, promise);
@@ -824,7 +904,7 @@ export class AgentManager {
     this.queue = [];
     for (const record of this.agents.values()) {
       const run = this.currentRun(record);
-      if (run.phase === "queued") {
+      if (run.phase === "queued" && !record.lifecycle.started) {
         this.settleRun(record, run, { status: "error", error: DISPOSE_QUEUED_MESSAGE });
         run.publishSettlement();
       } else {

@@ -296,6 +296,26 @@ describe("runAgent — maxTokens: front matter to provider payload", () => {
 
     expect(session.agent.onPayload).toBeUndefined();
   });
+  it("does not apply frontmatter caps when a direct run supplies zero", async () => {
+    mockModules.mockGetAgentConfig.mockReturnValue({ ...defaultAgentConfig, maxTurns: 1, maxTokens: 4096 });
+    session.prompt.mockImplementation(async () => {
+      for (let turn = 0; turn < 3; turn++) {
+        session._getListeners().forEach((listener) => listener({ type: "turn_end" }));
+      }
+    });
+
+    await runAgent(owner, fakeCtx({ model: undefined }), "test-agent", "do something", {
+      pi: fakePi,
+      maxTurns: 0,
+      maxTokens: 0,
+      graceTurns: 1,
+    });
+
+    expect(session.steer).not.toHaveBeenCalled();
+    expect(session.abort).not.toHaveBeenCalled();
+    expect(session.agent.onPayload).toBeUndefined();
+  });
+
   it("spawn-time maxTokens wins over agent config", async () => {
     mockModules.mockGetAgentConfig.mockReturnValue({
       ...defaultAgentConfig,

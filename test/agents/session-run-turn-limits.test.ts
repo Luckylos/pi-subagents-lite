@@ -14,7 +14,6 @@ describe("runSessionPrompt — turn limits", () => {
   it.each([
     { maxTurns: 1, graceTurns: undefined, abortAt: 1 + DEFAULT_GRACE_TURNS },
     { maxTurns: 2, graceTurns: 3, abortAt: 5 },
-    { maxTurns: 2, graceTurns: 0, abortAt: 3 },
   ])("steers at maxTurns=$maxTurns and aborts at turn $abortAt (graceTurns=$graceTurns)", async (c) => {
     const h = createRunSessionHarness();
     const run = runSessionPrompt(h.session, "do something", { maxTurns: c.maxTurns, graceTurns: c.graceTurns });
@@ -22,8 +21,7 @@ describe("runSessionPrompt — turn limits", () => {
 
     h.endTurns(c.maxTurns);
     expect(h.steer).toHaveBeenCalledTimes(1);
-    // graceTurns=0 still allows the one turn already in flight after the steer.
-    h.endTurns(Math.max(c.abortAt - c.maxTurns - 1, 0));
+    h.endTurns(c.abortAt - c.maxTurns - 1);
     expect(h.abort).not.toHaveBeenCalled();
     h.endTurns(1);
     expect(h.abort).toHaveBeenCalledTimes(1);
@@ -32,6 +30,40 @@ describe("runSessionPrompt — turn limits", () => {
     const result = await run;
     expect(result).toMatchObject({ aborted: true, turnLimited: true });
     expect(h.listenerCount()).toBe(0);
+  });
+
+  it("enforces zero grace at the cap without steering or repeating abort", async () => {
+    const h = createRunSessionHarness();
+    const run = runSessionPrompt(h.session, "task", { maxTurns: 2, graceTurns: 0 });
+    await h.promptStarted;
+
+    h.endTurns(1);
+    expect(h.abort).not.toHaveBeenCalled();
+    h.endTurns(1);
+    expect(h.abort).toHaveBeenCalledTimes(1);
+    h.endTurns(1);
+    expect(h.abort).toHaveBeenCalledTimes(1);
+    expect(h.steer).not.toHaveBeenCalled();
+    h.finishPrompt();
+    expect(await run).toMatchObject({ aborted: true, turnLimited: true });
+    expect(h.listenerCount()).toBe(0);
+  });
+
+  it("does not steer when cancellation was requested at the soft limit", async () => {
+    const h = createRunSessionHarness();
+    const controller = new AbortController();
+    const run = runSessionPrompt(h.session, "task", {
+      maxTurns: 1,
+      signal: controller.signal,
+      onTurnEnd: () => controller.abort(),
+    });
+    await h.promptStarted;
+    h.endTurns(1);
+    h.finishPrompt();
+
+    expect(h.abort).toHaveBeenCalledTimes(1);
+    expect(h.steer).not.toHaveBeenCalled();
+    expect(await run).toMatchObject({ aborted: true, turnLimited: false });
   });
 
   it("reports turnLimited without abort when the agent wraps up within grace", async () => {

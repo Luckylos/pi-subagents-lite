@@ -82,6 +82,18 @@ describe("buildStatsParts — visible flag: showTurns", () => {
     const parts = buildStatsParts(allStats, mockTheme);
     expect(parts.some((p) => p.includes("⟳"))).toBe(true);
   });
+
+  it.each([
+    { turnCount: 8, runTurnCount: undefined, maxTurns: 5, text: "8⟳ " },
+    { turnCount: 8, runTurnCount: 4, maxTurns: 0, text: "8⟳ " },
+    { turnCount: 8, runTurnCount: 3, maxTurns: 5, text: "8⟳ " },
+    { turnCount: 8, runTurnCount: 4, maxTurns: 5, text: "8⟳ [warning:(run 4≤5) ]" },
+    { turnCount: 5, runTurnCount: 5, maxTurns: 5, text: "[error:5≤5⟳ ]" },
+  ])("formats $turnCount total and $runTurnCount run turns with limit $maxTurns", ({ text, ...turns }) => {
+    const theme = { ...mockTheme, fg: (color: string, value: string) => `[${color}:${value}]` };
+    const parts = buildStatsParts({ ...allStats, ...turns }, theme);
+    expect(parts[1]).toBe(text);
+  });
 });
 
 describe("buildStatsParts — visible flag: showInput/showOutput", () => {

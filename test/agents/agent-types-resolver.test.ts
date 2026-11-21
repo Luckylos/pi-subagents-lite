@@ -48,6 +48,7 @@ describe("resolveVisibleTools — allowlist mode", () => {
     for (const tool of ["read", "bash", "edit", "write"]) {
       const result = resolveVisibleTools({
         activeTools: [tool],
+        registeredToolNames: [tool],
         tools: [tool],
         notify,
       });
@@ -98,16 +99,18 @@ describe("resolveVisibleTools — allowlist mode", () => {
     expect(result).not.toContain("bash");
   });
 
-  it("warns about unknown bare tool name not in builtins or extensions", () => {
+  it("warns when a bare name is declared by an extension but absent from the bound registry", () => {
     const notify = vi.fn();
 
     const result = resolveVisibleTools({
       activeTools: ["read", "bash"],
+      registeredToolNames: ["read", "bash"],
       tools: ["read", "foobar"],
+      extToolMap: new Map([["tavily", ["foobar"]]]),
       notify,
     });
     expect(result).toEqual(["read"]);
-    expect(notify).toHaveBeenCalledWith(expect.stringContaining('tool "foobar" not found in any loaded extension'));
+    expect(notify.mock.calls).toEqual([['tool "foobar" is not registered in the child session']]);
   });
 
   it("whitelists grep, find, or ls without warning (AC-4)", () => {
@@ -115,6 +118,7 @@ describe("resolveVisibleTools — allowlist mode", () => {
 
     const grepResult = resolveVisibleTools({
       activeTools: ["read", "bash", "grep"],
+      registeredToolNames: ["read", "bash", "grep"],
       tools: ["read", "grep"],
       notify,
     });
@@ -124,6 +128,7 @@ describe("resolveVisibleTools — allowlist mode", () => {
 
     const findResult = resolveVisibleTools({
       activeTools: ["read", "bash", "find"],
+      registeredToolNames: ["read", "bash", "find"],
       tools: ["read", "find"],
       notify,
     });
@@ -133,6 +138,7 @@ describe("resolveVisibleTools — allowlist mode", () => {
 
     const lsResult = resolveVisibleTools({
       activeTools: ["read", "bash", "ls"],
+      registeredToolNames: ["read", "bash", "ls"],
       tools: ["read", "ls"],
       notify,
     });

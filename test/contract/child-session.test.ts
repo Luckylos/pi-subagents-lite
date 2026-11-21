@@ -53,13 +53,21 @@ import {
   createEventBus,
   DefaultResourceLoader,
   getAgentDir,
+  ModelRuntime,
   SessionManager,
   SettingsManager,
   type EventBus,
 } from "@earendil-works/pi-coding-agent";
-import { createChildSession } from "../../src/agents/agent-runner.js";
+import {
+  createAssistantMessageEventStream,
+  fauxAssistantMessage,
+  fauxProvider,
+  InMemoryCredentialStore,
+} from "@earendil-works/pi-ai";
+import { createChildSession, runAgent } from "../../src/agents/agent-runner.js";
 
 import { disposeChildSession } from "../../src/agents/session-teardown.js";
+import { assistantMessage } from "../agents/session-messages.js";
 import { importPiBuiltInExtensions } from "../agents/pi-builtin-registry.js";
 import { asExtensionAPI, asExtensionContext } from "../pi-boundaries.js";
 import { defaultSessionManager } from "../mock-utils.js";
@@ -78,7 +86,7 @@ interface Workspace {
   hasProbe: boolean;
   writeGlobalSettings(settings: Record<string, unknown>): void;
   writeProjectSettings(settings: Record<string, unknown>): void;
-  writeProbeExtension(): void;
+  writeProbeExtension(lateOnly?: boolean): void;
   writeForkExtension(): void;
   writePeerExtension(): void;
   writeLifecycleProbe(): void;
@@ -118,10 +126,11 @@ function makeWorkspace(name: string): Workspace {
       fs.mkdirSync(path.join(project, ".pi"), { recursive: true });
       fs.writeFileSync(path.join(project, ".pi", "settings.json"), JSON.stringify(settings));
     },
-    writeProbeExtension() {
+    writeProbeExtension(lateOnly = false) {
       const dir = path.join(project, ".pi", "extensions");
       fs.mkdirSync(dir, { recursive: true });
       workspace.hasProbe = true;
+      const startupExposures = lateOnly ? [] : ["deferred", "hidden"];
       // Deferred tool (callable by dispatchers while inactive), a tool
       // registered during session_start (late registration), and one live
       // resource per bound session (shutdown must release it).
@@ -136,16 +145,18 @@ function writeCount(n) {
 }
 const probeSchema = { type: "object", properties: {}, required: [] };
 export default function (pi) {
-  pi.registerTool({
-    name: "probe_deferred",
-    label: "Probe deferred",
-    description: "Deferred probe tool",
-    parameters: probeSchema,
-    exposure: "deferred",
-    async execute() {
-      return { content: [{ type: "text", text: "ok" }], details: {} };
-    },
-  });
+  for (const exposure of ${JSON.stringify(startupExposures)}) {
+    pi.registerTool({
+      name: "probe_" + exposure,
+      label: "Probe " + exposure,
+      description: exposure + " probe tool",
+      parameters: probeSchema,
+      exposure,
+      async execute() {
+        return { content: [{ type: "text", text: "ok" }], details: {} };
+      },
+    });
+  }
   pi.on("session_start", async () => {
     writeCount(readCount() + 1);
     pi.registerTool({
@@ -528,6 +539,42 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
     await disposeChildSession(session);
   });
 
+  it.each([true, false])(
+    "validates the bound registry and extension aliases with project trust %s",
+    async (trusted) => {
+      const workspace = makeWorkspace("explicit-probe");
+      workspace.writeGlobalSettings({ extensions: ["-builtin:codemode", "-builtin:tool-search", "-builtin:mcp"] });
+      workspace.writeProbeExtension();
+      const { session, warnings } = await createChildSession(owner, parentCtx(workspace.project), "contract-probe", {
+        pi: stubPi(),
+        projectTrusted: trusted,
+        agentConfig: {
+          name: "contract-probe",
+          description: "",
+          systemPrompt: "",
+          tools: ["probe_hidden", "probe_late", "probe/*"],
+        },
+      });
+
+      try {
+        expect(registryOf(session)).toEqual(trusted ? ["probe_deferred", "probe_hidden", "probe_late"] : []);
+        expect(activeOf(session)).toEqual(trusted ? ["probe_deferred", "probe_late"] : []);
+        expect(callableOf(session)).toEqual(trusted ? ["probe_deferred", "probe_late"] : []);
+        expect(warnings).toEqual(
+          trusted
+            ? []
+            : [
+                'extension "probe" is not loaded, "probe/*" will have no effect',
+                'tool "probe_hidden" is not registered in the child session',
+                'tool "probe_late" is not registered in the child session',
+              ],
+        );
+      } finally {
+        await disposeChildSession(session);
+      }
+    },
+  );
+
   it("frontmatter extensions: false loads no built-in extensions", async () => {
     owner.registry.registerAgents(
       new Map([["contract-no-ext", { name: "contract-no-ext", description: "", systemPrompt: "", extensions: false }]]),
@@ -598,6 +645,118 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
 
     await disposeChildSession(session);
     expect(workspace.probeCount()).toBe(0);
+  });
+});
+
+describe("contract: startup wildcard diagnostics", () => {
+  function probeWorkspace(lateOnly = true) {
+    const workspace = makeWorkspace("alias-probe");
+    workspace.writeGlobalSettings({ extensions: ["-builtin:codemode", "-builtin:tool-search", "-builtin:mcp"] });
+    workspace.writeProbeExtension(lateOnly);
+    return workspace;
+  }
+
+  it.each(["loaded", "disabled", "untrusted"] as const)(
+    "keeps the explicit registry gate for a late-only wildcard when the extension is %s",
+    async (state) => {
+      const workspace = probeWorkspace();
+      const { session, warnings } = await createChildSession(owner, parentCtx(workspace.project), "contract-late", {
+        pi: stubPi(),
+        projectTrusted: state !== "untrusted",
+        agentConfig: {
+          name: "contract-late",
+          description: "",
+          systemPrompt: "",
+          tools: ["read", "probe/*", "missing/all"],
+          extensions: state === "disabled" ? false : undefined,
+        },
+      });
+
+      try {
+        expect(workspace.probeCount()).toBe(state === "loaded" ? 1 : 0);
+        expect(rawRunnerOf(session)).toEqual(state === "loaded" ? ["probe_late"] : []);
+        expect(registryOf(session)).toEqual(["read"]);
+        expect(activeOf(session)).toEqual(["read"]);
+        expect(warnings).toEqual([
+          state === "loaded"
+            ? 'extension "probe" is loaded but declares no tools before binding, "probe/*" will have no effect'
+            : 'extension "probe" is not loaded, "probe/*" will have no effect',
+          'extension "missing" is not loaded, "missing/all" will have no effect',
+        ]);
+      } finally {
+        await disposeChildSession(session);
+      }
+    },
+  );
+
+  it.each([
+    { label: "a late-only alias", lateOnly: true, excludeTools: ["probe/all"], active: ["probe_late", "read"] },
+    { label: "a startup alias", lateOnly: false, excludeTools: ["probe/all"], active: ["probe_late", "read"] },
+    { label: "a concrete late name", lateOnly: false, excludeTools: ["probe/all", "probe_late"], active: ["read"] },
+  ])("applies exclusions for $label to the active tool set", async ({ lateOnly, excludeTools, active }) => {
+    const workspace = probeWorkspace(lateOnly);
+    workspace.writeProjectSettings({ defaultTools: lateOnly ? ["read"] : ["read", "probe_deferred", "probe_hidden"] });
+    const { session, warnings } = await createChildSession(owner, parentCtx(workspace.project), "contract-late", {
+      pi: stubPi(),
+      agentConfig: { name: "contract-late", description: "", systemPrompt: "", excludeTools },
+    });
+
+    try {
+      expect(activeOf(session)).toEqual(active);
+      expect(registryOf(session)).toContain("probe_late");
+      if (!lateOnly) expect(callableOf(session)).toContain("probe_deferred");
+      expect(callableOf(session)).not.toContain("probe_hidden");
+      expect(warnings).toEqual(
+        lateOnly
+          ? ['extension "probe" is loaded but declares no tools before binding, "probe/all" will have no effect']
+          : [],
+      );
+    } finally {
+      await disposeChildSession(session);
+    }
+  });
+
+  it("lets a concrete late name through the registry gate and reaches the faux provider", async () => {
+    const workspace = probeWorkspace();
+    const offline = fauxProvider({ provider: "offline-alias", models: [{ id: "alias-test" }] });
+    const credentials = new InMemoryCredentialStore();
+    await credentials.modify(offline.provider.id, async () => ({ type: "api_key", key: "test-only" }));
+    const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+    runtime.registerNativeProvider(offline.provider);
+    offline.setResponses([fauxAssistantMessage("offline reply")]);
+    const createRuntime = vi.spyOn(ModelRuntime, "create").mockResolvedValue(runtime);
+    const notify = vi.fn();
+    const ctx = asExtensionContext({ ...parentCtx(workspace.project), ui: { notify } });
+    let child: AgentSession | undefined;
+    try {
+      const result = await runAgent(owner, ctx, "contract-late", "run offline", {
+        pi: stubPi(),
+        agentConfig: {
+          name: "contract-late",
+          description: "",
+          systemPrompt: "",
+          tools: ["probe/*", "probe_late"],
+        },
+        model: offline.getModel(),
+        onSessionCreated(session) {
+          child = session;
+        },
+      });
+
+      expect(registryOf(result.session)).toEqual(["probe_late"]);
+      expect(activeOf(result.session)).toEqual(["probe_late"]);
+      expect(offline.state.callCount).toBe(1);
+      expect(result.responseText).toBe("offline reply");
+      expect(notify.mock.calls).toEqual([
+        [
+          '[pi-subagents-lite] extension "probe" is loaded but declares no tools before binding, "probe/*" will have no effect',
+          "warning",
+        ],
+      ]);
+    } finally {
+      createRuntime.mockRestore();
+      if (child) await disposeChildSession(child);
+    }
   });
 });
 
@@ -814,6 +973,100 @@ describe("contract: spawn-bound MessageParent obeys frontmatter tool gating", ()
   it("is present for an explicit list naming it, and for tools: true", async () => {
     await expectGate(await childWith("named", { tools: ["read", "MessageParent"] }), true);
     await expectGate(await childWith("true", { tools: true }), true);
+  });
+
+  it("runs an explicitly named MessageParent from the SDK registry without a warning", async () => {
+    const workspace = makeWorkspace("mp-offline-run");
+    const deliver = vi.fn(() => true);
+    const notify = vi.fn();
+    const ctx = asExtensionContext({ ...parentCtx(workspace.project), ui: { notify } });
+    let child: AgentSession | undefined;
+    try {
+      const result = await runAgent(owner, ctx, "contract-mp-run", "send progress", {
+        pi: stubPi(),
+        agentConfig: {
+          name: "contract-mp-run",
+          description: "",
+          systemPrompt: "",
+          tools: ["MessageParent"],
+          extensions: false,
+        },
+        customTools: [createParentMessageTool({ deliver, runId: () => "run-1" })],
+        model: {
+          id: "test-model",
+          name: "Offline test model",
+          api: "anthropic-messages",
+          provider: "anthropic",
+          baseUrl: "http://unused.invalid",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 200_000,
+          maxTokens: 8_192,
+        },
+        onSessionCreated(session) {
+          child = session;
+          const replies = [
+            assistantMessage({
+              stopReason: "toolUse",
+              content: [{ type: "toolCall", id: "progress", name: "MessageParent", arguments: { message: " ready " } }],
+            }),
+            assistantMessage({ content: [{ type: "text", text: "finished" }] }),
+          ];
+          vi.spyOn(session.modelRuntime, "hasConfiguredAuth").mockReturnValue(true);
+          session.agent.streamFunction = () => {
+            const reply = replies.shift();
+            if (!reply || (reply.stopReason !== "toolUse" && reply.stopReason !== "stop")) {
+              throw new Error("Unexpected model request");
+            }
+            const stream = createAssistantMessageEventStream();
+            stream.push({ type: "done", reason: reply.stopReason, message: reply });
+            stream.end(reply);
+            return stream;
+          };
+        },
+      });
+
+      expect(registryOf(result.session)).toEqual(["MessageParent"]);
+      expect(activeOf(result.session)).toEqual(["MessageParent"]);
+      expect(result.modelError).toBeUndefined();
+      expect(result.responseText).toBe("finished");
+      expect(deliver.mock.calls).toEqual([["ready"]]);
+      expect(result.session.messages.find((message) => message.role === "toolResult")).toMatchObject({
+        toolName: "MessageParent",
+        isError: false,
+        content: [{ type: "text", text: "Delivered to the parent session." }],
+      });
+      expect(notify).not.toHaveBeenCalled();
+    } finally {
+      if (child) await disposeChildSession(child);
+    }
+  });
+
+  it("warns for bare names missing from the SDK registry when MessageParent is not injected", async () => {
+    const workspace = makeWorkspace("mp-not-injected");
+    const { session, warnings } = await createChildSession(owner, parentCtx(workspace.project), "contract-mp-missing", {
+      pi: stubPi(),
+      agentConfig: {
+        name: "contract-mp-missing",
+        description: "",
+        systemPrompt: "",
+        tools: ["MessageParent", "missing_tool", "Agent"],
+        extensions: false,
+      },
+    });
+
+    try {
+      expect(registryOf(session)).toEqual([]);
+      expect(activeOf(session)).toEqual([]);
+      expect(warnings).toEqual([
+        'tool "MessageParent" is not registered in the child session',
+        'tool "missing_tool" is not registered in the child session',
+        'tool "Agent" is not registered in the child session',
+      ]);
+    } finally {
+      await disposeChildSession(session);
+    }
   });
 
   it("is absent for a registeredTools list without it, present when listed", async () => {

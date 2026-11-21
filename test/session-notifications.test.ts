@@ -421,7 +421,8 @@ describe("session-bound completion notifications", () => {
       expectResult(a.api, "followUp");
       expect(a.api.api.sendMessage.mock.calls[0][0].details).toMatchObject({
         status: "completed",
-        turnCount: 1,
+        turnCount: 0,
+        runTurnCount: 0,
         output: 0,
       });
     } finally {

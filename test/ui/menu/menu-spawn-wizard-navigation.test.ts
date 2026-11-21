@@ -27,14 +27,14 @@ const CLEAR = "\x15";
 function deferTarget(path: string) {
   let complete!: (target: WorktreeValidationResult) => void;
   const pending = new Promise<WorktreeValidationResult>((resolve) => (complete = resolve));
-  return { pending, finish: () => complete(validTarget(path)) };
+  return { pending, finish: (result = validTarget(path)) => complete(result) };
 }
 
 function validTarget(path: string): WorktreeValidationResult {
   return { ok: true, resolvedPath: path, worktreeRoot: path, sameRepo: true };
 }
 
-async function openWizard() {
+async function openWizard(hasParentModel = true) {
   const fixture = parent();
   fixture.api.api.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
     code: 0,
@@ -75,7 +75,7 @@ async function openWizard() {
     fakeCtx({
       cwd: "/parent",
       hasUI: false,
-      model: { ...base.model!, reasoning: true },
+      model: hasParentModel ? { ...base.model!, reasoning: true } : undefined,
       ui: { ...base.ui, custom },
     }),
   );
@@ -211,6 +211,29 @@ describe("Spawn wizard with the registered command and Pi TUI", () => {
     wizard.press(ENTER);
     expect(wizard.render()).toMatch(/→ Model\s+\(inherits parent\)/);
     expect(wizard.render()).toContain("high (pi per-model)");
+    wizard.press(BACK);
+    await wizard.close();
+  });
+
+  it("restores the pending Pi selection after moving away from an invalid target", async () => {
+    const wizard = await openWizard(false);
+    expect(wizard.render()).toMatch(/Model\s+Pi selects on spawn/);
+    expect(wizard.render()).toMatch(/Thinking level\s+Pending$/m);
+
+    const target = deferTarget("/feature");
+    vi.mocked(validateWorktreePath).mockReturnValueOnce(target.pending);
+    wizard.worktree("/feature");
+    expect(wizard.render()).toMatch(/Model +$/m);
+    expect(wizard.render()).toMatch(/Thinking level +$/m);
+    target.finish({ ok: false, error: "Target unavailable" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(wizard.render()).toMatch(/Model +$/m);
+    expect(wizard.render()).toMatch(/Thinking level +$/m);
+
+    wizard.worktree("Inherits parent cwd");
+    await vi.waitFor(() => expect(wizard.render()).toMatch(/Thinking level\s+Pending$/m));
+    expect(wizard.render()).toMatch(/Model\s+Pi selects on spawn/);
+    expect(wizard.render()).toMatch(/→ Worktree\s+Inherits parent cwd/);
     wizard.press(BACK);
     await wizard.close();
   });

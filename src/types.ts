@@ -33,6 +33,7 @@ export interface LiveView {
  */
 export interface RunTunables {
   model?: Model<any>;
+  /** Omitted limits inherit defaults; zero explicitly disables the corresponding agent cap. */
   maxTurns?: number;
   maxTokens?: number;
   thinkingLevel?: ThinkingLevel;
@@ -56,6 +57,8 @@ export interface SubagentRunOutcome {
 export interface RunResultStats {
   readonly lifetimeUsage: Readonly<LifetimeUsage>;
   readonly turnCount?: number;
+  /** Completed turns in the run that produced this report. */
+  readonly runTurnCount?: number;
   readonly maxTurns?: number;
   readonly toolUses: number;
   readonly contextPercent: number | null;
@@ -246,6 +249,8 @@ export interface AgentDisplayInfo {
  */
 export interface AgentExecutionState {
   session?: AgentSession;
+  /** Spawn-time grace period, reused for each continuation. */
+  graceTurns?: number;
   abortController?: AbortController;
   /**
    * Current run's parent wait gate. Opens on Stop acceptance or settlement;
@@ -254,11 +259,7 @@ export interface AgentExecutionState {
   promise?: Promise<SubagentParentReport>;
   /** Lifecycle wrapper for the output file stream. */
   outputLog?: AgentOutputLog;
-  /**
-   * Model key the spawn reserved a concurrency slot for. Set at spawn; used
-   * to re-reserve the slot when a settled agent is continued. Undefined when
-   * the spawn had no model key (re-reservation is skipped entirely).
-   */
+  /** Model key used for concurrency admission, confirmed by Pi and reused by continuations. */
   modelKey?: string;
   /**
    * Lifetime cost already added to the session total (tallyCompletion
@@ -283,8 +284,10 @@ export interface AgentAccumulatedStats {
    */
   lifetimeUsage: LifetimeUsage;
   toolUses: number;
-  /** Final turn count (set on completion). Used by widget after activity cleanup. */
+  /** Cumulative turn count across the conversation. */
   turnCount?: number;
+  /** Completed turns in the current or most recently settled run. */
+  runTurnCount?: number;
   /** Max turns limit (from invocation or default). */
   maxTurns?: number;
   /** Number of times this agent's session has compacted. Initialized to 0 at spawn. */

@@ -10,8 +10,8 @@ import type { ExtensionOwner } from "../../shell.ts";
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { SettingsList, SelectList, type SettingItem } from "@earendil-works/pi-tui";
-import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
+import { SettingsList, SelectList, type SelectItem, type SettingItem } from "@earendil-works/pi-tui";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import type { ThinkingChoice } from "../../types.ts";
 import type { Theme } from "../types.ts";
 
@@ -30,6 +30,7 @@ import { SEPARATOR_ID, buildSettingsListTheme, buildSelectListTheme, createSearc
 import { plainText } from "../sanitize.ts";
 import { DEFAULT_GRACE_TURNS } from "../../config/agent-settings.ts";
 import { prepareSpawnIntent } from "../../spawn/spawn-preparation.ts";
+import { resolveSpawnLimits } from "../../agents/run-limits.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createNumericSubmenu, createInputSubmenu } from "./submenus/numeric-input.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
@@ -120,32 +121,26 @@ async function isInGitRepo(owner: ExtensionOwner, cwd: string): Promise<boolean>
 
 // --- Spawn agent wizard ---
 
-/**
- * Build the thinking-level submenu for the model a spawn would use, resolved
- * through `resolveModel` when the picker opens: its supported levels, then
- * `parent` and `pi default`. A non-reasoning model lists only `off` as a level,
- * since every level clamps to `off` there; the tail stays offered whatever the
- * model supports, so any earlier pick can be reversed.
- */
+/** Offer supported levels for a known model and keep follow/reset available while Pi's choice is pending. */
 function createThinkingLevelSubmenu(
-  resolveModel: () => Model<any> | undefined,
+  resolveChoices: () => ReturnType<typeof resolveSpawnChoices> | undefined,
   theme: Theme,
 ): (_currentValue: string, done: (v?: string) => void) => any {
   return (_currentValue, done) => {
-    const model = resolveModel();
-    if (!model) {
+    const choices = resolveChoices();
+    if (!choices) {
       done();
       return undefined;
     }
 
-    const supported = getSupportedThinkingLevels(model);
-    const isReasoning = model.reasoning;
-
-    const items: Array<{ value: string; label: string; description?: string }> = supported.map((level) => ({
-      value: level,
-      label: level === "off" ? "Off" : level.charAt(0).toUpperCase() + level.slice(1),
-      description: !isReasoning ? "(not supported by this model)" : undefined,
-    }));
+    const { model } = choices;
+    const items: SelectItem[] = model
+      ? getSupportedThinkingLevels(model).map((level) => ({
+          value: level,
+          label: level === "off" ? "Off" : level.charAt(0).toUpperCase() + level.slice(1),
+          description: model.reasoning ? undefined : "(not supported by this model)",
+        }))
+      : [];
 
     items.push(...THINKING_CHOICE_TAIL.map((choice) => ({ value: choice, label: choice })));
 
@@ -216,8 +211,6 @@ export async function showSpawnAgentMenu(
     selectedType = result;
   }
 
-  const agentConfig = owner.registry.getAgentConfig(selectedType)!;
-
   // ---- Step 2: Prompt entry ----
   let initialPrompt: string;
   {
@@ -263,8 +256,6 @@ export async function showSpawnAgentMenu(
     prompt: initialPrompt,
     description: initialPrompt.slice(0, 50),
     modelChoice: { kind: "default" },
-    maxTurns: agentConfig.maxTurns ?? store.agent.defaultMaxTurns,
-    maxTokens: agentConfig.maxTokens,
     graceTurns: store.agent.graceTurns ?? DEFAULT_GRACE_TURNS,
     background: true,
     worktreeLabel: "Inherits parent cwd",
@@ -279,26 +270,35 @@ export async function showSpawnAgentMenu(
     }
   };
 
-  const thinkingDisplay = (choices: ReturnType<typeof preview>): string => {
-    if (!choices) return "";
-    if (choices.explicitThinkingLevel !== undefined) {
-      return draft.thinkingChoice === "parent"
-        ? formatDisplayedThinking({ level: choices.explicitThinkingLevel, source: "parent" })
-        : choices.explicitThinkingLevel;
-    }
-    return formatDisplayedThinking(choices.displayThinking());
-  };
-
   const previewValues = () => {
     const choices = preview();
     const { modelChoice } = draft;
-    const model =
-      modelChoice.kind === "explicit"
-        ? modelChoice.name
-        : modelChoice.kind === "parent"
-          ? "(inherits parent)"
-          : (choices?.modelKey ?? "(inherits parent)");
-    return { model, thinking: thinkingDisplay(choices) };
+    let model = "";
+    if (modelChoice.kind === "explicit") model = modelChoice.name;
+    else if (choices) {
+      if (!choices.modelKey) model = "Pi selects on spawn";
+      else model = modelChoice.kind === "parent" ? "(inherits parent)" : choices.modelKey;
+    }
+    let modelDescription = "Override the default model for this agent";
+    if (choices?.unavailableModel) {
+      const fallback = choices.modelKey
+        ? `Spawn uses parent model ${plainText(choices.modelKey)}.`
+        : "Pi selects the model on spawn.";
+      modelDescription = `Configured model ${plainText(choices.unavailableModel)} is unavailable. ${fallback}`;
+    }
+    const limits = resolveSpawnLimits(
+      draft,
+      selection?.agentConfig,
+      selection ? store.agent.defaultMaxTurns : undefined,
+    );
+    const fmtNum = (v: number | undefined) => (v ? String(v) : "(not set)");
+    return {
+      model,
+      modelDescription,
+      thinking: choices ? formatDisplayedThinking(choices.displayThinking()) : "",
+      maxTurns: fmtNum(limits.maxTurns),
+      maxTokens: fmtNum(limits.maxTokens),
+    };
   };
 
   let optionsClosed = false;
@@ -329,7 +329,6 @@ export async function showSpawnAgentMenu(
   };
 
   const buildItems = (theme: Theme): SettingItem[] => {
-    const fmtNum = (v: number | undefined) => (v != null ? String(v) : "(not set)");
     const values = previewValues();
     return [
       {
@@ -389,6 +388,7 @@ export async function showSpawnAgentMenu(
                   description,
                   maxTurns,
                   maxTokens,
+                  defaultMaxTurns: store.agent.defaultMaxTurns,
                   graceTurns,
                   worktreeLabel: spawn.worktreePath ? worktreeLabel : undefined,
                   runInBackground: background,
@@ -401,6 +401,7 @@ export async function showSpawnAgentMenu(
               if (!isCurrentMenu()) return;
               if (err instanceof SpawnModelUnavailableError) {
                 ctx.ui.notify(err.message, "error");
+                if (!optionsClosed) refreshPreview();
                 return;
               }
               if (validateModelBeforeClosing) doneRef();
@@ -427,7 +428,7 @@ export async function showSpawnAgentMenu(
         id: "model",
         label: "Model",
         currentValue: values.model,
-        description: "Override the default model for this agent",
+        description: values.modelDescription,
         submenu: createModelSelectSubmenu(owner, {
           modelOptions,
           showClear: false,
@@ -436,7 +437,6 @@ export async function showSpawnAgentMenu(
           onSet: (_target, model) => {
             draft.modelChoice =
               model === "(inherits parent)" || model === null ? { kind: "parent" } : { kind: "explicit", name: model };
-            refreshPreview();
           },
         }),
       },
@@ -486,35 +486,37 @@ export async function showSpawnAgentMenu(
         label: "Thinking level",
         currentValue: values.thinking,
         description: "Set the reasoning effort level",
-        submenu: createThinkingLevelSubmenu(() => preview()?.model, theme),
+        submenu: createThinkingLevelSubmenu(preview, theme),
       },
       {
         id: "maxTokens",
         label: "Max tokens",
-        currentValue: fmtNum(draft.maxTokens),
+        currentValue: values.maxTokens,
         description: "Maximum tokens the agent can consume",
         submenu: createNumericSubmenu(
           ctx,
+          {},
           (parsed) => {
             draft.maxTokens = parsed;
           },
           () => {
-            draft.maxTokens = undefined;
+            draft.maxTokens = 0;
           },
         ),
       },
       {
         id: "maxTurns",
         label: "Max turns",
-        currentValue: fmtNum(draft.maxTurns),
+        currentValue: values.maxTurns,
         description: "Maximum conversation turns before hard stop",
         submenu: createNumericSubmenu(
           ctx,
+          {},
           (parsed) => {
             draft.maxTurns = parsed;
           },
           () => {
-            draft.maxTurns = undefined;
+            draft.maxTurns = 0;
           },
         ),
       },
@@ -557,6 +559,10 @@ export async function showSpawnAgentMenu(
     const items = buildItems(theme);
     const onChange = (id: string, newValue: string) => {
       switch (id) {
+        case "model":
+          // SettingsList writes the raw picker value before this callback.
+          refreshPreview();
+          break;
         case "thinkingLevel":
           draft.thinkingChoice = parseThinkingChoice(newValue);
           refreshPreview();
@@ -576,8 +582,12 @@ export async function showSpawnAgentMenu(
     refreshPreview = () => {
       // Keep the SettingsList and its active editor intact while updating derived rows.
       const values = previewValues();
+      const modelItem = items.find((item) => item.id === "model");
+      if (modelItem) modelItem.description = values.modelDescription;
       settingsList.updateValue("model", values.model);
       settingsList.updateValue("thinkingLevel", values.thinking);
+      settingsList.updateValue("maxTurns", values.maxTurns);
+      settingsList.updateValue("maxTokens", values.maxTokens);
       tui.requestRender();
     };
     return new SettingsListWrapper(settingsList, {

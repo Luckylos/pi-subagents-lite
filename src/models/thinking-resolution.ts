@@ -72,26 +72,25 @@ function resolveValue(
  * The source that decided a displayed level, in the words the menus print.
  * `parent` names any position holding `parent`.
  */
-export type ThinkingSource = "frontmatter" | "pi per-model" | "subagent default" | "parent" | "pi default";
+export type ThinkingSource = "explicit" | "frontmatter" | "pi per-model" | "subagent default" | "parent" | "pi default";
 
-/** A displayed level and the source that produced it. */
-export interface DisplayedThinking {
+interface ThinkingPreference {
   level: ThinkingLevel;
   source: ThinkingSource;
 }
 
-/** Sources the pre-spawn surfaces show: the chain without the explicit spawn param. */
-type DisplayThinkingSources = Omit<ThinkingLevelSources, "explicit">;
+/** A clamped level, or the known preference while Pi's initial model is pending. */
+export type DisplayedThinking = ThinkingPreference | { pending: true; preference?: ThinkingPreference };
 
 /** The configured positions, in precedence order, each with the word it prints when it wins. */
 const CONFIGURED_SOURCES = [
   ["frontmatter", "frontmatter"],
   ["perModel", "pi per-model"],
   ["defaultThinking", "subagent default"],
-] as const satisfies ReadonlyArray<readonly [keyof DisplayThinkingSources, ThinkingSource]>;
+] as const satisfies ReadonlyArray<readonly [keyof ThinkingLevelSources, ThinkingSource]>;
 
 /** The first configured source holding a level, with the word that explains it. */
-function decideConfiguredSource(sources: ThinkingLevelSources): DisplayedThinking | undefined {
+function decideConfiguredSource(sources: ThinkingLevelSources): ThinkingPreference | undefined {
   for (const [key, word] of CONFIGURED_SOURCES) {
     const value = sources[key];
     const level = resolveValue(value, sources.parentLevel);
@@ -107,21 +106,22 @@ export function resolveThinkingLevel(sources: ThinkingLevelSources): ThinkingLev
   return resolveValue(sources.explicit, sources.parentLevel) ?? decideConfiguredSource(sources)?.level;
 }
 
-/**
- * The displayed thinking level with its winning source: the chain, then pi's
- * global defaultThinkingLevel, then medium, clamped to the model's supported
- * levels (unclamped when the model is not in the registry).
- */
+/** Show what is known before spawn, using the selected model's capabilities when available. */
 export function resolveDisplayedThinking(
-  sources: DisplayThinkingSources,
+  sources: ThinkingLevelSources,
   piDefaultThinking: ThinkingLevel | undefined,
   model: Model<any> | undefined,
 ): DisplayedThinking {
-  const decided = decideConfiguredSource(sources) ?? {
-    level: piDefaultThinking ?? PI_FALLBACK_THINKING_LEVEL,
-    source: "pi default" as const,
-  };
-  return toDisplayed(model, decided.level, decided.source);
+  const selected = resolveValue(sources.explicit, sources.parentLevel);
+  const preference: ThinkingPreference | undefined =
+    selected === undefined
+      ? (decideConfiguredSource(sources) ??
+        (piDefaultThinking === undefined ? undefined : { level: piDefaultThinking, source: "pi default" }))
+      : { level: selected, source: sources.explicit === PARENT_THINKING_CHOICE ? "parent" : "explicit" };
+  if (!model) return preference ? { pending: true, preference } : { pending: true };
+
+  const { level, source } = preference ?? { level: PI_FALLBACK_THINKING_LEVEL, source: "pi default" };
+  return { level: clampThinkingToModel(model, level), source };
 }
 
 /**
@@ -132,12 +132,12 @@ export function clampThinkingToModel(model: Model<any> | undefined, level: Think
   return model ? clampThinkingLevel(model, level) : level;
 }
 
-/** Builds the displayed pair from a winning level and its source word. */
-function toDisplayed(model: Model<any> | undefined, level: ThinkingLevel, source: ThinkingSource): DisplayedThinking {
-  return { level: clampThinkingToModel(model, level), source };
-}
-
-/** The row label for a displayed level: `high (frontmatter)`. */
+/** Prefix pending previews so even a truncated row identifies a preference. */
 export function formatDisplayedThinking(displayed: DisplayedThinking): string {
-  return `${displayed.level} (${displayed.source})`;
+  if ("pending" in displayed) {
+    const { preference } = displayed;
+    return preference ? `Pending · ${preference.level} (${preference.source})` : "Pending";
+  }
+  const { level, source } = displayed;
+  return source === "explicit" ? level : `${level} (${source})`;
 }

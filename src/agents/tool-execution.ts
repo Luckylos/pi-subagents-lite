@@ -84,8 +84,6 @@ export async function executeAgentTool(
   const description =
     (params.description as string | undefined) || prompt.split("\n")[0].slice(0, 80) || prompt.slice(0, 80);
   const runInBackground = params.run_in_background as boolean | undefined;
-  const maxTurns =
-    (params.max_turns as number | undefined) ?? spawn.agentConfig?.maxTurns ?? store.agent.defaultMaxTurns;
 
   // Background spawns (explicit or forceBackground) never bind to the parent
   // run's interrupt signal — only foreground spawns can be interrupted.
@@ -98,7 +96,8 @@ export async function executeAgentTool(
       ...spawn,
       prompt,
       description,
-      maxTurns,
+      maxTurns: params.max_turns as number | undefined,
+      defaultMaxTurns: store.agent.defaultMaxTurns,
       graceTurns: store.agent.graceTurns,
       runInBackground: isBackground,
       toolCallId,

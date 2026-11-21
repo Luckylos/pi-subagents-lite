@@ -7,6 +7,7 @@
 import { vi, type Mock } from "vite-plus/test";
 import { DefaultResourceLoader, type AgentSession, type LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 /* ------------------------------------------------------------------ */
 /*  Types shared across split test files                               */
@@ -42,6 +43,7 @@ interface MockLoaderInstance {
   _opts: LoaderOpts;
   reload: ReturnType<typeof vi.fn>;
   getExtensions: ReturnType<typeof vi.fn>;
+  getPrompts: DefaultResourceLoader["getPrompts"];
 }
 
 /** The SettingsManager surface the spawn path reads from SettingsManager.create. */
@@ -55,6 +57,7 @@ function MockDefaultResourceLoader(this: MockLoaderInstance, opts: LoaderOpts) {
   this._opts = opts;
   this.reload = vi.fn().mockResolvedValue(undefined);
   this.getExtensions = vi.fn().mockReturnValue(_loaderGetExtensionsResult);
+  this.getPrompts = () => ({ prompts: [], diagnostics: [] });
   _loaderOpts.push(opts);
 }
 
@@ -254,6 +257,7 @@ export function resetMocks() {
 export interface MockSession {
   setSessionName: Mock<() => void>;
   getActiveToolNames: Mock<() => string[] | undefined>;
+  getAllTools: Mock<AgentSession["getAllTools"]>;
   setActiveToolsByName: Mock<(tools: string[]) => void>;
   getActiveTools: Mock<() => string[] | undefined>;
   bindExtensions: Mock<() => void>;
@@ -274,9 +278,19 @@ export interface MockSession {
 export function createMockSession(): MockSession {
   const listeners: Array<(event: unknown) => void> = [];
   let activeTools: string[] | undefined;
+  const getActiveToolNames = vi.fn<() => string[] | undefined>();
   return {
     setSessionName: vi.fn(),
-    getActiveToolNames: vi.fn(),
+    getActiveToolNames,
+    getAllTools: vi.fn<AgentSession["getAllTools"]>(() =>
+      (getActiveToolNames() ?? []).map((name) => ({
+        name,
+        description: name,
+        parameters: Type.Object({}),
+        exposure: "direct",
+        sourceInfo: { path: `<test:${name}>`, source: "test", scope: "temporary", origin: "top-level" },
+      })),
+    ),
     setActiveToolsByName: vi.fn((tools: string[]) => {
       activeTools = tools;
     }),

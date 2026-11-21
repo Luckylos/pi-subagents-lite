@@ -128,6 +128,7 @@ export class ConversationViewer implements Component {
           break;
         case "entry_appended":
         case "compaction_end":
+        case "turn_end":
           this.scheduleRender();
           break;
         case "tool_execution_end":
@@ -270,6 +271,7 @@ export class ConversationViewer implements Component {
       {
         toolUses: this.record.stats.toolUses,
         turnCount: this.record.stats.turnCount,
+        runTurnCount: this.record.stats.runTurnCount,
         maxTurns: this.record.stats.maxTurns,
         input: this.record.stats.lifetimeUsage.input,
         output: this.record.stats.lifetimeUsage.output,

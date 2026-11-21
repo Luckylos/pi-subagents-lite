@@ -10,6 +10,7 @@ import { mockModules, resetConfig } from "../../menu-mock-setup.js";
 import { createMockCtx } from "../../menu-test-helpers.js";
 
 import type { AgentConfig } from "../../../src/agents/types.js";
+import type { SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { Component, SelectItem, SelectListTheme } from "@earendil-works/pi-tui";
 import type { SettingsListWrapperOptions } from "../../../src/ui/menu/wrappers/settings-list.js";
 
@@ -17,9 +18,9 @@ import type { SettingsListWrapperOptions } from "../../../src/ui/menu/wrappers/s
 // test-controllable without touching real pi settings files.
 const codingAgentMock = vi.hoisted(() => ({
   SettingsManager: {
-    create: vi.fn<() => { getDefaultTools: () => string[] | undefined }>(() => ({
-      getDefaultTools: () => ["read", "bash", "edit", "write"],
-    })),
+    create: vi.fn<(...args: Parameters<typeof SettingsManager.create>) => Pick<SettingsManager, "getDefaultTools">>(
+      () => ({ getDefaultTools: () => ["read", "bash", "edit", "write"] }),
+    ),
   },
   getAgentDir: vi.fn(() => "/home/test/.pi/agent"),
 }));
@@ -86,8 +87,13 @@ vi.mock("../../../src/ui/menu/wrappers/settings-list.js", () => ({
   },
 }));
 
-// Import AFTER mock setup
-import { showDebugMenu } from "../../../src/ui/menu/menu-debug.js";
+// Keep the shared registry spies while exercising the real runner tool rules.
+const registryMock = await import("../../../src/agents/agent-types.js");
+vi.doMock("../../../src/agents/agent-types.js", async (original) => ({
+  ...(await original<typeof import("../../../src/agents/agent-types.js")>()),
+  ...registryMock,
+}));
+const { showDebugMenu } = await import("../../../src/ui/menu/menu-debug.js");
 
 /**
  * Assert a getAgentConfig fixture against the real AgentConfig at the mocked
@@ -130,7 +136,7 @@ describe("showDebugMenu — SelectList migration", () => {
     await showDebugMenu(owner, ctx);
     await selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "Available agent types:\n\n  ABC\n    ABC\n  Model: ABC\n  Tools: ABC\n",
+      "Available agent types:\n\n  ABC\n    ABC\n  Model: ABC\n  Tools: ABC (startup candidates for this directory). The registry allows ABC and tools from loaded extensions. Extension and per-spawn tools are resolved at launch.\n",
       "info",
     );
     await selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
@@ -238,7 +244,14 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
     const ctx = createMockCtx();
     await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tools: file_read, file_write"), "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Tools: file_read, file_write (startup candidates for this directory)."),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("The registry allows file_read, file_write and tools from loaded extensions."),
+      "info",
+    );
   });
 
   it("shows pi's resolved defaultTools when registeredTools is absent", async () => {
@@ -268,22 +281,33 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
     await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
     // Same manager acquisition as the spawn path: SettingsManager over cwd + agent dir.
-    expect(codingAgentMock.SettingsManager.create).toHaveBeenCalledWith("/repo", "/home/test/.pi/agent");
+    expect(codingAgentMock.SettingsManager.create).toHaveBeenCalledWith("/repo", "/home/test/.pi/agent", {
+      projectTrusted: true,
+    });
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tools: read, bash, grep"), "info");
   });
 
-  it("shows '(none)' when the effective tool set is empty", async () => {
+  it("shows the distinction between an empty default activation and an empty registry", async () => {
     vi.mocked(owner.registry.getAllTypes).mockReturnValue(["tool-agent"]);
     vi.mocked(owner.registry.getAgentConfig).mockImplementation(() => ({
       name: "tool-agent",
-      description: "Agent with no tools",
+      description: "Agent with no default tools",
       systemPrompt: "",
     }));
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => [] });
     const ctx = createMockCtx();
     await showDebugMenu(owner, ctx);
-    selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Tools: (none)"), "info");
+    await selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Tools: (none) (startup candidates for this directory). Pi defaults select startup tools from the available registry.",
+      ),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Extension and per-spawn tools are resolved at launch."),
+      "info",
+    );
   });
 
   it("shows pi's fallback set when defaultTools is unconfigured and tool loading is implicit", async () => {
@@ -313,9 +337,64 @@ describe("showDebugMenu — agent types action (SelectList)", () => {
     const ctx = createMockCtx();
     await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
-    // Implicit OFF passes noTools: "all" — the child genuinely starts tool-less.
-    // "(none)" is the display's empty-set marker: the only discriminator.
-    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("(none)"), "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Tools: (none). The tool registry is empty."),
+      "info",
+    );
+    expect(codingAgentMock.SettingsManager.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { tools: false },
+    { tools: [] },
+    { tools: ["Agent"] },
+    { tools: ["plugin/Agent", "plugin/none"] },
+  ] satisfies Pick<AgentConfig, "tools">[])("shows an empty registry for explicit tools $tools", async ({ tools }) => {
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["no-tools"]);
+    vi.mocked(owner.registry.getAgentConfig).mockReturnValue({
+      name: "no-tools",
+      description: "Agent with tools explicitly disabled",
+      registeredTools: ["read"],
+      tools,
+      systemPrompt: "",
+    });
+    const ctx = createMockCtx();
+    await showDebugMenu(owner, ctx);
+    await selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Tools: (none). The tool registry is empty."),
+      "info",
+    );
+    expect(codingAgentMock.SettingsManager.create).not.toHaveBeenCalled();
+  });
+
+  it("shows the explicit PowerShell candidate without a contradictory launch warning", async () => {
+    const { createPowerShellTool } = await vi.importActual<typeof import("@earendil-works/pi-coding-agent")>(
+      "@earendil-works/pi-coding-agent",
+    );
+    const { resolveVisibleTools } = await import("../../../src/agents/agent-types.js");
+    const ctx = createMockCtx();
+    const tools = ["powershell"];
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["shell-agent"]);
+    vi.mocked(owner.registry.getAgentConfig).mockReturnValue({
+      name: "shell-agent",
+      description: "Agent with PowerShell",
+      tools,
+      systemPrompt: "",
+    });
+    await showDebugMenu(owner, ctx);
+    selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Tools: powershell (startup candidates"),
+      "info",
+    );
+
+    const notify = vi.fn();
+    const powershell = createPowerShellTool(ctx.cwd).name;
+    expect(
+      resolveVisibleTools({ activeTools: [powershell], registeredToolNames: [powershell], tools, notify }),
+    ).toEqual(tools);
+    expect(notify).not.toHaveBeenCalled();
   });
 
   it("skips types where getAgentConfig returns undefined", async () => {
@@ -416,7 +495,7 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("prompt"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("description"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("agent"));
-    expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("thinking"));
+    expect(mockSendUserMessage).not.toHaveBeenCalledWith(expect.stringContaining("| `thinking` |"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("run_in_background"));
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("worktree_path"));
   });
@@ -429,12 +508,153 @@ describe("showDebugMenu — agent briefing action (SelectList)", () => {
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("**Tools:** read, bash, edit, write"));
   });
 
-  it("shows '(none)' for an empty effective tool set in the briefing", async () => {
+  it("shows '(none)' for an empty Pi default selection in the briefing", async () => {
     codingAgentMock.SettingsManager.create.mockReturnValue({ getDefaultTools: () => [] });
     const ctx = createMockCtx();
     await showDebugMenu(owner, ctx);
     selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
     expect(mockSendUserMessage).toHaveBeenCalledWith(expect.stringContaining("**Tools:** (none)"));
+  });
+
+  it("shows the activation filter separately from legacy registered names", async () => {
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValue(["configured"]);
+    vi.mocked(owner.registry.getAgentConfig).mockReturnValue({
+      name: "configured",
+      description: "Agent with separate registration and activation",
+      registeredTools: ["read", "write"],
+      excludeTools: ["write", "plugin/*"],
+      systemPrompt: "",
+    });
+    const ctx = createMockCtx();
+    await showDebugMenu(owner, ctx);
+    await selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining("**Tools:** read (startup candidates for this directory)."),
+    );
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining("The registry allows read, write and tools from loaded extensions."),
+    );
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "The activation filter excludes write, plugin/*. Extension and per-spawn tools are resolved at launch.",
+      ),
+    );
+    expect(codingAgentMock.SettingsManager.create).not.toHaveBeenCalled();
+  });
+
+  it("shows unresolved extension aliases and gives the tool allowlist precedence over exclusions", async () => {
+    mockModules.mockConfig.agent.loadToolsImplicitly = false;
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValue(["configured"]);
+    vi.mocked(owner.registry.getAgentConfig).mockReturnValue({
+      name: "configured",
+      description: "Agent with an allowlist",
+      tools: [
+        "read",
+        "Agent",
+        "plugin/Agent",
+        "plugin/search",
+        "plugin/*",
+        "other/all",
+        "skipped/none",
+        "MessageParent",
+      ],
+      excludeTools: ["read"],
+      systemPrompt: "",
+    });
+    const ctx = createMockCtx();
+    await showDebugMenu(owner, ctx);
+    await selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining("**Tools:** read, search, MessageParent (startup candidates for this directory)."),
+    );
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "Known allowlist names for registration and activation are read, search, MessageParent. The allowlist includes extension aliases plugin/*, other/all.",
+      ),
+    );
+    expect(codingAgentMock.SettingsManager.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { selection: { registeredTools: [] }, rule: "The registry allows tools from loaded extensions." },
+    {
+      selection: { tools: ["Agent", "plugin/*"] },
+      rule: "The allowlist includes extension aliases plugin/*.",
+    },
+  ] satisfies { selection: Partial<AgentConfig>; rule: string }[])(
+    "keeps extension tools possible when no candidate names are known for $selection",
+    async ({ selection, rule }) => {
+      vi.mocked(owner.registry.getAvailableTypes).mockReturnValue(["configured"]);
+      vi.mocked(owner.registry.getAgentConfig).mockReturnValue({
+        name: "configured",
+        description: "Agent whose tools can come from extensions",
+        systemPrompt: "",
+        ...selection,
+      });
+      const ctx = createMockCtx();
+      await showDebugMenu(owner, ctx);
+      await selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
+      expect(mockSendUserMessage).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `**Tools:** (none) (startup candidates for this directory). ${rule} Extension and per-spawn tools are resolved at launch.`,
+        ),
+      );
+      expect(codingAgentMock.SettingsManager.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reads Pi defaults once per action with current cwd trust, including an explicit standard set", async () => {
+    const { SettingsManager: PiSettingsManager } = await vi.importActual<
+      typeof import("@earendil-works/pi-coding-agent")
+    >("@earendil-works/pi-coding-agent");
+    const readSettings = vi.fn((scope: "global" | "project") =>
+      scope === "global" ? '{"defaultTools":["read","grep","Agent"]}' : '{"defaultTools":["write","ls"]}',
+    );
+    codingAgentMock.SettingsManager.create.mockImplementation((_cwd, _agentDir, options) =>
+      PiSettingsManager.fromStorage(
+        {
+          withLock: (scope, read) => {
+            read(readSettings(scope));
+          },
+        },
+        options,
+      ),
+    );
+    vi.mocked(owner.registry.getAllTypes).mockReturnValue(["standard", "delegated"]);
+    vi.mocked(owner.registry.getAvailableTypes).mockReturnValue(["standard", "delegated"]);
+    vi.mocked(owner.registry.getAgentConfig).mockImplementation((name) => ({
+      name,
+      description: "Agent using Pi startup defaults",
+      tools: name === "standard" ? true : undefined,
+      excludeTools: ["plugin/grep", "ls"],
+      systemPrompt: "",
+    }));
+    const isProjectTrusted = vi.fn(() => true);
+    const ctx = { ...createMockCtx(), cwd: "/repo", isProjectTrusted };
+    await showDebugMenu(owner, ctx);
+    await selectListCalls[0].onSelect!({ value: "agent-types", label: "Agent types" });
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Tools: write (startup candidates for this directory)."),
+      "info",
+    );
+    expect(codingAgentMock.SettingsManager.create).toHaveBeenCalledTimes(1);
+    expect(readSettings.mock.calls).toEqual([["global"], ["project"]]);
+
+    readSettings.mockClear();
+    isProjectTrusted.mockReturnValue(false);
+    mockModules.mockConfig.agent.loadToolsImplicitly = false;
+    await selectListCalls[0].onSelect!({ value: "agent-briefing", label: "Agent briefing" });
+    expect(codingAgentMock.SettingsManager.create).toHaveBeenLastCalledWith("/repo", "/home/test/.pi/agent", {
+      projectTrusted: false,
+    });
+    expect(codingAgentMock.SettingsManager.create).toHaveBeenCalledTimes(2);
+    expect(readSettings.mock.calls).toEqual([["global"]]);
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining("**Tools:** read (startup candidates for this directory)."),
+    );
+    expect(mockSendUserMessage).toHaveBeenCalledWith(
+      expect.stringContaining("**Tools:** (none). The tool registry is empty."),
+    );
   });
 
   it("notifies the user after sending the briefing", async () => {

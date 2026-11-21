@@ -116,6 +116,48 @@ describe("AgentManager", () => {
       deferred2.resolve(mockRunResult());
     });
 
+    it.each([
+      {
+        name: "frontmatter limits",
+        config: { maxTurns: 3, maxTokens: 400 },
+        expected: { maxTurns: 3, maxTokens: 400 },
+      },
+      { name: "omitted limits", config: {}, expected: { maxTurns: 0, maxTokens: 0 } },
+      {
+        name: "explicit limits",
+        config: { maxTurns: 3, maxTokens: 400 },
+        explicit: { maxTurns: 0, maxTokens: 700, graceTurns: 0 },
+        expected: { maxTurns: 0, maxTokens: 700, graceTurns: 0 },
+      },
+    ])("freezes $name when a direct spawn is queued", async ({ config, explicit, expected }) => {
+      manager = new AgentManager(owner, onComplete, { default: 1 });
+      const getAgentConfig = vi.mocked(owner.registry.getAgentConfig);
+      const initialConfig = { name: "general-purpose", description: "Test agent", systemPrompt: "", ...config };
+      getAgentConfig.mockReturnValue(initialConfig);
+      const first = makeResolvablePromise();
+      mockModules.mockRunAgent.mockReturnValueOnce(first.promise).mockResolvedValue(mockRunResult());
+      const ctx = fakeCtx();
+      const pi = fakePi();
+      const options = { description: "same model", modelKey: "test/model" };
+
+      try {
+        const active = manager.spawn(pi, ctx, initialConfig.name, "active", options);
+        const queued = manager.spawn(pi, ctx, initialConfig.name, "queued", { ...options, ...explicit });
+        expect(manager.getRecord(queued)?.lifecycle.status).toBe("queued");
+        expect(manager.getRecord(queued)?.stats.maxTurns).toBe(expected.maxTurns || undefined);
+        expect(mockModules.mockRunAgent).toHaveBeenCalledTimes(1);
+
+        getAgentConfig.mockReturnValue({ ...initialConfig, maxTurns: 9, maxTokens: 900 });
+        first.resolve(mockRunResult());
+        await manager.getRuns(active)[0].completion;
+        await manager.getRuns(queued)[0].completion;
+        expect(mockModules.mockRunAgent.mock.lastCall?.[4]).toMatchObject(expected);
+      } finally {
+        first.resolve(mockRunResult());
+        getAgentConfig.mockReset();
+      }
+    });
+
     it("queues agents per-model independently", () => {
       const config: ConcurrencyConfig = {
         default: 4,

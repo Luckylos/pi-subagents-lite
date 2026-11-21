@@ -101,14 +101,22 @@ export function formatSessionTokens(
   return tokenStr ? `${tokenStr} ${annotationStr}` : annotationStr;
 }
 
-/** Format turn count with optional max limit. Shows max when >= 80% of limit. */
-function formatTurns(turnCount: number, maxTurns: number | null | undefined, theme: Theme): string {
-  if (maxTurns == null) return `${turnCount}⟳ `;
-  const ratio = turnCount / maxTurns;
-  const text = ratio >= 0.8 ? `${turnCount}≤${maxTurns}⟳ ` : `${turnCount}⟳ `;
-  if (ratio >= 1) return theme.fg("error", text);
-  if (ratio >= 0.8) return theme.fg("warning", text);
-  return text;
+/** Show the conversation total, with run-limit progress from 80% onward when available. */
+function formatTurns(
+  turnCount: number,
+  runTurnCount: number | undefined,
+  maxTurns: number | undefined,
+  theme: Theme,
+): string {
+  const total = `${turnCount}⟳ `;
+  if (runTurnCount == null || maxTurns == null || maxTurns <= 0) return total;
+  const ratio = runTurnCount / maxTurns;
+  if (ratio >= 0.8) {
+    const color = ratio >= 1 ? "error" : "warning";
+    if (runTurnCount === turnCount) return theme.fg(color, `${turnCount}≤${maxTurns}⟳ `);
+    return total + theme.fg(color, `(run ${runTurnCount}≤${maxTurns}) `);
+  }
+  return total;
 }
 
 // ---- Exported formatting functions ----
@@ -151,6 +159,7 @@ export function buildStatsParts(
   args: {
     toolUses: number;
     turnCount?: number;
+    runTurnCount?: number;
     maxTurns?: number;
     input: number;
     output: number;
@@ -164,8 +173,9 @@ export function buildStatsParts(
 ): string[] {
   const parts: string[] = [];
   if (visible?.showTools !== false && args.toolUses > 0) parts.push(`${args.toolUses}⚒ `);
-  if (visible?.showTurns !== false && args.turnCount != null)
-    parts.push(formatTurns(args.turnCount, args.maxTurns, theme));
+  if (visible?.showTurns !== false && args.turnCount != null) {
+    parts.push(formatTurns(args.turnCount, args.runTurnCount, args.maxTurns, theme));
+  }
   const inputTokens = visible?.showInput !== false ? args.input : 0;
   const outputTokens = visible?.showOutput !== false ? args.output : 0;
   const contextPercent = visible?.showContext !== false ? args.contextPercent : null;

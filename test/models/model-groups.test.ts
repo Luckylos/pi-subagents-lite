@@ -26,6 +26,7 @@ const REASONING_MODEL = {
   thinkingLevelMap: { xhigh: "xhigh", max: "max" },
 } as Model<Api>;
 const NON_REASONING_MODEL = { provider: "openai", id: "gpt-4o", reasoning: false } as Model<Api>;
+const PARENT_MODEL = { ...REASONING_MODEL, provider: "test", id: "parent-model" };
 const LIMITED_REASONING_MODEL = {
   provider: "anthropic",
   id: "claude-limited",
@@ -54,8 +55,11 @@ function input(overrides: InputOverrides = {}): ModelGroupsInput {
     sessionOverrides: { default: null },
     hasGlobalModelKey: () => false,
     hasProjectModelKey: () => false,
-    parentModelId: "test/parent-model",
-    findModel: (id: string) => registry.get(id),
+    parentModelId: `${PARENT_MODEL.provider}/${PARENT_MODEL.id}`,
+    resolveModel: (id) => {
+      const model = id ? registry.get(id) : undefined;
+      return { model: model ?? PARENT_MODEL, unavailable: Boolean(id && !model) };
+    },
     ...rest,
   };
 }
@@ -96,18 +100,18 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "openai/gpt-4o",
-        rows: [{ type: "worker", thinking: "off", source: "pi default", tag: "" }],
+        rows: [{ type: "worker", thinking: { level: "off", source: "pi default" }, tag: "" }],
       },
     ]);
   });
+
   it("lists an empty-string per-type key as a row resolving to the parent fallback", () => {
-    // "" is an explicit key needing a clear path; resolution skips it, so the
-    // row lands under the parent fallback with medium thinking (no frontmatter).
+    // An empty override retains a clear path and inherits the available parent model.
     const result = groupsFor(input({ config: { scout: "" } }));
     expect(result).toEqual([
       {
         modelId: "test/parent-model",
-        rows: [{ type: "scout", thinking: "medium", source: "pi default", tag: "" }],
+        rows: [{ type: "scout", thinking: { level: "medium", source: "pi default" }, tag: "" }],
       },
     ]);
   });
@@ -119,7 +123,11 @@ describe("buildModelGroups — grouping", () => {
         hasProjectModelKey: (key) => key === "worker",
       }),
     );
-    expect(result[0]?.rows[0]).toEqual({ type: "worker", thinking: "off", source: "pi default", tag: "[project]" });
+    expect(result[0]?.rows[0]).toEqual({
+      type: "worker",
+      thinking: { level: "off", source: "pi default" },
+      tag: "[project]",
+    });
   });
 
   it("groups a session per-type override over the frontmatter model with [session]", () => {
@@ -132,7 +140,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "openai/gpt-4o",
-        rows: [{ type: "scout", thinking: "off", source: "pi default", tag: "[session]" }],
+        rows: [{ type: "scout", thinking: { level: "off", source: "pi default" }, tag: "[session]" }],
       },
     ]);
   });
@@ -147,7 +155,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "openai/gpt-4o",
-        rows: [{ type: "scout", thinking: "off", source: "pi default", tag: "" }],
+        rows: [{ type: "scout", thinking: { level: "off", source: "pi default" }, tag: "" }],
       },
     ]);
   });
@@ -166,11 +174,13 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "openai/gpt-4o",
-        rows: [{ type: "worker", thinking: "off", source: "pi default", tag: "[session]" }],
+        rows: [{ type: "worker", thinking: { level: "off", source: "pi default" }, tag: "[session]" }],
       },
       {
         modelId: "s/scout",
-        rows: [{ type: "scout", thinking: "medium", source: "pi default", tag: "[session]" }],
+        rows: [
+          { type: "scout", thinking: { level: "medium", source: "pi default" }, tag: "[session]", unavailable: true },
+        ],
       },
     ]);
   });
@@ -188,7 +198,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "anthropic/claude-opus-4-1",
-        rows: [{ type: "worker", thinking: "medium", source: "pi default", tag: "[session]" }],
+        rows: [{ type: "worker", thinking: { level: "medium", source: "pi default" }, tag: "[session]" }],
       },
     ]);
   });
@@ -204,7 +214,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "openai/gpt-4o",
-        rows: [{ type: "worker", thinking: "off", source: "pi default", tag: "[session]" }],
+        rows: [{ type: "worker", thinking: { level: "off", source: "pi default" }, tag: "[session]" }],
       },
     ]);
   });
@@ -220,7 +230,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "anthropic/claude-opus-4-1",
-        rows: [{ type: "worker", thinking: "medium", source: "pi default", tag: "[session]" }],
+        rows: [{ type: "worker", thinking: { level: "medium", source: "pi default" }, tag: "[session]" }],
       },
     ]);
   });
@@ -237,7 +247,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "anthropic/claude-opus-4-1",
-        rows: [{ type: "worker", thinking: "medium", source: "pi default", tag: "[session]" }],
+        rows: [{ type: "worker", thinking: { level: "medium", source: "pi default" }, tag: "[session]" }],
       },
     ]);
   });
@@ -247,7 +257,7 @@ describe("buildModelGroups — grouping", () => {
     expect(result).toEqual([
       {
         modelId: "openai/gpt-4o",
-        rows: [{ type: "worker", thinking: "off", source: "pi default", tag: "" }],
+        rows: [{ type: "worker", thinking: { level: "off", source: "pi default" }, tag: "" }],
       },
     ]);
   });
@@ -259,7 +269,11 @@ describe("buildModelGroups — grouping", () => {
         hasProjectModelKey: (key) => key === "worker",
       }),
     );
-    expect(result[0]?.rows[0]).toEqual({ type: "worker", thinking: "off", source: "pi default", tag: "[project]" });
+    expect(result[0]?.rows[0]).toEqual({
+      type: "worker",
+      thinking: { level: "off", source: "pi default" },
+      tag: "[project]",
+    });
   });
 
   it("lists a session per-type override equal to the session default with [session]", () => {
@@ -269,7 +283,11 @@ describe("buildModelGroups — grouping", () => {
         sessionOverrides: { default: "openai/gpt-4o", worker: "openai/gpt-4o" },
       }),
     );
-    expect(result[0]?.rows[0]).toEqual({ type: "worker", thinking: "off", source: "pi default", tag: "[session]" });
+    expect(result[0]?.rows[0]).toEqual({
+      type: "worker",
+      thinking: { level: "off", source: "pi default" },
+      tag: "[session]",
+    });
   });
 
   it("renders a group for the config default model only when a per-type override points at it", () => {
@@ -295,17 +313,48 @@ describe("buildModelGroups — grouping", () => {
     expect(result[0]?.rows.map((r) => r.type)).toEqual(["scout", "plain"]);
   });
 
-  it("groups an unknown model id by its raw string without clamping", () => {
+  it("keeps configured and inherited rows under the same parent ID but warns only for the configured row", () => {
+    const parent = LIMITED_REASONING_MODEL;
+    const parentModelId = `${parent.provider}/${parent.id}`;
     const result = groupsFor(
       input({
+        parentModelId,
+        config: { scout: parentModelId, worker: "" },
+        resolveModel: (id) => ({ model: parent, unavailable: id === parentModelId }),
+        piModelThinking: (id) => (id === parentModelId ? "xhigh" : undefined),
+      }),
+    );
+    expect(result).toEqual([
+      {
+        modelId: parentModelId,
+        rows: [
+          { type: "scout", thinking: { level: "high", source: "pi per-model" }, tag: "", unavailable: true },
+          { type: "worker", thinking: { level: "high", source: "pi per-model" }, tag: "" },
+        ],
+      },
+    ]);
+  });
+
+  it("groups an unknown model by its configured ID and shows its Thinking preference as pending", () => {
+    const result = groupsFor(
+      input({
+        parentModelId: "",
         agentConfigs: { scout: { thinkingLevel: "high" } },
         config: { scout: "custom/unknown-1" },
+        resolveModel: () => ({ model: undefined, unavailable: true }),
       }),
     );
     expect(result).toEqual([
       {
         modelId: "custom/unknown-1",
-        rows: [{ type: "scout", thinking: "high", source: "frontmatter", tag: "" }],
+        rows: [
+          {
+            type: "scout",
+            thinking: { pending: true, preference: { level: "high", source: "frontmatter" } },
+            tag: "",
+            unavailable: true,
+          },
+        ],
       },
     ]);
   });
@@ -323,7 +372,7 @@ describe("buildModelGroups — thinking display", () => {
         config: { scout: "anthropic/claude-opus-4-1", defaultThinking: "low" },
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("low");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "low" });
   });
 
   it("shows pi's defaultThinkingLevel when frontmatter and defaultThinking are unset", () => {
@@ -333,12 +382,12 @@ describe("buildModelGroups — thinking display", () => {
         piDefaultThinking: "xhigh",
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("xhigh");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "xhigh" });
   });
 
   it("falls back to medium when no thinking source is set", () => {
     const result = groupsFor(input({ config: { scout: "anthropic/claude-opus-4-1" } }));
-    expect(result[0]?.rows[0].thinking).toBe("medium");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "medium" });
   });
 
   it("prefers frontmatter thinking over defaultThinking and pi's level", () => {
@@ -349,7 +398,7 @@ describe("buildModelGroups — thinking display", () => {
         piDefaultThinking: "xhigh",
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("high");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "high" });
   });
 
   it("clamps thinking to a non-reasoning model's supported levels (off)", () => {
@@ -359,7 +408,7 @@ describe("buildModelGroups — thinking display", () => {
         config: { scout: "openai/gpt-4o" },
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("off");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "off" });
   });
 
   it("clamps thinking to the highest supported level of a limited reasoning model", () => {
@@ -371,7 +420,7 @@ describe("buildModelGroups — thinking display", () => {
     );
     // Sanity: the registry model really lacks xhigh (guards the test itself).
     expect(clampThinkingLevel(LIMITED_REASONING_MODEL, "xhigh")).toBe("high");
-    expect(result[0]?.rows[0].thinking).toBe("high");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "high" });
   });
 
   it("leaves an in-range thinking level unclamped", () => {
@@ -381,34 +430,31 @@ describe("buildModelGroups — thinking display", () => {
         config: { scout: "anthropic/claude-opus-4-1" },
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("high");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "high" });
   });
 });
 
 describe("buildModelGroups — thinking source annotation", () => {
   const SCOUT = { config: { scout: "anthropic/claude-opus-4-1" } };
-  const rowSource = (overrides: InputOverrides) => {
-    const row = groupsFor(input(overrides))[0]?.rows[0];
-    return { thinking: row?.thinking, source: row?.source };
-  };
+  const rowSource = (overrides: InputOverrides) => groupsFor(input(overrides))[0]?.rows[0].thinking;
 
   it("names frontmatter for a frontmatter level", () => {
     expect(rowSource({ ...SCOUT, agentConfigs: { scout: { thinkingLevel: "high" } } })).toEqual({
-      thinking: "high",
+      level: "high",
       source: "frontmatter",
     });
   });
 
   it("names pi per-model for pi's per-model level", () => {
     expect(rowSource({ ...SCOUT, piModelThinking: () => "high" })).toEqual({
-      thinking: "high",
+      level: "high",
       source: "pi per-model",
     });
   });
 
   it("names subagent default for this extension's defaultThinking", () => {
     expect(rowSource({ config: { scout: "anthropic/claude-opus-4-1", defaultThinking: "low" } })).toEqual({
-      thinking: "low",
+      level: "low",
       source: "subagent default",
     });
   });
@@ -416,13 +462,13 @@ describe("buildModelGroups — thinking source annotation", () => {
   it("names parent when the agent file holds `parent`, not frontmatter", () => {
     expect(
       rowSource({ ...SCOUT, agentConfigs: { scout: { thinkingLevel: "parent" } }, parentLevel: "minimal" }),
-    ).toEqual({ thinking: "minimal", source: "parent" });
+    ).toEqual({ level: "minimal", source: "parent" });
   });
 
   it("names parent when defaultThinking holds `parent`", () => {
     expect(
       rowSource({ config: { scout: "anthropic/claude-opus-4-1", defaultThinking: "parent" }, parentLevel: "low" }),
-    ).toEqual({ thinking: "low", source: "parent" });
+    ).toEqual({ level: "low", source: "parent" });
   });
 
   it("clamps a followed parent level to the group model", () => {
@@ -432,7 +478,7 @@ describe("buildModelGroups — thinking source annotation", () => {
         config: { scout: "openai/gpt-4o" },
         parentLevel: "high",
       }),
-    ).toEqual({ thinking: "off", source: "parent" });
+    ).toEqual({ level: "off", source: "parent" });
   });
 
   it("names the next source when the only `parent` has no parent level to follow", () => {
@@ -441,7 +487,7 @@ describe("buildModelGroups — thinking source annotation", () => {
         agentConfigs: { scout: { thinkingLevel: "parent" } },
         config: { scout: "anthropic/claude-opus-4-1", defaultThinking: "low" },
       }),
-    ).toEqual({ thinking: "low", source: "subagent default" });
+    ).toEqual({ level: "low", source: "subagent default" });
   });
 });
 
@@ -453,7 +499,7 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: (key) => (key === "anthropic/claude-opus-4-1" ? "high" : undefined),
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("high");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "high" });
   });
 
   it("clamps the per-model level to the group model's supported levels", () => {
@@ -463,7 +509,7 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: () => "high",
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("off");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "off" });
   });
 
   it("frontmatter thinking beats the per-model level", () => {
@@ -474,7 +520,7 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: () => "high",
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("low");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "low" });
   });
 
   it("per-model beats defaultThinking (default thinking only overrides pi's global default)", () => {
@@ -484,7 +530,7 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: () => "low",
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("low");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "low" });
   });
 
   it("falls through when the resolved model has no per-model entry", () => {
@@ -494,7 +540,7 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: () => undefined,
       }),
     );
-    expect(result[0]?.rows[0].thinking).toBe("low");
+    expect(result[0]?.rows[0].thinking).toMatchObject({ level: "low" });
   });
 
   it("per-model falls through to pi's global default, then medium", () => {
@@ -504,7 +550,7 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: () => undefined,
       }),
     );
-    expect(none[0]?.rows[0].thinking).toBe("medium");
+    expect(none[0]?.rows[0].thinking).toMatchObject({ level: "medium" });
     const withPiDefault = groupsFor(
       input({
         config: { scout: "anthropic/claude-opus-4-1" },
@@ -512,6 +558,6 @@ describe("buildModelGroups — per-model thinking display", () => {
         piModelThinking: () => undefined,
       }),
     );
-    expect(withPiDefault[0]?.rows[0].thinking).toBe("xhigh");
+    expect(withPiDefault[0]?.rows[0].thinking).toMatchObject({ level: "xhigh" });
   });
 });

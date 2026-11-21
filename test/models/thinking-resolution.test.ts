@@ -144,12 +144,16 @@ describe("resolveDisplayedThinking", () => {
   });
 
   it("clamps the result to the model's supported levels", () => {
-    expect(resolveDisplayedThinking({ defaultThinking: "xhigh" }, undefined, MODEL).level).toBe("xhigh");
-    expect(resolveDisplayedThinking({ defaultThinking: "max" }, undefined, MODEL).level).toBe("xhigh");
+    expect(resolveDisplayedThinking({ defaultThinking: "xhigh" }, undefined, MODEL)).toMatchObject({ level: "xhigh" });
+    expect(resolveDisplayedThinking({ defaultThinking: "max" }, undefined, MODEL)).toMatchObject({ level: "xhigh" });
   });
 
-  it("leaves the result unclamped when the model is not in the registry", () => {
-    expect(resolveDisplayedThinking({ defaultThinking: "max" }, undefined, undefined).level).toBe("max");
+  it("keeps a configured fallback as a preference when the model is pending", () => {
+    expect(resolveDisplayedThinking({ defaultThinking: "max" }, undefined, undefined)).toEqual({
+      pending: true,
+      preference: { level: "max", source: "subagent default" },
+    });
+    expect(resolveDisplayedThinking({}, undefined, undefined)).toEqual({ pending: true });
   });
 });
 

@@ -11,7 +11,7 @@ import type { RunSession } from "../../src/agents/session-run.js";
 type Listener = (event: AgentSessionEvent) => void;
 
 export interface RunSessionHarness {
-  session: RunSession;
+  session: RunSession & Pick<AgentSession, "messages">;
   steer: Mock<RunSession["steer"]>;
   abort: Mock<RunSession["abort"]>;
   /** Resolves once prompt() is awaited by the run. */
@@ -35,7 +35,7 @@ export function createRunSessionHarness(messages: AgentSession["messages"] = [])
   });
   const steer = vi.fn<RunSession["steer"]>(async () => "queued");
   const abort = vi.fn<RunSession["abort"]>(async () => {});
-  const session: RunSession = {
+  const session: RunSessionHarness["session"] = {
     messages,
     subscribe: (listener) => {
       listeners.add(listener);

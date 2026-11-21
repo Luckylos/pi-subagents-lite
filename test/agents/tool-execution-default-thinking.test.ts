@@ -136,10 +136,17 @@ describe("executeAgentTool — max turns precedence", () => {
     [undefined, undefined, 50, 50],
     [10, 20, 50, 10],
     [undefined, 30, 50, 30],
+    [0, 30, 50, 0],
+    [undefined, 0, 50, 0],
+    [null, undefined, 50, 50],
+    [undefined, undefined, 0, 0],
     [undefined, undefined, undefined, undefined],
   ])("resolves explicit=%s frontmatter=%s default=%s to %s", async (explicit, frontmatter, configured, expected) => {
     state.defaultMaxTurns = configured;
-    getAgentConfig.mockReturnValue({ ...agent, maxTurns: frontmatter });
-    expect((await execute({ max_turns: explicit })).maxTurns).toBe(expected);
+    getAgentConfig.mockReturnValue({ ...agent, maxTurns: frontmatter, maxTokens: 400 });
+    const intent = await execute({ max_turns: explicit });
+    expect(intent.maxTurns).toBe(expected);
+    expect(intent.invocation?.maxTurns).toBe(expected || undefined);
+    expect(intent.maxTokens).toBe(400);
   });
 });

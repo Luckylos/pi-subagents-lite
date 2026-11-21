@@ -7,7 +7,8 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mockModules, resetConfig, selectDialogInstances } from "../../menu-mock-setup.js";
-import { createMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
+import { createMockCtx as createBaseMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
+import { defaultModel, defaultModelRegistry } from "../../mock-utils.js";
 import { ConfigStore } from "../../../src/config/config-store.js";
 import { memIO } from "../../config/config-store-helpers.js";
 
@@ -113,6 +114,20 @@ vi.mock("../../../src/ui/menu/wrappers/settings-list.js", () => ({
 import { showModelSettingsMenu } from "../../../src/ui/menu/menu-model-settings.js";
 
 vi.mock("../../../src/pi-settings.js", () => piSettingsMock);
+
+function createMockCtx(...[selections, inputs, customValues, options]: Parameters<typeof createBaseMockCtx>) {
+  const models = [
+    { ...defaultModel()!, provider: "anthropic", id: "claude-sonnet-4-20250514", reasoning: true },
+    { ...defaultModel()!, provider: "openai", id: "gpt-4o", reasoning: false },
+  ];
+  return createBaseMockCtx(selections, inputs, customValues, {
+    modelRegistry: defaultModelRegistry({
+      find: (provider: string, id: string) => models.find((model) => model.provider === provider && model.id === id),
+      getAvailable: () => models,
+    }),
+    ...options,
+  });
+}
 
 function resetAgentState(): void {
   mockModules.mockConfig.agent = { default: null, forceBackground: false };
@@ -309,7 +324,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     await showModelSettingsMenu(owner, ctx, ["anthropic/claude-sonnet-4-20250514", "openai/gpt-4o"]);
     const item = settingsListCalls[0].items.find((i) => i.id === "type:Explore")!;
     expect(item).toBeDefined();
-    expect(item.currentValue).toBe("medium (pi default) [session]");
+    expect(item.currentValue).toBe("off (pi default) [session]");
     // frontmatter-only general-purpose stays hidden even though its model
     // (claude-sonnet) differs from the session default.
     const ids = settingsListCalls[0].items.map((i) => i.id);
@@ -323,7 +338,7 @@ describe("showModelSettingsMenu — per-type overrides", () => {
     const items = settingsListCalls[0].items;
     const item = items.find((i) => i.id === "type:Explore")!;
     expect(item).toBeDefined();
-    expect(item.currentValue).toBe("medium (pi default) [session]");
+    expect(item.currentValue).toBe("off (pi default) [session]");
     // The row sits under the session default's group, not the override's.
     const headerIdx = groupHeaderIndex("s/default");
     expect(headerIdx).toBeGreaterThanOrEqual(0);
@@ -726,7 +741,7 @@ describe("showModelSettingsMenu — model groups", () => {
     },
   );
 
-  it("groups an unknown resolved model by its raw id without clamping", async () => {
+  it("keeps an unavailable configured model ID and shows its Thinking preference as pending", async () => {
     vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) =>
       name === "scout"
         ? { name, description: "", systemPrompt: "", thinkingLevel: "high" }
@@ -734,9 +749,11 @@ describe("showModelSettingsMenu — model groups", () => {
     );
     mockModules.mockConfig.agent["scout"] = "custom/unknown-1";
     const ctx = createMockCtx();
+    ctx.model = undefined;
     await showModelSettingsMenu(owner, ctx, []);
     expect(groupHeaders().map((h) => h.label)).toContain("custom/unknown-1");
-    expect(row("type:scout")?.currentValue).toBe("high (frontmatter)");
+    expect(row("type:scout")?.currentValue).toBe("Pending · high (frontmatter)");
+    expect(row("type:scout")?.description).toContain("Unavailable. No parent model is set");
   });
 
   it("keeps frontmatter types overridable via 'Override another type...'", async () => {
@@ -1031,7 +1048,7 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     expect(store.agent.defaultModel).toBeNull();
     expect(store.modelFor("Explore", "parent-id")).toBe("parent-id");
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "default override cleared (global). Effective model test/parent-model (parent)",
+      "default override cleared (global). Effective model test/model (parent)",
       "info",
     );
   });
@@ -1059,7 +1076,7 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     expect(store.agent.defaultModel).toBe("g/default");
     expect(store.modelFor("Explore", "parent-id")).toBe("g/default");
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "default override cleared (project). Effective model g/default (global)",
+      "default override cleared (project). Configured model g/default (global). Unavailable. Spawn uses parent model test/model.",
       "info",
     );
   });
@@ -1080,7 +1097,7 @@ describe("showModelSettingsMenu — '(inherits parent)' clears the picked layer 
     expect(store.sessionDefaultModel).toBeNull();
     expect(store.modelFor("Explore", "parent-id")).toBe("g/default");
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      "default override cleared (session). Effective model g/default (global)",
+      "default override cleared (session). Configured model g/default (global). Unavailable. Spawn uses parent model test/model.",
       "info",
     );
   });

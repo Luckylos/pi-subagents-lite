@@ -576,6 +576,7 @@ export class AgentWidget {
       {
         toolUses: a.stats.toolUses,
         turnCount: a.stats.turnCount,
+        runTurnCount: a.stats.runTurnCount,
         maxTurns: a.stats.maxTurns,
         input: a.stats.lifetimeUsage.input,
         output: a.stats.lifetimeUsage.output,
@@ -659,6 +660,7 @@ export class AgentWidget {
       {
         toolUses: agent.stats.toolUses,
         turnCount: agent.stats.turnCount,
+        runTurnCount: agent.stats.runTurnCount,
         maxTurns: agent.stats.maxTurns,
         input: agent.stats.lifetimeUsage.input,
         output: agent.stats.lifetimeUsage.output,

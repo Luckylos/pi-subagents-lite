@@ -1,10 +1,8 @@
 /**
  * session-run.ts — Run policy for one prompt against an existing session.
  *
- * Turn limits (steer, then abort after grace turns), parent-abort forwarding,
- * response collection, model-error classification, and event forwarding. It
- * needs only the RunSession surface, so tests drive it with an in-memory
- * session instead of the SDK. Session setup stays in agent-runner.ts.
+ * Turn limits and cancellation, response collection, model-error classification,
+ * and event forwarding. Session setup stays in agent-runner.ts.
  */
 
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
@@ -12,31 +10,32 @@ import { extractText } from "../prompt/context.ts";
 import type { AgentUsage } from "./usage.ts";
 import type { RunCallbacks } from "../types.ts";
 import { DEFAULT_GRACE_TURNS } from "../config/agent-settings.ts";
+import { normalizeMaxTurns } from "./run-limits.ts";
+import { steerForRun } from "./sdk-run-steering.ts";
 
-/** The session surface a run uses; AgentSession satisfies it. */
-export type RunSession = Pick<AgentSession, "subscribe" | "prompt" | "steer" | "abort" | "messages">;
+type FinishTurn = NonNullable<AgentSession["agent"]["finishTurn"]>;
 
-/** Normalize max turns. undefined or 0 = unlimited, otherwise minimum 1. */
-function normalizeMaxTurns(n: number | undefined): number | undefined {
-  if (n == null || n === 0) return undefined;
-  return Math.max(1, n);
-}
+/** The session surface a run uses. Sessions without core hooks use event-based cancellation. */
+export type RunSession = Pick<AgentSession, "subscribe" | "prompt" | "steer" | "abort"> & {
+  agent?: Pick<AgentSession["agent"], "finishTurn" | "hasQueuedMessages"> &
+    Partial<Pick<AgentSession["agent"], "continue">>;
+  abortCompaction?: AgentSession["abortCompaction"];
+  isStreaming?: AgentSession["isStreaming"];
+};
 
 /** A settled run against a session; generic so callers keep their session type. */
 export interface SessionRunResult<S extends RunSession = RunSession> {
   responseText: string;
   session: S;
-  /** True if the agent was hard-aborted (max_turns + grace exceeded). */
+  /** True if cancellation or the hard turn cutoff stopped unfinished work. */
   aborted: boolean;
-  /** True if the agent hit the soft turn limit and wrapped up within grace turns. */
+  /** True if the run reached the soft limit or was stopped by the hard cutoff. */
   turnLimited: boolean;
-  /**
-   * Provider error message when the run ended in a model error: the final
-   * assistant message has stopReason "error". Absent for normal, aborted,
-   * and turn-limited runs, and for transient errors superseded by a later turn.
-   */
+  /** Provider error from this prompt's final assistant message, unless cancelled. */
   modelError?: string;
 }
+
+export type PromptState = "started" | "settled" | "finished";
 
 /**
  * Options for prompting a session, whether first run or continuation.
@@ -46,50 +45,48 @@ export interface SessionRunResult<S extends RunSession = RunSession> {
 export interface SessionPromptOptions extends RunCallbacks {
   maxTurns?: number;
   graceTurns?: number;
-  /** SDK prompt lifecycle, separate from run-owned cleanup and settlement. */
-  onPromptStateChange?: (state: "started" | "finished") => void;
+  /** SDK activity boundaries and actual prompt completion, separate from run settlement. */
+  onPromptStateChange?: (state: PromptState) => void;
   /** Abort signal forwarded to session.abort() while the prompt runs. */
   signal?: AbortSignal;
 }
 
-function collectResponseText(session: RunSession, onTextDelta?: (delta: string, fullText: string) => void) {
-  let text = "";
-  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-    if (event.type === "message_start") {
-      text = "";
+function collectPromptOutput(onTextDelta?: (delta: string, fullText: string) => void) {
+  let streamedText = "";
+  let finalizedText = "";
+  let earlierText = "";
+  let modelError: string | undefined;
+  const onEvent = (event: AgentSessionEvent) => {
+    if (
+      event.type === "auto_retry_start" ||
+      (event.type === "compaction_end" && event.reason === "overflow" && event.willRetry)
+    ) {
+      // Pi omits the failed response from its model projection when retrying.
+      // Drop only that attempt, keeping fallback text from earlier turns.
+      streamedText = "";
+      finalizedText = "";
+      modelError = undefined;
+    }
+    if (event.type === "message_start" && event.message.role === "assistant") {
+      streamedText = "";
     }
     if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      text += event.assistantMessageEvent.delta;
-      onTextDelta?.(event.assistantMessageEvent.delta, text);
+      streamedText += event.assistantMessageEvent.delta;
+      onTextDelta?.(event.assistantMessageEvent.delta, streamedText);
     }
-  });
-  return { getText: () => text, unsubscribe };
-}
-
-function getLastAssistantText(session: RunSession, fromIndex: number): string {
-  for (let i = session.messages.length - 1; i >= fromIndex; i--) {
-    const msg = session.messages[i];
-    if (msg.role !== "assistant") continue;
-    const text = extractText(msg.content).trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-/**
- * The provider error message when the run ended in a model error: the final
- * assistant message has stopReason "error". Returns undefined when the final
- * assistant message ended normally (or was aborted), so a transient error
- * followed by a successful turn never fails the run.
- */
-function getFinalModelError(session: RunSession, fromIndex: number): string | undefined {
-  for (let i = session.messages.length - 1; i >= fromIndex; i--) {
-    const msg = session.messages[i];
-    if (msg.role !== "assistant") continue;
-    if (msg.stopReason !== "error") return undefined;
-    return msg.errorMessage && msg.errorMessage.trim() ? msg.errorMessage : undefined;
-  }
-  return undefined;
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      // Compaction, edits and recovery can rewrite the session projection.
+      // Collect finalized output here, including errors without turn_end.
+      const { content, stopReason, errorMessage } = event.message;
+      earlierText = finalizedText || earlierText;
+      finalizedText = extractText(content).trim();
+      modelError = stopReason === "error" && errorMessage?.trim() ? errorMessage : undefined;
+    }
+  };
+  return {
+    getResult: () => ({ responseText: streamedText.trim() || finalizedText || earlierText, modelError }),
+    onEvent,
+  };
 }
 
 function forwardAbortSignal(session: RunSession, signal?: AbortSignal): () => void {
@@ -161,65 +158,180 @@ export function subscribeToSessionEvents(
   });
 }
 
+type EndedTurn = Extract<AgentSessionEvent, { type: "turn_end" }>;
+
+function wouldContinueAtCutoff(
+  session: RunSession,
+  event: EndedTurn,
+  decision: "continue" | "end" | undefined,
+  terminatingTools: ReadonlySet<string>,
+): boolean {
+  const { message, toolResults } = event;
+  if (message?.role === "assistant" && (message.stopReason === "aborted" || message.stopReason === "error")) {
+    return false;
+  }
+  if (session.agent?.hasQueuedMessages?.() || decision === "continue") return true;
+  if (decision === "end") return false;
+
+  // Pi's natural tool continuation ends only if all finalized calls opt
+  // out. A result message does not carry `terminate`, but the tool event does.
+  const hasToolCalls = message?.role === "assistant" ? message.content.some((part) => part.type === "toolCall") : true;
+  return hasToolCalls && !(toolResults?.length && toolResults.every((tool) => terminatingTools.has(tool.toolCallId)));
+}
+
 function wireTurnTracking(
   session: RunSession,
-  options: Pick<SessionPromptOptions, "maxTurns" | "graceTurns" | "onTurnEnd" | "onPromptStateChange">,
+  options: Pick<SessionPromptOptions, "maxTurns" | "graceTurns" | "onTurnEnd" | "signal">,
 ) {
   let turnCount = 0;
   const maxTurns = normalizeMaxTurns(options.maxTurns);
-  let softLimitReached = false;
+  const graceTurns = options.graceTurns ?? DEFAULT_GRACE_TURNS;
+  const hardLimit = maxTurns == null ? Infinity : maxTurns + Math.max(0, graceTurns);
+  let hardLimitReached = false;
   let aborted = false;
   let wrapUp: Promise<"queued" | "handled" | void> | undefined;
-  const graceTurns = options.graceTurns ?? DEFAULT_GRACE_TURNS;
+  const wrapUpLifetime = new AbortController();
+  const terminatingTools = new Set<string>();
 
-  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-    if (event.type === "agent_start") options.onPromptStateChange?.("started");
+  const agent = session.agent;
+  const previousFinishTurn = agent?.finishTurn;
+  let coreDecision: "continue" | "end" | undefined;
+  // Pi selects the next action before emitting turn_end. End the core loop
+  // here so it never drains input or attempts an aborted extra turn.
+  const finishTurn: FinishTurn | undefined =
+    agent && "finishTurn" in agent && maxTurns != null
+      ? async (turn, signal) => {
+          const decision = await previousFinishTurn?.call(agent, turn, signal);
+          if (turnCount + 1 >= hardLimit) {
+            coreDecision = decision?.action;
+            return { action: "end" };
+          }
+          return decision || undefined;
+        }
+      : undefined;
+  if (agent && finishTurn) agent.finishTurn = finishTurn;
+
+  const abortAtCutoff = () => {
+    // The SDK latches abort synchronously, then waits for the very prompt
+    // we're handling to finish. Awaiting it here would deadlock.
+    if (!options.signal?.aborted) void session.abort().catch(() => {});
+  };
+  const previousContinue = agent?.continue;
+  const hadOwnContinue = agent != null && Object.hasOwn(agent, "continue");
+  const continueAgent =
+    finishTurn && previousContinue && session.abortCompaction
+      ? async () => {
+          if (!hardLimitReached) return previousContinue.call(agent);
+          // Session-level retries and continuations enter here before the core
+          // drains queues or creates a turn. A settlement boundary has already
+          // committed its drafts if it selected this continuation.
+          if (!options.signal?.aborted) aborted = true;
+          abortAtCutoff();
+        }
+      : undefined;
+  if (agent && continueAgent) agent.continue = continueAgent;
+
+  const onEvent = (event: AgentSessionEvent) => {
+    if (event.type === "compaction_start" && hardLimitReached && event.reason !== "manual") {
+      // Automatic compaction checks its own signal before invoking extensions
+      // or the summarizer. Cancelling just compaction leaves settlement intact.
+      session.abortCompaction?.();
+    }
+    if (
+      event.type === "tool_execution_end" &&
+      !event.parentToolCallId &&
+      maxTurns != null &&
+      event.result?.terminate === true
+    ) {
+      terminatingTools.add(event.toolCallId);
+    }
     if (event.type !== "turn_end") return;
     turnCount++;
     options.onTurnEnd?.(turnCount);
-    if (maxTurns == null) return;
-    if (!softLimitReached && turnCount >= maxTurns) {
-      softLimitReached = true;
-      // The SDK can finish this input hook after the prompt has returned.
-      wrapUp = session
-        .steer("You have reached your turn limit. Wrap up immediately — provide your final answer now.")
-        .catch(() => {});
-    } else if (softLimitReached && turnCount >= maxTurns + graceTurns) {
-      aborted = true;
-      // `aborted` is already set, so a rejected abort() cannot change the
-      // reported outcome — only swallow the rejection.
-      void session.abort().catch(() => {});
+    const { message } = event;
+    if (!hardLimitReached && turnCount >= hardLimit) {
+      hardLimitReached = true;
+      // Preserve real provider failures and incomplete responses before Pi
+      // can schedule a retry or omit a recoverable response for compaction.
+      const interrupted =
+        message?.role === "assistant" &&
+        (message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length");
+      if (!options.signal?.aborted) {
+        aborted = wouldContinueAtCutoff(session, event, coreDecision, terminatingTools);
+        if (aborted || interrupted || !continueAgent) abortAtCutoff();
+      }
+    } else if (
+      !hardLimitReached &&
+      !wrapUp &&
+      maxTurns != null &&
+      turnCount >= maxTurns &&
+      !options.signal?.aborted &&
+      !(message?.role === "assistant" && message.stopReason === "aborted")
+    ) {
+      const signal = options.signal ? AbortSignal.any([options.signal, wrapUpLifetime.signal]) : wrapUpLifetime.signal;
+      wrapUp = steerForRun(
+        session,
+        "You have reached your turn limit. Wrap up immediately — provide your final answer now.",
+        signal,
+        () => session.isStreaming !== false,
+      ).catch(() => {});
     }
-  });
+    terminatingTools.clear();
+  };
 
   return {
-    unsubscribe,
+    onEvent,
+    restoreHooks: () => {
+      wrapUpLifetime.abort();
+      if (agent && finishTurn && agent.finishTurn === finishTurn) agent.finishTurn = previousFinishTurn;
+      if (agent && continueAgent && agent.continue === continueAgent) {
+        if (hadOwnContinue) agent.continue = previousContinue;
+        else delete agent.continue;
+      }
+    },
     getAborted: () => aborted,
-    getTurnLimited: () => softLimitReached,
-    // The manager clears the SDK queue once both this steer and its own input
-    // callbacks have drained. Neither path may clear the shared queue early.
+    getTurnLimited: () => wrapUp !== undefined || aborted,
+    // Drain the SDK submission, which can finish without the cancelled input hook.
     drainWrapUp: () => wrapUp,
   };
 }
 
-async function runTurnLoop(session: RunSession, prompt: string, options: SessionPromptOptions, unsubTurns: () => void) {
+async function runTurnLoop(
+  session: RunSession,
+  prompt: string,
+  options: SessionPromptOptions,
+  turns: ReturnType<typeof wireTurnTracking>,
+) {
+  const collector = collectPromptOutput(options.onTextDelta);
+  let settled = false;
+  const unsubscribeRun = session.subscribe((event) => {
+    if (settled) return;
+    if (event.type === "agent_settled") {
+      // Retries and queued continuations are part of this run. Prompts an
+      // extension starts from agent_settled run after this public boundary.
+      settled = true;
+      turns.restoreHooks();
+      options.onPromptStateChange?.("settled");
+      return;
+    }
+    if (event.type === "agent_start") options.onPromptStateChange?.("started");
+    turns.onEvent(event);
+    collector.onEvent(event);
+  });
+  // Keep session accounting and Stop attached until the awaited SDK prompt
+  // returns, including any deferred extension activity.
   const unsubEvents = subscribeToSessionEvents(session, options);
-  const collector = collectResponseText(session, options.onTextDelta);
   const cleanupAbort = forwardAbortSignal(session, options.signal);
-  // Messages already in the session before this prompt belong to earlier runs;
-  // the fallback must not surface their text when this run fails (model error
-  // or abort with no output) — that would resurrect a prior run's result.
-  const messageStart = session.messages.length;
   try {
     if (!options.signal?.aborted) await session.prompt(prompt);
   } finally {
-    options.onPromptStateChange?.("finished");
-    unsubTurns();
+    unsubscribeRun();
+    turns.restoreHooks();
     unsubEvents();
-    collector.unsubscribe();
     cleanupAbort();
+    options.onPromptStateChange?.("finished");
   }
-  return collector.getText().trim() || getLastAssistantText(session, messageStart);
+  return collector.getResult();
 }
 
 /**
@@ -233,19 +345,19 @@ export async function runSessionPrompt<S extends RunSession>(
   prompt: string,
   options: SessionPromptOptions,
 ): Promise<SessionRunResult<S>> {
-  const messageStart = session.messages.length;
-  const { unsubscribe: unsubTurns, getAborted, getTurnLimited, drainWrapUp } = wireTurnTracking(session, options);
-  let responseText: string;
+  const turns = wireTurnTracking(session, options);
+  let output: Pick<SessionRunResult, "responseText" | "modelError">;
   try {
-    responseText = await runTurnLoop(session, prompt, options, unsubTurns);
+    output = await runTurnLoop(session, prompt, options, turns);
   } finally {
-    await drainWrapUp();
+    await turns.drainWrapUp();
   }
+  const cancelled = options.signal?.aborted === true;
   return {
-    responseText,
+    responseText: output.responseText,
     session,
-    aborted: getAborted() || options.signal?.aborted === true,
-    turnLimited: getTurnLimited(),
-    modelError: getFinalModelError(session, messageStart),
+    aborted: turns.getAborted() || cancelled,
+    turnLimited: turns.getTurnLimited(),
+    modelError: cancelled ? undefined : output.modelError,
   };
 }

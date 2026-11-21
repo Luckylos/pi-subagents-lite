@@ -47,6 +47,7 @@ export function buildStatsLine(d: Record<string, unknown>, theme: Theme, showCos
     {
       toolUses: (d.toolUses as number) ?? 0,
       turnCount: d.turnCount as number | undefined,
+      runTurnCount: d.runTurnCount as number | undefined,
       maxTurns: d.maxTurns as number | undefined,
       input: (d.input as number) ?? 0,
       output: (d.output as number) ?? 0,

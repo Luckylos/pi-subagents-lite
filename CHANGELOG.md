@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.5] - 2026-11-21
+
+### Fixed
+
+- Restart last agents skips malformed calls in session history and continues with later valid calls. The Agent briefing lists only registered tool parameters.
+- The Spawn wizard honors unlimited turn and output-token limits. Continuations keep the turn limit and grace period selected at launch.
+- Model settings keep unavailable configured models visible and explain which parent model Spawn will use, or that no parent model is set. Model settings and the Spawn wizard show Thinking as pending when Pi still needs to select a model.
+- Restart last agents prevents overlapping replays in the same parent session and detects matching agents started while the replay resolves its targets.
+- Agent Types and Agent Briefing describe startup tool candidates and activation filters using the current project's trust settings.
+- The Widget, ConversationViewer, and foreground results show cumulative turns and use the current run's turns for limit warnings.
+- Agent calls, Restart, and the Spawn wizard resolve turn and token limits consistently after target and type selection. A zero-turn grace period stops at the limit without requesting a wrap-up turn. A final answer completed at that boundary is kept.
+- Tool allowlists validate names against the bound child session, so registered tools such as `MessageParent` no longer trigger missing-tool warnings.
+- Subagent runs retain their own final response and model error when Pi compacts or rebuilds the conversation.
+- Subagents whose models are selected by Pi share the selected model's concurrency pool with other Subagents, including on Continuation.
+- Tool wildcards distinguish unloaded extensions from loaded extensions with no tools declared before the child session binds.
+
 ## [1.17.4] - 2026-11-20
 
 ### Fixed
