@@ -28,7 +28,8 @@ import type { ThinkingChoice, ThinkingLevel } from "../src/types.js";
 // (which vitest hoists above the rest of the module) can reference it.
 const hoisted = vi.hoisted(() => {
   const mockConfig: { agent: Partial<SubagentsConfig["agent"]>; concurrency: RawConcurrency } = {
-    agent: { default: null, forceBackground: false, outputTranscript: false },
+    // Raw fixture layers: scalar defaults belong to the store, not membership.
+    agent: { forceBackground: false, outputTranscript: false },
     concurrency: { default: 4 },
   };
 
@@ -145,7 +146,7 @@ export const mockModules = {
  */
 export function resetConfig(): void {
   mockModules.mockConfig = {
-    agent: { default: null, forceBackground: false, outputTranscript: false },
+    agent: { forceBackground: false, outputTranscript: false },
     concurrency: { default: 4 },
   };
   mockModules.mockProjectConfig = {
@@ -257,8 +258,9 @@ vi.mock("../src/shell.js", async () =>
       const { DEFAULT_CONCURRENCY } = await import("../src/config/config-io.js");
       const { DEFAULT_AGENT, isAgentModelKey, resolveAgentSettings } = await import("../src/config/agent-settings.js");
       const { resolveModel } = await import("../src/models/model-precedence.js");
-      const { agentLayerHasModelSettings, sessionOverridesHasModelSettings, concurrencyLayerHasSettings } =
+      const { ConfigStore, agentLayerHasModelSettings, sessionOverridesHasModelSettings, concurrencyLayerHasSettings } =
         await import("../src/config/config-store.js");
+      const { memIO } = await import("./config/config-store-helpers.js");
       const mockStore = {
         get projectTargetOffered() {
           return mockModules.mockProjectTargetOffered;
@@ -335,6 +337,22 @@ vi.mock("../src/shell.js", async () =>
         agentConfigSnapshot() {
           return { ...mockModules.mockConfig.agent, ...mockModules.mockProjectConfig.agent };
         },
+        describeModelSetting(...args: Parameters<ConfigStore["describeModelSetting"]>) {
+          // Use the real instance read against raw fixture layers. Do not copy
+          // precedence, infer winning provenance, or bake defaults into membership.
+          const store = new ConfigStore(
+            memIO({
+              global: mockModules.mockConfig,
+              project: mockModules.mockProjectConfig,
+              projectStatus: mockModules.mockProjectTargetOffered ? "loaded" : "untrusted",
+            }).io,
+          );
+          for (const [key, value] of Object.entries(mockModules.mockSessionOverrides)) {
+            if (key === "default") store.mutate.agent.setDefaultModel(value ?? null, "session");
+            else store.mutate.agent.setModelOverride(key, value ?? null, "session");
+          }
+          return store.describeModelSetting(...args);
+        },
         modelFor(type: string, parentModelId: string, agentConfig?: { model?: string }) {
           // Delegate to the real chain so the mock cannot drift from resolveModel.
           return resolveModel({
@@ -358,6 +376,11 @@ vi.mock("../src/shell.js", async () =>
               if (target === "session") mockModules.mockSessionOverrides[type] = value;
               else if (target === "project") mockModules.mockProjectConfig.agent[type] = value;
               else mockModules.mockConfig.agent[type] = value;
+            },
+            clearDefaultModel(target: string = "global") {
+              if (target === "session" || target === "all") mockModules.mockSessionOverrides.default = null;
+              if (target === "global" || target === "all") delete mockModules.mockConfig.agent.default;
+              if (target === "project" || target === "all") delete mockModules.mockProjectConfig.agent.default;
             },
             clearModelOverride(type: string, target: string = "global") {
               if (target === "session") {

@@ -1,7 +1,6 @@
 /**
  * pi-settings.test.ts — readPiSettings / getHideThinkingBlock against real fs
- * with a spied home dir, exercising the exact production path
- * (~/.pi/agent/settings.json) with real JSON parsing and ENOENT handling.
+ * with a private SDK agent directory, real JSON parsing and ENOENT handling.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
@@ -9,26 +8,24 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { readPiSettings, getHideThinkingBlock } from "../src/pi-settings.js";
-import { tempDirFixture } from "./fixtures";
-
-// node:os is externalized (not configurable for spies) — mock only homedir
-// and keep the rest of the module real (tmpdir feeds the temp fixture).
-vi.mock("node:os", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:os")>()),
-  homedir: vi.fn(),
-}));
 
 describe("PiSettings", () => {
-  const { setup, teardown } = tempDirFixture("pi-settings-test");
   let homeDir: string;
 
   beforeEach(() => {
-    homeDir = setup();
-    vi.mocked(os.homedir).mockReturnValue(homeDir);
+    const mask = process.umask(0o022);
+    try {
+      homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-settings-test-"));
+    } finally {
+      process.umask(mask);
+    }
+    expect(fs.statSync(homeDir).mode & 0o777).toBe(0o700);
+    vi.stubEnv("PI_CODING_AGENT_DIR", path.join(homeDir, ".pi", "agent"));
   });
 
   afterEach(() => {
-    teardown();
+    vi.unstubAllEnvs();
+    fs.rmSync(homeDir, { recursive: true, force: true });
   });
 
   const writeSettings = (content: string): void => {

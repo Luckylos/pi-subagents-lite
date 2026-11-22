@@ -480,6 +480,142 @@ describe("ConfigStore model resolution", () => {
   });
 });
 
+describe("ConfigStore model setting descriptions", () => {
+  it("does not confuse baked default null with raw membership, and reads without writes", () => {
+    const { io, saves } = memIO();
+    const store = new ConfigStore(io);
+    expect(store.describeModelSetting("default", "parent/model")).toEqual({
+      model: "parent/model",
+      source: "parent",
+      layer: "parent",
+      clearable: { session: false, global: false, project: false },
+      explicitPerTypeOverride: false,
+    });
+    expect(store.describeModelSetting("Unknown", "parent/model", { model: "frontmatter/model" })).toEqual({
+      model: "frontmatter/model",
+      source: "frontmatter",
+      layer: "frontmatter",
+      clearable: { session: false, global: false, project: false },
+      explicitPerTypeOverride: false,
+    });
+    expect(saves).toEqual([]);
+  });
+
+  it("reports dedicated defaults as defaults even when an agent is named default", () => {
+    const store = new ConfigStore(
+      memIO({
+        global: { agent: { default: "g/default" } },
+        project: { agent: { default: "p/default" } },
+        projectStatus: "loaded",
+      }).io,
+    );
+    expect(store.describeModelSetting("default")).toEqual({
+      model: "p/default",
+      source: "config-default",
+      layer: "project",
+      clearable: { session: false, global: true, project: true },
+      explicitPerTypeOverride: false,
+    });
+    store.mutate.session.setOverride("default", "s/default");
+    expect(store.describeModelSetting("default").source).toBe("session-default");
+    expect(store.describeModelSetting("default").layer).toBe("session");
+  });
+
+  it.each(["", null])("project %j masks the global same key, not the rest of the model chain", (empty) => {
+    const store = new ConfigStore(
+      memIO({
+        global: { agent: { Scout: "g/scout", default: "g/default" } },
+        project: { agent: { Scout: empty } },
+        projectStatus: "loaded",
+      }).io,
+    );
+    expect(store.describeModelSetting("Scout", "parent", { model: "frontmatter" })).toEqual({
+      model: "g/default",
+      source: "config-default",
+      layer: "global",
+      clearable: { session: false, global: true, project: true },
+      explicitPerTypeOverride: typeof empty === "string",
+    });
+    store.mutate.agent.setDefaultModel("p/default", "project");
+    expect(store.describeModelSetting("Scout").layer).toBe("project");
+    store.mutate.agent.clearDefaultModel("all");
+    expect(store.describeModelSetting("Scout", "parent", { model: "frontmatter" }).source).toBe("frontmatter");
+    expect(store.describeModelSetting("Scout", "parent").model).toBe("parent");
+    store.mutate.agent.clearModelOverride("Scout", "project");
+    expect(store.describeModelSetting("Scout")).toEqual({
+      model: "g/scout",
+      source: "config-per-type",
+      layer: "global",
+      clearable: { session: false, global: true, project: false },
+      explicitPerTypeOverride: true,
+    });
+  });
+
+  it("separates shadowed type membership from the winning session default and rereads after Clear", () => {
+    const store = new ConfigStore(
+      memIO({
+        global: { agent: { Scout: "g/scout" } },
+        project: { agent: { Scout: "p/scout" } },
+        projectStatus: "loaded",
+      }).io,
+    );
+    store.mutate.session.setOverride("default", "s/default");
+    store.mutate.session.setOverride("Scout", "");
+    expect(store.describeModelSetting("Scout")).toEqual({
+      model: "s/default",
+      source: "session-default",
+      layer: "session",
+      clearable: { session: true, global: true, project: true },
+      explicitPerTypeOverride: true,
+    });
+    store.mutate.session.setOverride("Scout", "s/scout");
+    expect(store.describeModelSetting("Scout").source).toBe("session-per-type");
+    store.mutate.agent.clearModelOverride("Scout", "all");
+    expect(store.describeModelSetting("Scout")).toEqual({
+      model: "s/default",
+      source: "session-default",
+      layer: "session",
+      clearable: { session: false, global: false, project: false },
+      explicitPerTypeOverride: false,
+    });
+    expect(store.sessionDefaultModel).toBe("s/default");
+  });
+
+  it("persisted null is clearable but not listed, while session null is absent and empty string is listed", () => {
+    const store = new ConfigStore(memIO({ global: { agent: { Unknown: null } } }).io);
+    store.mutate.agent.setModelOverride("Unknown", null, "session");
+    expect(store.describeModelSetting("Unknown")).toEqual({
+      model: "",
+      source: "parent",
+      layer: "parent",
+      clearable: { session: false, global: true, project: false },
+      explicitPerTypeOverride: false,
+    });
+    store.mutate.session.setOverride("Unknown", "");
+    expect(store.describeModelSetting("Unknown").explicitPerTypeOverride).toBe(true);
+    expect(store.describeModelSetting("Unknown").clearable.session).toBe(true);
+    store.mutate.agent.clearAllModelOverrides("all");
+    expect(store.describeModelSetting("Unknown").clearable).toEqual({ session: false, global: false, project: false });
+  });
+
+  it("model-family-only settings retain Clear-all without inventing type overrides", () => {
+    const store = new ConfigStore(
+      memIO({
+        global: { agent: { defaultThinking: "high", graceTurns: 9 } },
+        project: { agent: { defaultMaxTurns: 5 } },
+        projectStatus: "loaded",
+      }).io,
+    );
+    expect(store.describeModelSetting("Scout").explicitPerTypeOverride).toBe(false);
+    expect(store.hasGlobalModelSettings).toBe(true);
+    expect(store.hasProjectModelSettings).toBe(true);
+    store.mutate.agent.clearAllModelOverrides("all");
+    expect(store.hasGlobalModelSettings).toBe(false);
+    expect(store.hasProjectModelSettings).toBe(false);
+    expect(store.agent.graceTurns).toBe(9);
+  });
+});
+
 /* ------------------------------------------------------------------ */
 /*  Persisted mutations — behavioral tests                             */
 /* ------------------------------------------------------------------ */

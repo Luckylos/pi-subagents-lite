@@ -128,7 +128,7 @@ focusing on injection flaws, auth bypasses, and insecure defaults.
 | `max_turns` | number | 不限 | 软回合上限，之后还有宽限回合，再硬中止。 |
 | `max_tokens` | number | 不限 | 每次模型响应的最大输出 token。 |
 | `hidden` | boolean | `false` | 不出现在 `Agent` 工具的类型列表里，但仍可按名字调用。 |
-| `output_transcript` | boolean | 继承全局 | 把流式记录写到 `/tmp/pi-agent-outputs/<agentId>.log`（frontmatter 优先）。 |
+| `output_transcript` | boolean | 继承全局 | 在支持私有 POSIX 文件操作的平台写入流式日志（frontmatter 优先），详见下方输出记录说明。 |
 | `include_context_files` | boolean | 继承全局 | 把 AGENTS.md 作为 `<project_context>` 放进系统提示词。`true` 加载，`false` 不加载，不写则用全局的 “Include AGENTS.md” 设置。 |
 | `include_system_prompt` | boolean | 继承全局 | 是否继承父会话的系统提示词。`true` 继承，`false` 替换模式，不写则用全局模式。全局模式为 `custom` 时，自定义提示词优先于 `true`。 |
 
@@ -217,7 +217,7 @@ Settings
 
 ### 项目级配置
 
-项目可以提交自己的 `.pi/subagents-lite.json`（与全局文件同名）。它是覆盖层，只能包含模型和并发设置（`agent.default`、按类型的模型覆盖、`concurrency`），写了的键覆盖全局值。其他设置（widget、看门狗、启动默认值）始终来自全局文件。每个键的生效值：会话覆盖 > 项目文件 > 全局文件 > 内置默认。
+项目可以提交自己的 `.pi/subagents-lite.json`（与全局文件同名）。它是覆盖层，只能包含模型系列和并发设置（`agent.default`、按类型的模型覆盖、`agent.defaultThinking`、`agent.defaultMaxTurns`、`concurrency`），写了的键覆盖全局值。其他设置（widget、看门狗及其他启动默认值）始终来自全局文件。每个键的生效值：会话覆盖 > 项目文件 > 全局文件 > 内置默认。
 
 ### 系统提示词模式
 
@@ -240,7 +240,7 @@ Settings
 
 ### 输出记录
 
-输出记录默认关闭。全局用配置 `outputTranscript` 开启，单个子代理用 frontmatter `output_transcript` 开启。开启后记录流式写入 `/tmp/pi-agent-outputs/<agentId>.log`（只追加，可 `tail -f`），widget 会显示对应的 `tail -f` 命令。会话重载（`/reload`、扩展重载）后文件仍保留，但重载会停止运行中的子代理。
+输出记录默认关闭。全局用配置 `outputTranscript` 开启，单个子代理可用 frontmatter `output_transcript` 覆盖全局设置。生效值为 `false` 时，子代理跳过日志初始化，可在缺少私有日志能力的平台正常启动。启用后需要 POSIX 用户 ID 以及 `O_NOFOLLOW`、`O_DIRECTORY`、`O_NONBLOCK` 文件标志。若平台缺少这些能力，或无法安全创建日志，该次子代理会启动失败。创建成功后，记录流式追加到 `/tmp/pi-agent-outputs/<agentId>.log`，widget 会显示对应的 `tail -f` 命令。会话重载（`/reload`、扩展重载）后文件仍保留，但重载会停止运行中的子代理。
 
 ## 开发
 

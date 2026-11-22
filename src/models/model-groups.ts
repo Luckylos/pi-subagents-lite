@@ -1,35 +1,18 @@
 /**
- * model-groups.ts — Group Agent types by Resolved model for the Model
- * settings menu.
- *
- * Pure function — no store access, no file I/O, no pi SDK imports (pi-ai's
- * clampThinkingLevel is a pure helper). The menu assembles the snapshot input
- * from ConfigStore + the extension context and maps the result to
- * SettingsList items.
- *
- * A type gets a row iff it has an explicit per-type Model override at the
- * session, project, or global layer (the anti-spam rule: frontmatter and
- * inherited models alone never add a row). Each row stays grouped under the
- * winning ID, even if Spawn uses a fallback, and is tagged with its layer:
- * [session] when the
- * session per-type override or the session default won; [project] for a
- * project per-type win with no session default; untagged for a global
- * per-type win with no session default. Groups are ordered alphabetically
- * by model id.
- *
- * Exports:
- *   - buildModelGroups: types + config snapshot → model groups with
- *     clamped thinking levels, their winning sources, and provenance tags
- *   - hasExplicitPerTypeOverride: the anti-spam listing rule (shared with
- *     the menu's "Override another type..." list)
+ * model-groups.ts — Pure display rules for Model settings: tags, grouping,
+ * alphabetical ordering and spawn-effective Thinking previews. Configuration
+ * facts come from ConfigStore descriptions; legacy snapshot exports adapt to
+ * the same configuration-owned interpretation for source consumers.
  */
 
-import type { SubagentsConfig } from "../config/types.ts";
+import { ownEntry } from "../config/agent-settings.ts";
+import { explainModelSetting, type ModelSettingDescription, type ModelSettingsLayers } from "../config/config-store.ts";
 import type { ConfiguredModelResolution } from "./model-availability.ts";
-import type { SessionModelOverrides } from "./model-precedence.ts";
-import { resolveModelSource } from "./model-precedence.ts";
 import { resolveDisplayedThinking, type DisplayedThinking } from "./thinking-resolution.ts";
 import type { ThinkingChoice, ThinkingLevel } from "../types.ts";
+
+export { hasExplicitPerTypeOverride, modelSettingLevels } from "../config/config-store.ts";
+export type { ModelSettingsLayers } from "../config/config-store.ts";
 
 /** Frontmatter fields the group builder reads per type. */
 export interface AgentTypeModelConfig {
@@ -37,17 +20,7 @@ export interface AgentTypeModelConfig {
   thinkingLevel?: ThinkingChoice;
 }
 
-/** Merged values for resolution and layer membership for clearing. */
-export interface ModelSettingsLayers {
-  /** Merged config.agent (project over global): default, per-type model keys, defaultThinking. */
-  config: SubagentsConfig["agent"];
-  /** Session-layer Model overrides: "default" + per-type. */
-  sessionOverrides: SessionModelOverrides;
-  hasGlobalModelKey: (key: string) => boolean;
-  hasProjectModelKey: (key: string) => boolean;
-}
-
-export interface ModelGroupsInput extends ModelSettingsLayers {
+interface ModelGroupsContext {
   /** All registered Agent type names (UI listing order). */
   types: readonly string[];
   /** Frontmatter config per type (undefined = no config). */
@@ -62,6 +35,15 @@ export interface ModelGroupsInput extends ModelSettingsLayers {
   resolveModel: (configuredId: string | undefined) => ConfiguredModelResolution;
   /** The parent session's current level, for a source holding `parent`. */
   parentLevel?: ThinkingLevel;
+}
+
+/** Legacy snapshot input retained for published-source compatibility. */
+export interface ModelGroupsInput extends ModelSettingsLayers, ModelGroupsContext {}
+
+/** Production input contains configuration facts, not layers or membership callbacks. */
+export interface ExplainedModelGroupsInput extends ModelGroupsContext {
+  modelSettings: Readonly<Record<string, ModelSettingDescription>>;
+  defaultThinking?: ThinkingChoice;
 }
 
 /** One Agent type listed under a model group. */
@@ -83,62 +65,49 @@ export interface ModelGroup {
 /** Groups ordered alphabetically by model id; each type appears in at most one row. */
 export type ModelGroups = ModelGroup[];
 
-/** Explain the selected model and record which layers still carry the requested key. */
+/** Display-only provenance tag: membership never substitutes for the winning layer. */
+export function modelSettingTag(setting: Pick<ModelSettingDescription, "layer">): string {
+  return setting.layer === "session" || setting.layer === "project" ? `[${setting.layer}]` : "";
+}
+
+/** Legacy helper preserves its original result shape, delegating all configuration facts. */
 export function describeModelSetting(
   layers: ModelSettingsLayers,
   key: string,
   parentModelId = "(inherits parent)",
   agentConfig?: AgentTypeModelConfig,
 ) {
-  const { config, sessionOverrides, hasProjectModelKey } = layers;
-  const { model, source } = resolveModelSource({
-    subagentType: key,
-    agentConfig,
-    config: { agent: config },
-    parentModelId,
-    sessionOverrides,
-  });
-  let layer: "session" | "project" | "global" | "frontmatter" | "parent";
-  switch (source) {
-    case "session-per-type":
-    case "session-default":
-      layer = "session";
-      break;
-    case "config-per-type":
-    case "config-default":
-      layer = hasProjectModelKey(source === "config-default" ? "default" : key) ? "project" : "global";
-      break;
-    default:
-      layer = source;
-  }
-  const tag = layer === "session" || layer === "project" ? "[" + layer + "]" : "";
-  return { model, layer, tag, clearable: modelSettingLevels(layers, key) };
+  const setting = explainModelSetting(layers, key, parentModelId, agentConfig);
+  return { model: setting.model, layer: setting.layer, tag: modelSettingTag(setting), clearable: setting.clearable };
 }
 
-/** An empty stored value can be cleared even when resolution skips it. */
-export function modelSettingLevels(layers: ModelSettingsLayers, key: string) {
-  return {
-    session: layers.sessionOverrides[key] != null,
-    global: layers.hasGlobalModelKey(key),
-    project: layers.hasProjectModelKey(key),
-  };
-}
-
-export function buildModelGroups(input: ModelGroupsInput): ModelGroups {
-  const { types, agentConfigs, config, sessionOverrides, parentModelId } = input;
-
+export function buildModelGroups(input: ExplainedModelGroupsInput | ModelGroupsInput): ModelGroups {
+  // Compatibility only: production and tests pass descriptions from the store.
+  const explained: ExplainedModelGroupsInput =
+    "modelSettings" in input
+      ? input
+      : {
+          ...input,
+          defaultThinking: input.config.defaultThinking,
+          modelSettings: Object.fromEntries(
+            input.types.map((type) => [
+              type,
+              explainModelSetting(input, type, input.parentModelId, ownEntry(input.agentConfigs, type)),
+            ]),
+          ),
+        };
+  const { types, agentConfigs, modelSettings } = explained;
   const byModel = new Map<string, ModelGroupRow[]>();
   for (const type of types) {
-    if (!hasExplicitPerTypeOverride(sessionOverrides, config, type)) continue;
-    const cfg = agentConfigs[type];
-    const { model: modelId, layer, tag } = describeModelSetting(input, type, parentModelId, cfg);
-    const { model, unavailable } = input.resolveModel(layer === "parent" ? undefined : modelId);
-
+    const setting = ownEntry(modelSettings, type);
+    if (!setting?.explicitPerTypeOverride) continue;
+    const { model: modelId, layer } = setting;
+    const { model, unavailable } = explained.resolveModel(layer === "parent" ? undefined : modelId);
     const rows = byModel.get(modelId) ?? [];
     rows.push({
       type,
-      thinking: displayThinking(cfg, model, input),
-      tag,
+      thinking: displayThinking(ownEntry(agentConfigs, type), model, explained),
+      tag: modelSettingTag(setting),
       ...(unavailable ? { unavailable } : {}),
     });
     byModel.set(modelId, rows);
@@ -149,31 +118,17 @@ export function buildModelGroups(input: ModelGroupsInput): ModelGroups {
     .map(([modelId, modelRows]) => ({ modelId, rows: modelRows }));
 }
 
-/**
- * True when the type carries an explicit per-type model override at the
- * session or config layer (including an empty-string key). The anti-spam
- * listing rule shared with the menu's "Override another type..." list:
- * frontmatter-only and inheriting types are never listed.
- */
-export function hasExplicitPerTypeOverride(
-  sessionOverrides: SessionModelOverrides,
-  agentConfig: SubagentsConfig["agent"],
-  type: string,
-): boolean {
-  return sessionOverrides[type] != null || typeof agentConfig[type] === "string";
-}
-
 /** Resolve the Thinking preview using the model that Spawn can actually pass to Pi. */
 function displayThinking(
   cfg: AgentTypeModelConfig | undefined,
   model: ConfiguredModelResolution["model"],
-  input: ModelGroupsInput,
+  input: ExplainedModelGroupsInput,
 ): DisplayedThinking {
   return resolveDisplayedThinking(
     {
       frontmatter: cfg?.thinkingLevel,
       perModel: model ? input.piModelThinking?.(`${model.provider}/${model.id}`) : undefined,
-      defaultThinking: input.config.defaultThinking,
+      defaultThinking: input.defaultThinking,
       parentLevel: input.parentLevel,
     },
     input.piDefaultThinking,

@@ -161,7 +161,7 @@ it("explains the same parent fallback used by the registered Agent and Spawn wiz
   expect(sameId.text()).not.toMatch(/unavailable/i);
   expect(sameId.text()).toMatch(/Thinking level\s+high \(pi per-model\)/);
 
-  app.store.mutate.agent.clearModelOverride("default", "session");
+  app.store.mutate.agent.clearDefaultModel("session");
   const inherited = await app.wizard();
   inherited.selectRow("Model");
   expect(inherited.text()).toMatch(/Model\s+test\/parent/);
@@ -387,7 +387,7 @@ it("warns when a configured ID matches the unavailable parent, but not when the 
   expect(configuredMenu.text()).toMatch(/unavailable.*test\/parent/i);
 
   // An empty override retains the editable row but does not win model resolution.
-  app.store.mutate.agent.clearModelOverride("default", "session");
+  app.store.mutate.agent.clearDefaultModel("session");
   app.store.mutate.session.setOverride(type, "");
   const inheritedMenu = await app.settings();
   expect(inheritedMenu.text()).toContain("(inherits parent)");

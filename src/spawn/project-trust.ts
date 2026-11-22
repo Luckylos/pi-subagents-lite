@@ -34,30 +34,37 @@ export interface SubagentTrustDeps {
 
 /**
  * Wire the real pi building blocks behind the trust gate. agentDir is where
- * trust decisions are stored; parentCwd is the parent session's working dir
- * (source of the global defaultProjectTrust setting).
+ * trust decisions and global settings are stored. The parent project layer
+ * must not be opened when looking up a global default.
  */
 const CONTEXT_FILES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
 
-function hasPluginProjectResources(cwd: string, worktreeRoot: string): boolean {
+function hasPluginProjectResources(cwd: string, agentDir: string): boolean {
   if ([".pi/agents", ".pi/subagents-lite.json"].some((file) => existsSync(join(cwd, file)))) return true;
-  const root = resolve(worktreeRoot);
+  const globalDir = resolve(agentDir);
   let dir = resolve(cwd);
   while (true) {
-    if (CONTEXT_FILES.some((file) => existsSync(join(dir, file)))) return true;
+    if (dir !== globalDir && CONTEXT_FILES.some((file) => existsSync(join(dir, file)))) return true;
     const parent = dirname(dir);
-    if (dir === root || parent === dir) return false;
+    if (parent === dir) return false;
     dir = parent;
   }
 }
 
-export function createSubagentTrustDeps(agentDir: string, parentCwd: string, worktreeRoot?: string): SubagentTrustDeps {
+// Keep the optional third argument for callers; SDK context inheritance is
+// independent of worktree boundaries, including the validator's cwd fallback.
+export function createSubagentTrustDeps(
+  agentDir: string,
+  parentCwd: string,
+  _worktreeRoot?: string,
+): SubagentTrustDeps {
   const trustStore = new ProjectTrustStore(agentDir);
   return {
     hasTrustRequiringProjectResources: (cwd) =>
-      hasTrustRequiringProjectResources(cwd) || hasPluginProjectResources(cwd, worktreeRoot ?? cwd),
+      hasTrustRequiringProjectResources(cwd) || hasPluginProjectResources(cwd, agentDir),
     getTrustDecision: (cwd) => trustStore.get(cwd),
-    getDefaultProjectTrust: () => SettingsManager.create(parentCwd, agentDir).getDefaultProjectTrust(),
+    getDefaultProjectTrust: () =>
+      SettingsManager.create(parentCwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust(),
   };
 }
 

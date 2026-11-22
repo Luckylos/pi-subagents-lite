@@ -16,8 +16,8 @@
  * at session_start. `dispose()` drops deps at session_shutdown.
  */
 
-import type { SessionModelOverrides } from "../models/model-precedence.ts";
-import { resolveModel } from "../models/model-precedence.ts";
+import type { ModelSource, SessionModelOverrides } from "../models/model-precedence.ts";
+import { resolveModel, resolveModelSource } from "../models/model-precedence.ts";
 import type { AgentWidget } from "../ui/agent-widget.ts";
 import type { AgentManager } from "../agents/agent-manager.ts";
 import type { ModelThinkingPlacement, SubagentsConfig } from "./types.ts";
@@ -25,6 +25,8 @@ import {
   canonicalAgentStatusLimit,
   defaultCompactLines,
   isAgentModelKey,
+  isPerTypeModelKey,
+  ownEntry,
   normalizeFinishedRetention,
   normalizeWatchdogMinutes,
   resolveAgentSettings,
@@ -66,6 +68,83 @@ export function concurrencyLayerHasSettings(layer: RawConcurrency): boolean {
     layer.default !== undefined ||
     (layer.providers != null && Object.keys(layer.providers).length > 0) ||
     (layer.models != null && Object.keys(layer.models).length > 0)
+  );
+}
+
+/** Configuration facts only: provenance is winning layer, Clear eligibility is requested-key membership. */
+export interface ModelSettingDescription {
+  model: string;
+  source: ModelSource;
+  layer: "session" | "project" | "global" | "frontmatter" | "parent";
+  clearable: { session: boolean; global: boolean; project: boolean };
+  /** Existing listing rule, distinct from membership: persisted null alone does not list a type. */
+  explicitPerTypeOverride: boolean;
+}
+
+/** Legacy snapshot contract, retained for source consumers; new consumers read the store instance. */
+export interface ModelSettingsLayers {
+  config: SubagentsConfig["agent"];
+  sessionOverrides: SessionModelOverrides;
+  hasGlobalModelKey: (key: string) => boolean;
+  hasProjectModelKey: (key: string) => boolean;
+}
+
+/** Shared configuration interpretation for the instance read and legacy snapshot adapters. */
+export function explainModelSetting(
+  layers: ModelSettingsLayers,
+  key: string,
+  parentModelId = "",
+  agentConfig?: { model?: string },
+): ModelSettingDescription {
+  const { model, source } = resolveModelSource({
+    subagentType: key,
+    agentConfig,
+    config: { agent: layers.config },
+    parentModelId,
+    sessionOverrides: layers.sessionOverrides,
+  });
+  let layer: ModelSettingDescription["layer"];
+  switch (source) {
+    case "session-per-type":
+    case "session-default":
+      layer = "session";
+      break;
+    case "config-per-type":
+    case "config-default":
+      layer = layers.hasProjectModelKey(source === "config-default" ? "default" : key) ? "project" : "global";
+      break;
+    default:
+      layer = source;
+  }
+  return {
+    model,
+    source,
+    layer,
+    clearable: modelSettingLevels(layers, key),
+    explicitPerTypeOverride: hasExplicitPerTypeOverride(layers.sessionOverrides, layers.config, key),
+  };
+}
+
+/** An empty stored value can be cleared even when resolution skips it. */
+export function modelSettingLevels(layers: ModelSettingsLayers, key: string): ModelSettingDescription["clearable"] {
+  const persisted = (key === "default" || isPerTypeModelKey(key)) && Object.hasOwn(layers.config, key);
+  return {
+    session: ownEntry(layers.sessionOverrides, key) != null,
+    global: persisted && layers.hasGlobalModelKey(key),
+    project: persisted && layers.hasProjectModelKey(key),
+  };
+}
+
+/** Listing eligibility is not raw membership: only session non-null or merged per-type string qualifies. */
+export function hasExplicitPerTypeOverride(
+  sessionOverrides: SessionModelOverrides,
+  agentConfig: SubagentsConfig["agent"],
+  type: string,
+): boolean {
+  return (
+    type !== "default" &&
+    (ownEntry(sessionOverrides, type) != null ||
+      (isPerTypeModelKey(type) && typeof ownEntry(agentConfig, type) === "string"))
   );
 }
 
@@ -138,21 +217,21 @@ export class ConfigStore {
   }
 
   get sessionDefaultModel(): string | null {
-    return this.sessionOverrides.default ?? null;
+    return ownEntry(this.sessionOverrides, "default") ?? null;
   }
 
   sessionModelOverride(type: string): string | null {
-    return this.sessionOverrides[type] ?? null;
+    return ownEntry(this.sessionOverrides, type) ?? null;
   }
 
   /** Whether the global agent layer carries this key (provenance from layer membership). */
   hasGlobalModelKey(key: string): boolean {
-    return this.globalRaw.agent != null && this.globalRaw.agent[key] !== undefined;
+    return isAgentModelKey(key) && ownEntry(this.globalRaw.agent, key) !== undefined;
   }
 
   /** Whether the project agent layer carries this key (provenance from layer membership). */
   hasProjectModelKey(key: string): boolean {
-    return this.projectRaw?.agent != null && this.projectRaw.agent[key] !== undefined;
+    return isAgentModelKey(key) && ownEntry(this.projectRaw?.agent, key) !== undefined;
   }
 
   /** Whether the session layer carries a default model or any per-type override. */
@@ -202,6 +281,21 @@ export class ConfigStore {
     return this.config.agent;
   }
 
+  /** Explain this instance's current configuration, without SDK availability, Thinking, labels, or I/O. */
+  describeModelSetting(key: string, parentModelId = "", agentConfig?: { model?: string }): ModelSettingDescription {
+    return explainModelSetting(
+      {
+        config: this.config.agent,
+        sessionOverrides: this.sessionOverrides,
+        hasGlobalModelKey: (requestedKey) => this.hasGlobalModelKey(requestedKey),
+        hasProjectModelKey: (requestedKey) => this.hasProjectModelKey(requestedKey),
+      },
+      key,
+      parentModelId,
+      agentConfig,
+    );
+  }
+
   /**
    * Resolve the effective model for a spawn, hiding resolveModel's option
    * assembly. Precedence: session per-type → session default → config per-type
@@ -227,19 +321,20 @@ export class ConfigStore {
       setDefaultModel: (value: string | null, target: ConfigTarget = "global"): void => {
         this.setAgentModelKey("default", value, target);
       },
+      clearDefaultModel: (target: ConfigTarget | "all" = "global"): void => {
+        this.clearModelKey("default", target);
+      },
       setModelOverride: (type: string, value: string | null, target: ConfigTarget = "global"): void => {
+        if (type === "default" || (target !== "session" && !isPerTypeModelKey(type))) return;
         this.setAgentModelKey(type, value, target);
       },
       clearModelOverride: (type: string, target: ConfigTarget | "all" = "global"): void => {
-        this.clearAtTarget(
-          target,
-          () => {
-            delete this.sessionOverrides[type];
-          },
-          (layer) => {
-            if (layer.agent) delete layer.agent[type];
-          },
-        );
+        if (type === "default") return;
+        if (!isPerTypeModelKey(type)) {
+          if (target === "session" || target === "all") delete this.sessionOverrides[type];
+          return;
+        }
+        this.clearModelKey(type, target);
       },
       /** Clear all model keys (default, thinking, max turns, per-type), keeping non-model settings. */
       clearAllModelOverrides: (target: ConfigTarget | "all" = "global"): void => {
@@ -249,6 +344,7 @@ export class ConfigStore {
             this.sessionOverrides = { default: null };
           },
           clearAgentModelKeys,
+          { includes: agentLayerHasModelSettings },
         );
       },
       setForceBackground: (enabled: boolean) => this.setAgentLayerEntry("forceBackground", enabled, "global"),
@@ -383,14 +479,14 @@ export class ConfigStore {
           (layer) => {
             delete layer.concurrency;
           },
-          () => this.applyConcurrency(),
+          { after: () => this.applyConcurrency() },
         );
       },
     },
     session: {
       /** Not persisted; key "default" sets the session-wide default. */
       setOverride: (type: string, model: string): void => {
-        this.sessionOverrides[type] = model;
+        this.setAgentModelKey(type, model, "session");
       },
       clearOverride: (type: string): void => {
         delete this.sessionOverrides[type];
@@ -466,6 +562,11 @@ export class ConfigStore {
 
   // ── Private helpers ────────────────────────────────────────────
 
+  /** Refresh persisted layers in an open menu without resetting session overrides. */
+  refreshPersisted(): void {
+    this.adoptPersisted(this.io.load());
+  }
+
   /** Write an agent key against a freshly read persisted layer; undefined deletes it. */
   private setAgentLayerEntry(key: string, value: unknown, target: "global" | "project"): void {
     if (target === "project" && !this.projectTargetOffered) {
@@ -477,7 +578,7 @@ export class ConfigStore {
       (layer) => {
         layer.agent ??= {};
         if (value === undefined) delete layer.agent[key];
-        else layer.agent[key] = value;
+        else layer.agent = { ...layer.agent, [key]: value };
       },
       { createIfMissing: target === "project" },
     );
@@ -486,7 +587,7 @@ export class ConfigStore {
   /** Write a model key (default or per-type) at the target layer; session writes are in-memory. */
   private setAgentModelKey(key: string, value: string | null, target: ConfigTarget): void {
     if (target === "session") {
-      this.sessionOverrides[key] = value;
+      this.sessionOverrides = { ...this.sessionOverrides, [key]: value };
       return;
     }
     this.setAgentLayerEntry(key, value, target);
@@ -524,7 +625,19 @@ export class ConfigStore {
     mutate: (layer: RawConfig) => void,
     options?: { createIfMissing?: boolean },
   ): void {
-    const loaded = this.io.updateLayer(target, mutate, options);
+    let loaded: ReturnType<ConfigIO["load"]>;
+    try {
+      loaded = this.io.updateLayer(target, mutate, options);
+    } catch (err) {
+      // A project can become protected after confirmation but before replacement.
+      // Rebuild from disk so the open menu can offer recovery while keeping Session.
+      if (target === "project") this.refreshPersisted();
+      throw err;
+    }
+    this.adoptPersisted(loaded);
+  }
+
+  private adoptPersisted(loaded: ReturnType<ConfigIO["load"]>): void {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
@@ -536,6 +649,19 @@ export class ConfigStore {
     this.config = mergeDefaults(mergeLayers(this.globalRaw, this.projectRaw));
   }
 
+  private clearModelKey(key: string, target: ConfigTarget | "all"): void {
+    this.clearAtTarget(
+      target,
+      () => {
+        delete this.sessionOverrides[key];
+      },
+      (layer) => {
+        if (layer.agent) delete layer.agent[key];
+      },
+      { includes: (layer) => ownEntry(layer.agent, key) !== undefined },
+    );
+  }
+
   /**
    * Clear the same model/concurrency key set at one target. Persisted writes
    * always mutate a fresh target layer; an all-layer failure reports whether
@@ -545,7 +671,7 @@ export class ConfigStore {
     target: ConfigTarget | "all",
     sessionClear: () => void,
     layerClear: (layer: RawConfig) => void,
-    after?: () => void,
+    { after, includes = () => true }: { after?: () => void; includes?: (layer: RawConfig) => boolean } = {},
   ): void {
     if (target === "session") {
       sessionClear();
@@ -553,15 +679,22 @@ export class ConfigStore {
       return;
     }
     if (target === "all") {
-      sessionClear();
-      this.updatePersistedLayer("global", layerClear);
-      if (this.projectRaw) {
+      // Capture the offered layers before re-reading: a newly malformed project
+      // has no readable keys but still needs to be reported as a failed Clear.
+      const globalPending = includes(this.globalRaw);
+      const projectPending = this.projectRaw !== null && includes(this.projectRaw);
+      if (globalPending) this.updatePersistedLayer("global", layerClear);
+      else if (projectPending) this.refreshPersisted();
+      if (projectPending && this.projectStatus !== "absent") {
         try {
+          if (this.projectStatus !== "loaded") throw new Error(`project layer is ${this.projectStatus}`);
           this.updatePersistedLayer("project", layerClear, { createIfMissing: false });
         } catch (err) {
+          if (!globalPending) throw err;
           throw new Error(`Global config was cleared but project config failed: ${String(err)}`, { cause: err });
         }
       }
+      sessionClear();
       after?.();
       return;
     }
@@ -594,7 +727,7 @@ export class ConfigStore {
       target,
       () => removeFrom(this.sessionConcurrencyLayer),
       (layer) => removeFrom(layer.concurrency),
-      () => this.applyConcurrency(),
+      { after: () => this.applyConcurrency() },
     );
   }
 

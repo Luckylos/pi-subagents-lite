@@ -316,6 +316,44 @@ describe("createConfigIO save — per-layer writes", () => {
     expect(existsSync(join(projectDir, "subagents-lite.json"))).toBe(false);
   });
 
+  it.each(["providers", "models"])("refuses stale project writes when concurrency.%s becomes an array", (section) => {
+    const io = createConfigIO(projectDir);
+    writeProject({ agent: { Scout: "p/scout" } });
+    expect(io.load().projectStatus).toBe("loaded");
+    const malformed = `{ "agent": { "Scout": "p/scout" }, "concurrency": { "${section}": [] } }\n`;
+    writeProjectRaw(malformed);
+    io.saveProject({});
+    expect(readFileSync(join(projectDir, "subagents-lite.json"), "utf8")).toBe(malformed);
+    expect(() => io.updateLayer("project", () => {})).toThrow(/malformed/i);
+    expect(readFileSync(join(projectDir, "subagents-lite.json"), "utf8")).toBe(malformed);
+  });
+
+  it.each(["deleted", "malformed"])("rechecks a project that becomes %s during the mutation", (change) => {
+    const io = createConfigIO(projectDir);
+    const projectPath = join(projectDir, "subagents-lite.json");
+    const malformed = '{ "concurrency": { "models": [] } }\n';
+    writeProject({ agent: { Scout: "p/scout" } });
+    expect(io.load().projectStatus).toBe("loaded");
+    const clear = () =>
+      io.updateLayer(
+        "project",
+        (latest) => {
+          delete latest.agent;
+          if (change === "deleted") rmSync(projectPath);
+          else writeProjectRaw(malformed);
+        },
+        { createIfMissing: false },
+      );
+    if (change === "deleted") {
+      expect(clear().projectStatus).toBe("absent");
+      expect(readdirSync(projectDir)).toEqual([]);
+    } else {
+      expect(clear).toThrow(/malformed/i);
+      expect(readFileSync(projectPath, "utf8")).toBe(malformed);
+      expect(readdirSync(projectDir)).toEqual(["subagents-lite.json"]);
+    }
+  });
+
   it("updateLayer rereads the latest file and preserves unrelated fields", () => {
     writeGlobal({ agent: { graceTurns: 5, forceBackground: false } });
     const io = createConfigIO();

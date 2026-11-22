@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 
 // Import the module under test
-import { resolveVisibleTools, resolveSessionToolOptions } from "../../src/agents/agent-types.js";
+import { createAgentRegistry, resolveVisibleTools, resolveSessionToolOptions } from "../../src/agents/agent-types.js";
 import type { AgentConfig } from "../../src/agents/types.js";
 
 /* ------------------------------------------------------------------ */
@@ -728,6 +728,112 @@ describe("ext/none — warning suppression", () => {
     });
     expect(result.tools).toContain("read");
     expect(result.tools).not.toContain("none");
+  });
+});
+
+describe("getConfig — hidden identity", () => {
+  const general: AgentConfig = {
+    name: "general-purpose",
+    displayName: "General sentinel",
+    description: "General description",
+    systemPrompt: "General prompt",
+    tools: ["bash"],
+    registeredTools: ["bash"],
+    extensions: ["general-extension"],
+    skills: ["general-skill"],
+  };
+  const hidden: AgentConfig = {
+    name: "Secret",
+    displayName: "Secret display",
+    description: "Secret description",
+    systemPrompt: "Secret prompt",
+    hidden: true,
+    tools: ["read"],
+    registeredTools: ["read"],
+    extensions: false,
+    skills: false,
+  };
+
+  it.each(["lookup", "selected"] as const)("keeps own metadata and resources through %s", (path) => {
+    const registry = createAgentRegistry();
+    registry.registerAgents(
+      new Map([
+        [general.name, general],
+        [hidden.name, hidden],
+      ]),
+      { disableDefaultAgents: true },
+    );
+    const selected = path === "selected" ? { ...hidden, description: "Target description" } : undefined;
+    const before = structuredClone(selected ?? hidden);
+    expect(registry.getAgentConfig("SECRET")).toBe(hidden);
+    expect(registry.getConfig("SECRET", true, true, selected)).toEqual({
+      displayName: "Secret display",
+      description: selected?.description ?? "Secret description",
+      tools: ["read"],
+      registeredTools: ["read"],
+      extensions: false,
+      skills: false,
+    });
+    expect(selected ?? hidden).toEqual(before);
+  });
+
+  const resourceCases: Array<{ value: AgentConfig["skills"] }> = [false, true, ["own-resource"], undefined].map(
+    (value) => ({ value }),
+  );
+  it.each(resourceCases)(
+    "resolves explicit resource value $value identically for hidden and visible definitions",
+    ({ value }) => {
+      for (const skillsDefault of [false, true]) {
+        for (const extensionsDefault of [false, true]) {
+          for (const selectedPath of [false, true]) {
+            const registry = createAgentRegistry();
+            const resources = Array.isArray(value) ? [...value] : value;
+            const own = { ...hidden, extensions: resources, skills: resources };
+            registry.registerAgents(
+              new Map([
+                [general.name, general],
+                [own.name, own],
+              ]),
+              { disableDefaultAgents: true },
+            );
+            const actual = registry.getConfig(
+              own.name,
+              skillsDefault,
+              extensionsDefault,
+              selectedPath ? own : undefined,
+            );
+            const visible = registry.getConfig(own.name, skillsDefault, extensionsDefault, { ...own, hidden: false });
+            expect(actual).toEqual(visible);
+            expect(actual.extensions).toEqual(resources ?? extensionsDefault);
+            expect(actual.skills).toEqual(resources ?? skillsDefault);
+          }
+        }
+      }
+    },
+  );
+
+  it("keeps unknown and ambiguous types on absolute defaults despite a general-purpose config", () => {
+    const registry = createAgentRegistry();
+    registry.registerAgents(
+      new Map([
+        [general.name, general],
+        [hidden.name, hidden],
+        ["secret", { ...hidden, name: "secret" }],
+      ]),
+      { disableDefaultAgents: true },
+    );
+    for (const name of ["unknown", "SECRET"]) {
+      for (const skills of [false, true]) {
+        for (const extensions of [false, true]) {
+          expect(registry.getConfig(name, skills, extensions)).toEqual({
+            displayName: "Agent",
+            description: "General-purpose agent for complex, multi-step tasks",
+            skills,
+            extensions,
+          });
+        }
+      }
+    }
   });
 });
 

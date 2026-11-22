@@ -108,7 +108,10 @@ export async function loadConfigAndRegisterAgents(
 async function openViewer(owner: ExtensionOwner, ctx: ExtensionContext, record: AgentRecord | null): Promise<void> {
   const widget = getWidget(owner);
   if (!widget) return;
-  const open = prepareConversationViewer(owner, ctx.ui, record, "editor");
+  const open = prepareConversationViewer(owner, ctx.ui, record, "editor", {
+    cwd: ctx.cwd,
+    projectTrusted: ctx.isProjectTrusted(),
+  });
   if (!open) return;
 
   try {

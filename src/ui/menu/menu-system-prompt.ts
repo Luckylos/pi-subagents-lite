@@ -17,6 +17,7 @@ import { SettingsListWrapper } from "./wrappers/settings-list.ts";
 import type { SystemPromptMode } from "../../agents/types.ts";
 import { getStore } from "../../shell.ts";
 import { CUSTOM_PROMPT_PATH } from "../../config/config-io.ts";
+import { errorMessage } from "../../utils.ts";
 
 export async function showSystemPromptMenu(owner: ExtensionOwner, ctx: ExtensionCommandContext): Promise<void> {
   const store = getStore(owner);
@@ -96,12 +97,14 @@ export async function showSystemPromptMenu(owner: ExtensionOwner, ctx: Extension
           fs.writeFileSync(
             CUSTOM_PROMPT_PATH,
             "You are a Pi, an expert coding sub-agent.\nYou have been invoked to handle a specific task autonomously",
-            "utf-8",
+            { encoding: "utf-8", flag: "wx" },
           );
           ctx.ui.notify(`Created prompt file: ${CUSTOM_PROMPT_PATH}`, "info");
-        } catch (err: any) {
-          ctx.ui.notify(`Failed to create prompt file: ${err.message}`, "error");
+        } catch (err: unknown) {
+          ctx.ui.notify(`Failed to create prompt file: ${errorMessage(err)}`, "error");
         }
+        items = buildItems();
+        rebuild?.(items);
         return;
       case "includeContextFiles":
         store.mutate.agent.setIncludeContextFiles(newValue === "ON");

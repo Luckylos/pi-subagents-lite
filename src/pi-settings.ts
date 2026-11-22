@@ -6,7 +6,6 @@
 import * as fs from "node:fs";
 import { SettingsManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "./types.ts";
-import * as os from "node:os";
 import * as path from "node:path";
 
 /** How a read is scoped: which settings files it consults. */
@@ -15,8 +14,8 @@ export interface PiSettingsScope {
   agentDir?: string;
   /**
    * False for an untrusted project: its own layer is ignored while the global
-   * one still applies — the same scope the untrusted target's child session is
-   * created with. Omitted means trusted.
+   * one still applies. Use the trust decision of the parent or target whose
+   * settings are being read. Omitted means trusted.
    */
   projectTrusted?: boolean;
 }
@@ -26,7 +25,7 @@ function settingsFor(cwd: string, scope: PiSettingsScope): SettingsManager {
 }
 
 function getPiSettingsPath(): string {
-  return path.join(os.homedir(), ".pi", "agent", "settings.json");
+  return path.join(getAgentDir(), "settings.json");
 }
 
 export interface PiSettings {
@@ -44,7 +43,8 @@ export function readPiSettings(): PiSettings | undefined {
 }
 
 /** True if hideThinkingBlock is set; false if absent or unreadable. */
-export function getHideThinkingBlock(): boolean {
+export function getHideThinkingBlock(cwd?: string, scope?: PiSettingsScope): boolean {
+  if (cwd !== undefined) return settingsFor(cwd, scope ?? {}).getHideThinkingBlock();
   const settings = readPiSettings();
   return settings?.hideThinkingBlock ?? false;
 }

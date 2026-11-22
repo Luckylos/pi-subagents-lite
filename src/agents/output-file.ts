@@ -6,8 +6,18 @@
  * Lines: [USER], [TOOL], [ASSISTANT], [DONE] with ISO timestamps.
  */
 
-import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  writeFileSync,
+  type Stats,
+} from "node:fs";
+import { join, resolve } from "node:path";
 import type { AgentSession, AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { formatTokens } from "./usage.ts";
 import { summarizeToolArgs } from "../utils.ts";
@@ -35,27 +45,94 @@ function timestamp(): string {
   return new Date().toISOString();
 }
 
+/** Fail closed before touching the filesystem when private POSIX I/O is unavailable. */
+function privateOutputUid(): number {
+  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const flags = [constants.O_NOFOLLOW, constants.O_DIRECTORY, constants.O_NONBLOCK];
+  if (
+    uid === undefined ||
+    !Number.isInteger(uid) ||
+    uid < 0 ||
+    uid >= 0xffffffff ||
+    flags.some((flag) => !Number.isInteger(flag) || flag <= 0 || flag > 0x7fffffff)
+  ) {
+    throw new Error(
+      "Private output transcripts are unsupported on this platform: POSIX UID and nonzero O_NOFOLLOW/O_DIRECTORY/O_NONBLOCK flags are required.",
+    );
+  }
+  return uid;
+}
+
+/** Validate the object actually opened before changing permissions or writing. */
+function assertOwnedDirectory(stats: Stats, uid: number): void {
+  if (!stats.isDirectory() || stats.uid !== uid) {
+    throw new Error("Output directory must be a real directory owned by the current user.");
+  }
+}
+
+function assertPrivateFile(stats: Stats, uid: number): void {
+  if (!stats.isFile() || stats.uid !== uid || (stats.mode & 0o077) !== 0 || stats.nlink !== 1) {
+    throw new Error("Output log must be a private, singly linked regular file owned by the current user.");
+  }
+}
+
 /**
  * Create the output file path, ensuring the parent dir exists (0o700).
  * @param baseDir - Overrides the default /tmp/pi-agent-outputs; used for testability.
  */
 export function createOutputFilePath(agentId: string, baseDir?: string): string {
+  const uid = privateOutputUid();
   const dir = baseDir ?? "/tmp/pi-agent-outputs";
   mkdirSync(dir, { recursive: true, mode: 0o700 });
+  // Kernel flags reject directory symlinks and non-directories without chmod-ing their targets.
+  // Resolve trailing separators/dot segments so NOFOLLOW applies to the final directory itself.
+  const fd = openSync(resolve(dir), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try {
+    assertOwnedDirectory(fstatSync(fd), uid);
+    fchmodSync(fd, 0o700);
+    const stats = fstatSync(fd);
+    assertOwnedDirectory(stats, uid);
+    if ((stats.mode & 0o7777) !== 0o700) throw new Error("Output directory must have mode 0700.");
+  } finally {
+    closeSync(fd);
+  }
   return join(dir, `${agentId}.log`);
 }
 
 export function writeInitialEntry(path: string, prompt: string): void {
-  const line = `${timestamp()} [USER] ${prompt}\n`;
-  writeFileSync(path, line, "utf-8");
+  const uid = privateOutputUid();
+  const fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    assertPrivateFile(fstatSync(fd), uid);
+    // Creation mode is filtered by umask. Later appends reopen this file for writing.
+    fchmodSync(fd, 0o600);
+    const ready = fstatSync(fd);
+    assertPrivateFile(ready, uid);
+    if ((ready.mode & 0o7777) !== 0o600) throw new Error("Output log must have mode 0600 at creation.");
+    writeFileSync(fd, `${timestamp()} [USER] ${prompt}\n`, "utf-8");
+  } finally {
+    closeSync(fd);
+  }
 }
 
-/** Best-effort append that never throws. */
+/** Best-effort append that never throws or recreates a missing log. */
 function safeAppend(path: string, content: string): void {
   try {
-    appendFileSync(path, content, "utf-8");
+    const uid = privateOutputUid();
+    // Reject devices/FIFOs before opening; NONBLOCK also avoids hanging if replaced with a FIFO.
+    const before = lstatSync(path);
+    assertPrivateFile(before, uid);
+    const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const opened = fstatSync(fd);
+      assertPrivateFile(opened, uid);
+      if (opened.dev !== before.dev || opened.ino !== before.ino) throw new Error("Output log changed while opening.");
+      writeFileSync(fd, content, "utf-8");
+    } finally {
+      closeSync(fd);
+    }
   } catch {
-    /* ignore write errors */
+    /* ignore unsafe paths and write errors */
   }
 }
 

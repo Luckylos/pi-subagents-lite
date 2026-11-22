@@ -23,7 +23,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import type { SelectItem, SelectList, TUI } from "@earendil-works/pi-tui";
+import type { Component, SettingItem, SelectItem, SelectList, TUI } from "@earendil-works/pi-tui";
 
 /** Assert the viewer's partial terminal fixture at the private TUI class boundary. */
 export function asTui<S extends object>(fake: S): TUI & S {
@@ -53,6 +53,13 @@ export function asExtensionContext<S extends object>(fake: S): ExtensionContext 
 /** Assert a partial command context against the real ExtensionCommandContext. */
 export function asCommandContext<S extends object>(fake: S): ExtensionCommandContext & S {
   return fake as ExtensionCommandContext & S;
+}
+
+/** Read-only inspection of a real settings wrapper's item data; input still uses the public component seam. */
+export function settingsListWrapperView(component: Component): Component & {
+  readonly settingsList: Component & { readonly items: readonly SettingItem[] };
+} {
+  return component as Component & { readonly settingsList: Component & { readonly items: readonly SettingItem[] } };
 }
 
 /** The two private SelectList members menu tests need to assert on. */

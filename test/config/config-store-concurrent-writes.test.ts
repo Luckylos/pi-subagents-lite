@@ -98,6 +98,28 @@ describe("ConfigStore fresh persisted mutations", () => {
     expect(saves).toHaveLength(0);
   });
 
+  it("reports partial Clear when the project becomes untrusted after the global commit", () => {
+    const {
+      io: base,
+      global,
+      project,
+    } = memIO({
+      global: { agent: { Scout: "g/scout" } },
+      project: { agent: { Scout: "p/scout" } },
+      projectStatus: "loaded",
+    });
+    const store = new ConfigStore({
+      ...base,
+      updateLayer: (target, mutate, options) => {
+        expect(target).toBe("global");
+        return { ...base.updateLayer(target, mutate, options), project: null, projectStatus: "untrusted" };
+      },
+    });
+    expect(() => store.mutate.agent.clearModelOverride("Scout", "all")).toThrow(/Global.*cleared.*project.*untrusted/);
+    expect(global().agent).toEqual({});
+    expect(project()?.agent).toEqual({ Scout: "p/scout" });
+  });
+
   it("reports partial all-layer failure after the global layer is committed", () => {
     let global: RawConfig = { agent: { default: "global/model" } };
     let project: RawConfig | null = { agent: { default: "project/model", defaultMaxTurns: 8 } };

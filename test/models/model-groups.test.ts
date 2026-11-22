@@ -1,6 +1,6 @@
 /**
  * model-groups.test.ts — Grouping + thinking-display logic for the Model
- * settings menu (pure: no store, no TUI).
+ * settings menu (pure display rules; configuration fixtures use the real store, no TUI).
  *
  * ACs covered: no groups when all types at default, frontmatter-only types
  * never listed, shadowed config per-type override under a session default,
@@ -13,7 +13,18 @@
 import { describe, it, expect } from "vite-plus/test";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type { Api, Model } from "@earendil-works/pi-ai";
-import { buildModelGroups, type ModelGroupsInput } from "../../src/models/model-groups.js";
+import {
+  buildModelGroups,
+  describeModelSetting,
+  modelSettingLevels,
+  hasExplicitPerTypeOverride,
+  type ModelGroupsInput,
+  type ModelSettingsLayers,
+  type ExplainedModelGroupsInput,
+} from "../../src/models/model-groups.js";
+import { ConfigStore } from "../../src/config/config-store.js";
+import { memIO } from "../config/config-store-helpers.js";
+import type { SessionModelOverrides } from "../../src/models/model-precedence.js";
 import type { SubagentsConfig } from "../../src/config/types.js";
 
 // --- Registry stub: real clampThinkingLevel runs against these minimal models.
@@ -40,31 +51,94 @@ const registry = new Map([
   ["anthropic/claude-limited", LIMITED_REASONING_MODEL],
 ]);
 
-/** Full agent-config base (SubagentsConfig["agent"] requires default + forceBackground). */
-const baseAgent: SubagentsConfig["agent"] = { default: null, forceBackground: false };
+/** Fixture config is raw persisted state, not a baked-default membership approximation. */
+type InputOverrides = Omit<Partial<ExplainedModelGroupsInput>, "modelSettings"> & {
+  config?: Partial<SubagentsConfig["agent"]>;
+  project?: Partial<SubagentsConfig["agent"]>;
+  sessionOverrides?: SessionModelOverrides;
+};
 
-/** Overrides for input(); config may be partial and is merged over baseAgent. */
-type InputOverrides = Omit<Partial<ModelGroupsInput>, "config"> & { config?: Partial<SubagentsConfig["agent"]> };
-
-function input(overrides: InputOverrides = {}): ModelGroupsInput {
-  const { config, ...rest } = overrides;
-  return {
+function input(overrides: InputOverrides = {}): ExplainedModelGroupsInput {
+  const { config, project, sessionOverrides, ...rest } = overrides;
+  const store = new ConfigStore(
+    memIO({
+      global: { agent: config },
+      project: project ? { agent: project } : null,
+      projectStatus: project ? "loaded" : "untrusted",
+    }).io,
+  );
+  for (const [key, value] of Object.entries(sessionOverrides ?? {})) {
+    if (key === "default") store.mutate.agent.setDefaultModel(value ?? null, "session");
+    else store.mutate.agent.setModelOverride(key, value ?? null, "session");
+  }
+  const context = {
     types: ["scout", "worker", "plain"],
     agentConfigs: {},
-    config: { ...baseAgent, ...config },
-    sessionOverrides: { default: null },
-    hasGlobalModelKey: () => false,
-    hasProjectModelKey: () => false,
     parentModelId: `${PARENT_MODEL.provider}/${PARENT_MODEL.id}`,
-    resolveModel: (id) => {
+    resolveModel: (id: string | undefined) => {
       const model = id ? registry.get(id) : undefined;
       return { model: model ?? PARENT_MODEL, unavailable: Boolean(id && !model) };
     },
     ...rest,
   };
+  return {
+    ...context,
+    defaultThinking: store.agent.defaultThinking,
+    modelSettings: Object.fromEntries(
+      context.types.map((type) => [
+        type,
+        store.describeModelSetting(type, context.parentModelId, context.agentConfigs[type]),
+      ]),
+    ),
+  };
 }
 
-const groupsFor = (i: ModelGroupsInput) => buildModelGroups(i);
+const groupsFor = (i: ExplainedModelGroupsInput) => buildModelGroups(i);
+
+describe("published-source snapshot compatibility", () => {
+  it("ignores inherited and reserved keys even with legacy bracket-lookup membership callbacks", () => {
+    const layers: ModelSettingsLayers = {
+      config: { default: null, forceBackground: false, systemPromptMode: "custom" },
+      sessionOverrides: { default: null },
+      hasGlobalModelKey: (key) => layers.config[key] !== undefined,
+      hasProjectModelKey: () => false,
+    };
+    for (const key of ["toString", "systemPromptMode"]) {
+      expect(describeModelSetting(layers, key, "parent", { model: "fm" })).toEqual({
+        model: "fm",
+        layer: "frontmatter",
+        tag: "",
+        clearable: { session: false, global: false, project: false },
+      });
+    }
+  });
+
+  it("retains helper names, original result shape and default inheritance label", () => {
+    const layers: ModelSettingsLayers = {
+      config: { default: null, forceBackground: false, worker: "" },
+      sessionOverrides: { default: null },
+      hasGlobalModelKey: (key) => key === "worker",
+      hasProjectModelKey: () => false,
+    };
+    expect(describeModelSetting(layers, "worker")).toEqual({
+      model: "(inherits parent)",
+      layer: "parent",
+      tag: "",
+      clearable: { session: false, global: true, project: false },
+    });
+    expect(modelSettingLevels(layers, "worker")).toEqual({ session: false, global: true, project: false });
+    expect(hasExplicitPerTypeOverride(layers.sessionOverrides, layers.config, "worker")).toBe(true);
+    expect(hasExplicitPerTypeOverride(layers.sessionOverrides, layers.config, "scout")).toBe(false);
+    const { modelSettings: _settings, defaultThinking: _thinking, ...legacyContext } = input();
+    const legacy: ModelGroupsInput = { ...legacyContext, ...layers };
+    expect(buildModelGroups(legacy)).toEqual([
+      {
+        modelId: "test/parent-model",
+        rows: [{ type: "worker", thinking: { level: "medium", source: "pi default" }, tag: "" }],
+      },
+    ]);
+  });
+});
 
 describe("buildModelGroups — grouping", () => {
   it("renders no groups when every type resolves to the parent model", () => {
@@ -119,8 +193,7 @@ describe("buildModelGroups — grouping", () => {
   it("tags a project-layer per-type override with [project]", () => {
     const result = groupsFor(
       input({
-        config: { worker: "openai/gpt-4o" },
-        hasProjectModelKey: (key) => key === "worker",
+        project: { worker: "openai/gpt-4o" },
       }),
     );
     expect(result[0]?.rows[0]).toEqual({
@@ -206,8 +279,7 @@ describe("buildModelGroups — grouping", () => {
   it("lists a shadowed project per-type override under the session default with [session] (equal values)", () => {
     const result = groupsFor(
       input({
-        config: { worker: "openai/gpt-4o" },
-        hasProjectModelKey: (key) => key === "worker",
+        project: { worker: "openai/gpt-4o" },
         sessionOverrides: { default: "openai/gpt-4o" },
       }),
     );
@@ -222,8 +294,7 @@ describe("buildModelGroups — grouping", () => {
   it("lists a shadowed project per-type override under the session default with [session] (different value)", () => {
     const result = groupsFor(
       input({
-        config: { worker: "openai/gpt-4o" },
-        hasProjectModelKey: (key) => key === "worker",
+        project: { worker: "openai/gpt-4o" },
         sessionOverrides: { default: "anthropic/claude-opus-4-1" },
       }),
     );
@@ -238,8 +309,7 @@ describe("buildModelGroups — grouping", () => {
   it("shows the winning layer's model and tag when multiple layers set the per-type key", () => {
     const result = groupsFor(
       input({
-        config: { worker: "openai/gpt-4o" },
-        hasProjectModelKey: (key) => key === "worker",
+        project: { worker: "openai/gpt-4o" },
         sessionOverrides: { default: null, worker: "anthropic/claude-opus-4-1" },
       }),
     );
@@ -265,8 +335,8 @@ describe("buildModelGroups — grouping", () => {
   it("lists a project per-type override equal to the config default with [project]", () => {
     const result = groupsFor(
       input({
-        config: { default: "openai/gpt-4o", worker: "openai/gpt-4o" },
-        hasProjectModelKey: (key) => key === "worker",
+        config: { default: "openai/gpt-4o" },
+        project: { worker: "openai/gpt-4o" },
       }),
     );
     expect(result[0]?.rows[0]).toEqual({

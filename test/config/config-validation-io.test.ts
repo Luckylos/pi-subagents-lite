@@ -284,6 +284,155 @@ it("validates every known setting and shares project eligibility with model Clea
   }
 });
 
+describe("file-backed model setting descriptions", () => {
+  it.each(["systemPromptMode", "defaultThinking", "defaultMaxTurns", "default"])(
+    "protects reserved %s from type writes and clears",
+    (type) => {
+      const globalText =
+        '{ "agent": { "systemPromptMode": "custom", "defaultThinking": "high", "defaultMaxTurns": 4, "default": "g/base", "Scout": "g/scout", "showCost": true } }\n';
+      const projectText = '{ "agent": { "default": "p/base", "Scout": "p/scout" } }\n';
+      const projectPath = join(projectDir, "subagents-lite.json");
+      writeFileSync(GLOBAL_CONFIG_PATH, globalText);
+      writeFileSync(projectPath, projectText);
+      const store = new ConfigStore(createConfigIO(projectDir));
+      for (const target of ["global", "project"] as const) {
+        store.mutate.agent.setModelOverride(type, "wrong/model", target);
+        store.mutate.agent.clearModelOverride(type, target);
+        expect(readFileSync(GLOBAL_CONFIG_PATH, "utf8")).toBe(globalText);
+        expect(readFileSync(projectPath, "utf8")).toBe(projectText);
+      }
+      store.mutate.agent.setDefaultModel("s/base", "session");
+      store.mutate.agent.setModelOverride(type, "s/type", "session");
+      expect(store.modelFor(type, "parent")).toBe(type === "default" ? "s/base" : "s/type");
+      store.mutate.agent.clearModelOverride(type, "all");
+      expect(store.modelFor(type, "parent")).toBe("s/base");
+      expect(readFileSync(GLOBAL_CONFIG_PATH, "utf8")).toBe(globalText);
+      expect(readFileSync(projectPath, "utf8")).toBe(projectText);
+    },
+  );
+
+  it.each(["toString", "__proto__"])("only lists and clears own model entries for %s", (type) => {
+    writeGlobal({ agent: { systemPromptMode: "custom", Scout: "g/scout" } });
+    writeProject({ agent: { Other: "p/other" } });
+    const store = new ConfigStore(createConfigIO(projectDir));
+    const absent = {
+      layer: "frontmatter",
+      source: "frontmatter",
+      model: "fm",
+      clearable: { session: false, global: false, project: false },
+      explicitPerTypeOverride: false,
+    };
+    const describeType = () => store.describeModelSetting(type, "parent", { model: "fm" });
+    expect(describeType()).toEqual(absent);
+    expect(store.modelFor("systemPromptMode", "parent", { model: "fm" })).toBe("fm");
+    store.mutate.agent.setModelOverride(type, "g/type");
+    store.mutate.agent.setModelOverride(type, "", "project");
+    store.mutate.agent.setModelOverride(type, "s/type", "session");
+    expect(describeType()).toMatchObject({
+      layer: "session",
+      source: "session-per-type",
+      explicitPerTypeOverride: true,
+      clearable: { session: true, global: true, project: true },
+    });
+    store.mutate.agent.clearModelOverride(type, "session");
+    expect(describeType()).toMatchObject({
+      source: "frontmatter",
+      clearable: { session: false, global: true, project: true },
+    });
+    store.mutate.agent.clearModelOverride(type, "project");
+    expect(describeType()).toMatchObject({ layer: "global", model: "g/type" });
+    store.mutate.agent.clearModelOverride(type, "global");
+    expect(describeType()).toEqual(absent);
+  });
+
+  it.each(["deleted", "unrelated"])("All levels does not fail on a %s project with nothing to clear", (change) => {
+    writeGlobal({ agent: { Scout: "g/scout", showCost: true } });
+    writeProject({ agent: change === "deleted" ? { Scout: "p/scout" } : { Other: "p/other" } });
+    const store = new ConfigStore(createConfigIO(projectDir));
+    const projectPath = join(projectDir, "subagents-lite.json");
+    if (change === "deleted") rmSync(projectPath);
+    else writeFileSync(projectPath, "not json");
+    store.mutate.agent.clearModelOverride("Scout", "all");
+    expect(store.modelFor("Scout", "parent")).toBe("parent");
+    expect(JSON.parse(readFileSync(GLOBAL_CONFIG_PATH, "utf8"))).toEqual({ agent: { showCost: true } });
+    if (change === "deleted") expect(() => readFileSync(projectPath)).toThrow(/ENOENT/);
+    else expect(readFileSync(projectPath, "utf8")).toBe("not json");
+  });
+
+  it("explains validated keys without changing global or project file bytes", () => {
+    const globalText =
+      '{ "agent": { "default": { "model": "bad" }, "Scout": "g/scout", "Worker": null, "Unknown": "" } }\n';
+    const projectText = '{ "agent": { "Scout": "", "default": "p/default" } }\n';
+    writeFileSync(GLOBAL_CONFIG_PATH, globalText);
+    const projectPath = join(projectDir, "subagents-lite.json");
+    writeFileSync(projectPath, projectText);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new ConfigStore(createConfigIO(projectDir));
+      expect(store.describeModelSetting("default", "parent")).toEqual({
+        model: "p/default",
+        source: "config-default",
+        layer: "project",
+        clearable: { session: false, global: false, project: true },
+        explicitPerTypeOverride: false,
+      });
+      expect(store.describeModelSetting("Scout", "parent")).toEqual({
+        model: "p/default",
+        source: "config-default",
+        layer: "project",
+        clearable: { session: false, global: true, project: true },
+        explicitPerTypeOverride: true,
+      });
+      expect(store.describeModelSetting("Worker").explicitPerTypeOverride).toBe(false);
+      expect(store.describeModelSetting("Worker").clearable.global).toBe(true);
+      expect(store.describeModelSetting("Unknown").explicitPerTypeOverride).toBe(true);
+      expect(warn).toHaveBeenCalledOnce();
+      expect(readFileSync(GLOBAL_CONFIG_PATH, "utf-8")).toBe(globalText);
+      expect(readFileSync(projectPath, "utf-8")).toBe(projectText);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not create files while reading absent layers or invent raw default membership", () => {
+    const store = new ConfigStore(createConfigIO(projectDir));
+    expect(store.describeModelSetting("default")).toEqual({
+      model: "",
+      source: "parent",
+      layer: "parent",
+      clearable: { session: false, global: false, project: false },
+      explicitPerTypeOverride: false,
+    });
+    expect(() => readFileSync(GLOBAL_CONFIG_PATH)).toThrow();
+    expect(() => readFileSync(join(projectDir, "subagents-lite.json"))).toThrow();
+  });
+
+  it("two stale file-backed stores preserve different-field writes and Clear adopts fresh inherited facts", () => {
+    writeGlobal({ agent: { default: "base/model", Scout: "base/scout", graceTurns: 5 } });
+    writeProject({ agent: { Scout: "project/scout" } });
+    const a = new ConfigStore(createConfigIO(projectDir));
+    const b = new ConfigStore(createConfigIO(projectDir));
+    a.mutate.agent.setDefaultModel("fresh/default");
+    b.mutate.agent.setForceBackground(true);
+    expect(JSON.parse(readFileSync(GLOBAL_CONFIG_PATH, "utf-8"))).toEqual({
+      agent: { default: "fresh/default", Scout: "base/scout", graceTurns: 5, forceBackground: true },
+    });
+    a.mutate.agent.clearModelOverride("Scout", "global");
+    b.mutate.agent.clearModelOverride("Scout", "project");
+    expect(b.describeModelSetting("Scout", "parent")).toEqual({
+      model: "fresh/default",
+      source: "config-default",
+      layer: "global",
+      clearable: { session: false, global: false, project: false },
+      explicitPerTypeOverride: false,
+    });
+    expect(JSON.parse(readFileSync(GLOBAL_CONFIG_PATH, "utf-8"))).toEqual({
+      agent: { default: "fresh/default", graceTurns: 5, forceBackground: true },
+    });
+    expect(JSON.parse(readFileSync(join(projectDir, "subagents-lite.json"), "utf-8"))).toEqual({});
+  });
+});
+
 describe("load-time validation — runs and menus", () => {
   it("agent runs resolve models with fallback and without throw", () => {
     writeGlobal({ agent: { default: { model: "x" } } });

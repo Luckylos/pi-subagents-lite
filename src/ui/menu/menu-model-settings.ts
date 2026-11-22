@@ -26,24 +26,20 @@ import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createClearAllSubmenu, type AvailableLevels, type TargetChoice } from "./submenus/target-select.ts";
 import { SettingsListWrapper } from "./wrappers/settings-list.ts";
 import { getStore } from "../../shell.ts";
-import {
-  buildModelGroups,
-  describeModelSetting,
-  hasExplicitPerTypeOverride,
-  modelSettingLevels,
-  type AgentTypeModelConfig,
-  type ModelSettingsLayers,
-} from "../../models/model-groups.ts";
+import { buildModelGroups, modelSettingTag, type AgentTypeModelConfig } from "../../models/model-groups.ts";
 import { formatDisplayedThinking } from "../../models/thinking-resolution.ts";
 import { resolveConfiguredModel } from "../../models/model-availability.ts";
 import { getPiDefaultThinkingLevel, getPiModelThinkingLevels } from "../../pi-settings.ts";
-import type { SessionModelOverrides } from "../../models/model-precedence.ts";
+import { isPerTypeModelKey } from "../../config/agent-settings.ts";
+import type { ModelSettingDescription } from "../../config/config-store.ts";
+import { errorMessage } from "../../utils.ts";
 
 export async function showModelSettingsMenu(
   owner: ExtensionOwner,
   ctx: ExtensionCommandContext,
   modelOptions: string[],
 ): Promise<void> {
+  let offerReload = false;
   const buildItems = (store: ReturnType<typeof getStore>, theme: Theme): SettingItem[] => {
     const items: SettingItem[] = [];
     const projectOffered = store.projectTargetOffered;
@@ -55,14 +51,19 @@ export async function showModelSettingsMenu(
         ? `Unavailable. Spawn uses parent model ${plainText(parentModelId)}.`
         : "Unavailable. No parent model is set. Pi selects the model on spawn.";
 
+    const notifyClearError = (err: unknown) => {
+      offerReload ||= projectOffered && !store.projectTargetOffered;
+      ctx.ui.notify(errorMessage(err), "error");
+    };
     const clearOverride = (key: string, target: TargetChoice) => {
-      store.mutate.agent.clearModelOverride(key, target);
-      const { model, layer } = describeModelSetting(
-        {
-          ...layers,
-          config: store.agentConfigSnapshot(),
-          sessionOverrides: { default: store.sessionDefaultModel, [key]: store.sessionModelOverride(key) },
-        },
+      try {
+        if (key === "default") store.mutate.agent.clearDefaultModel(target);
+        else store.mutate.agent.clearModelOverride(key, target);
+      } catch (err) {
+        notifyClearError(err);
+        return;
+      }
+      const { model, layer } = store.describeModelSetting(
         key,
         parentModelId,
         key === "default" ? undefined : owner.registry.getAgentConfig(key),
@@ -77,13 +78,14 @@ export async function showModelSettingsMenu(
     };
 
     // Shared submenu factory: target + model picker for one config key.
-    // availableLevels filters the nested clear picker (the default and per-type
-    // rows pass the levels where the key exists); set entries are never filtered.
+    // Clear is available only at layers carrying this key.
+    // A type sharing a persisted setting name may still use its independent session slot.
     const modelSubmenuFor = (typeName: string, effectiveModel: string, availableLevels: AvailableLevels) =>
       createModelSelectSubmenu(owner, {
         modelOptions,
         showClear: availableLevels.session || availableLevels.global || (projectOffered && availableLevels.project),
-        projectOffered,
+        globalOffered: typeName === "default" || isPerTypeModelKey(typeName),
+        projectOffered: projectOffered && (typeName === "default" || isPerTypeModelKey(typeName)),
         theme,
         currentModel: effectiveModel,
         availableLevels,
@@ -92,29 +94,23 @@ export async function showModelSettingsMenu(
           if (model === null || model === "(inherits parent)") {
             clearOverride(typeName, target);
           } else {
-            store.mutate.agent.setModelOverride(typeName, model, target);
+            if (typeName === "default") store.mutate.agent.setDefaultModel(model, target);
+            else store.mutate.agent.setModelOverride(typeName, model, target);
             ctx.ui.notify(`${typeName} model set to ${model} (${target})`, "info");
           }
         },
         onClear: (target) => clearOverride(typeName, target),
       });
 
-    const sessionOverrides: SessionModelOverrides = { default: store.sessionDefaultModel };
-    const layers: ModelSettingsLayers = {
-      config: store.agentConfigSnapshot(),
-      sessionOverrides,
-      hasGlobalModelKey: (key) => store.hasGlobalModelKey(key),
-      hasProjectModelKey: (key) => store.hasProjectModelKey(key),
-    };
-    const defaultModel = describeModelSetting(layers, "default", parentModelId ? "(inherits parent)" : "");
+    const defaultModel = store.describeModelSetting("default", parentModelId ? "(inherits parent)" : "");
 
     items.push({
       id: "defaultModel",
       label: "Global default model",
-      currentValue: [defaultModel.model || autoModelLabel, defaultModel.tag].filter(Boolean).join(" "),
+      currentValue: [defaultModel.model || autoModelLabel, modelSettingTag(defaultModel)].filter(Boolean).join(" "),
       description: resolveModel(defaultModel.layer === "parent" ? undefined : defaultModel.model).unavailable
         ? fallbackNote()
-        : "Model used when no session default, per-type override, or frontmatter model applies.",
+        : "Used after session and per-type overrides, before the agent's frontmatter model.",
       submenu: modelSubmenuFor("default", defaultModel.model, defaultModel.clearable),
     });
 
@@ -123,13 +119,13 @@ export async function showModelSettingsMenu(
     // default), alphabetical by model id. Rows show the type name, the
     // spawn-effective thinking level with its winning thinking source in
     // brackets, and the winning model layer's provenance tag.
-    const types = owner.registry.getAllTypes();
+    const types = owner.registry.getAllTypes().filter((type) => type !== "default");
 
-    const agentConfigs: Record<string, AgentTypeModelConfig | undefined> = {};
+    const agentConfigs: Record<string, AgentTypeModelConfig | undefined> = Object.create(null);
+    const modelSettings: Record<string, ModelSettingDescription> = Object.create(null);
     for (const type of types) {
-      // Null entries read as absent downstream, so every type is recorded.
-      sessionOverrides[type] = store.sessionModelOverride(type);
       agentConfigs[type] = owner.registry.getAgentConfig(type);
+      modelSettings[type] = store.describeModelSetting(type, parentModelId, agentConfigs[type]);
     }
 
     // Use the same settings scope as Spawn without a worktree target.
@@ -138,7 +134,8 @@ export async function showModelSettingsMenu(
     const groups = buildModelGroups({
       types,
       agentConfigs,
-      ...layers,
+      modelSettings,
+      defaultThinking: store.agent.defaultThinking,
       parentModelId,
       piDefaultThinking: getPiDefaultThinkingLevel(ctx.cwd, scope),
       piModelThinking: (modelKey) => modelThinkingLevels[modelKey],
@@ -163,7 +160,7 @@ export async function showModelSettingsMenu(
           description: row.unavailable
             ? fallbackNote()
             : `Model for the ${row.type} agent type. Select to set or clear its override.`,
-          submenu: modelSubmenuFor(row.type, group.modelId, modelSettingLevels(layers, row.type)),
+          submenu: modelSubmenuFor(row.type, group.modelId, modelSettings[row.type].clearable),
         });
       }
     }
@@ -171,7 +168,7 @@ export async function showModelSettingsMenu(
     // "Override another type..." lists types without an explicit per-type
     // override: frontmatter-only and inheriting types.
     items.push({ id: SEPARATOR_ID, label: "─────────────────────────", currentValue: "────────" });
-    const nonOverridden = types.filter((type) => !hasExplicitPerTypeOverride(sessionOverrides, layers.config, type));
+    const nonOverridden = types.filter((type) => !modelSettings[type].explicitPerTypeOverride);
     if (nonOverridden.length > 0) {
       items.push({
         id: "overrideType",
@@ -186,11 +183,10 @@ export async function showModelSettingsMenu(
             })),
             {
               onSelect: (typeName) => {
-                const { model, clearable } = describeModelSetting(
-                  layers,
+                const { model, clearable } = store.describeModelSetting(
                   typeName,
                   parentModelId,
-                  agentConfigs[typeName],
+                  owner.registry.getAgentConfig(typeName),
                 );
                 return modelSubmenuFor(typeName, model, clearable)(model, subDone);
               },
@@ -223,17 +219,31 @@ export async function showModelSettingsMenu(
           availableLevels,
           message: (target) => `Clear all model overrides at the ${target} level?`,
           onConfirm: (target) => {
-            store.mutate.agent.clearAllModelOverrides(target);
+            try {
+              store.mutate.agent.clearAllModelOverrides(target);
+            } catch (err) {
+              notifyClearError(err);
+              return;
+            }
             ctx.ui.notify(`Model overrides cleared (${target})`, "info");
           },
         }),
       });
     }
 
+    if (offerReload) {
+      items.push({
+        id: "reload",
+        label: "Reload model settings",
+        currentValue: "",
+        values: [""],
+        description: "Read the config files again after repairing the project file.",
+      });
+    }
     return items;
   };
 
-  let rebuild: ((items: any[]) => void) | undefined;
+  let rebuild: ((items: SettingItem[]) => void) | undefined;
 
   await ctx.ui.custom((_tui, theme, _kb, done) => {
     const store = getStore(owner);
@@ -243,7 +253,13 @@ export async function showModelSettingsMenu(
       items,
       15,
       buildSettingsListTheme(theme),
-      (_id, _v) => rebuild?.(buildItems(getStore(owner), theme)),
+      (id) => {
+        if (id === "reload") {
+          store.refreshPersisted();
+          offerReload = !store.projectTargetOffered;
+        }
+        rebuild?.(buildItems(store, theme));
+      },
       () => done(undefined),
     );
     return new SettingsListWrapper(settingsList, {

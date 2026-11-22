@@ -29,15 +29,15 @@ The personal baseline config file `~/.pi/agent/subagents-lite.json`, holding the
 _Avoid_: User config, personal config
 
 **Project config**:
-The per-project override file `.pi/subagents-lite.json` in a trusted project. Holds only model and concurrency overrides: each key it sets wins over the Global config, and an absent key inherits from it. An empty file (`{}`) is inert.
+The per-project override file `.pi/subagents-lite.json` in a trusted project. Holds model-family overrides (the default model, per-type models, `defaultThinking`, and `defaultMaxTurns`) and concurrency overrides: each key it sets wins over the Global config, and an absent key inherits from it. An empty file (`{}`) is inert.
 _Avoid_: Project settings, local config
 
 **Model override**:
-A user-configured model preference (per-type or global) set at session, global, or project level. A session per-type **Model override** beats every other source; a session default beats config per-type overrides and frontmatter models; the config default key applies only to types with no session default, no per-type override, and no frontmatter model. Set via `/agents` > Model settings.
+A user-configured model preference (per-type or global) set at session, global, or project level. A session per-type **Model override** beats every other source; a session default beats config per-type overrides and frontmatter models; the config default key wins over frontmatter when no session override or config per-type override applies. Set via `/agents` > Model settings.
 _Avoid_: Model injection, model preference
 
 **Grace turns**:
-Additional turns allowed after the soft turn limit steer message before hard abort. Default 6, configurable via `/agents` > Model settings.
+Additional turns allowed after the soft turn limit steer message before hard abort. Default 6, configurable via `/agents` > Agent behavior.
 _Avoid_: Grace period, extra turns
 
 **Resolved model**:

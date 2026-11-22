@@ -28,6 +28,8 @@ export interface ModelSelectSubmenuOptions {
   /** Whether to offer the nested "Clear..." flow. */
   showClear: boolean;
   /** Project target availability (untrusted/malformed projects hide the entry). */
+  /** Reserved agent settings only permit a session override with the same type name. */
+  globalOffered?: boolean;
   projectOffered: boolean;
   theme: Theme;
   /** Effective model for pre-selecting the current value in the picker. */
@@ -50,7 +52,7 @@ export function createModelSelectSubmenu(
   return createLevelPickerSubmenu({
     theme: options.theme,
     items: buildLevelItems({
-      offered: { session: true, global: true, project: options.projectOffered },
+      offered: { session: true, global: options.globalOffered ?? true, project: options.projectOffered },
       includeClear: options.showClear === true,
     }),
     onPick: (id, subDone) => {

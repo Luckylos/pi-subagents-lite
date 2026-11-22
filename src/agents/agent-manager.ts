@@ -15,6 +15,7 @@ import { AgentOutputLog } from "./output-file.ts";
 import { Watchdog } from "./watchdog.ts";
 import { getStore } from "../shell.ts";
 import { AgentRun } from "./agent-run.ts";
+import { RunCapacity, type ConcurrencyConfig } from "./run-capacity.ts";
 import {
   type AgentSubmissionResult,
   type AgentSubmissionRejection,
@@ -64,29 +65,11 @@ function formatModelError(
   return model ? `${type} (${model.provider}/${model.id}): ${sanitizedError}` : `${type}: ${sanitizedError}`;
 }
 
-export interface ConcurrencyConfig {
-  /** Default concurrency limit for models not in the models or providers map. */
-  default: number;
-  /** Per-provider concurrency limits keyed by provider name (e.g. "llamacpp"). */
-  providers?: Record<string, number>;
-  /** Per-model concurrency limits keyed by "provider/modelId". */
-  models?: Record<string, number>;
-}
+// Preserve the existing deep-import path for consumers.
+export type { ConcurrencyConfig } from "./run-capacity.ts";
 
 type OnAgentComplete = (result: SubagentRunResult, notification?: RunNotificationBinding) => void;
 type OnAgentStart = (record: AgentRecord) => void;
-
-interface ConcurrencySlot {
-  limit: number;
-  running: number;
-  modelKey?: string;
-}
-
-interface QueueEntry {
-  id: string;
-  modelKey: string;
-  start: (slot: ConcurrencySlot) => void;
-}
 
 interface SpawnArgs {
   pi: ExtensionAPI;
@@ -115,9 +98,7 @@ export class AgentManager {
   private onStart?: OnAgentStart;
 
   private runs = new WeakMap<AgentRecord, AgentRun[]>();
-  /** Fixed run-owned leases; configuration changes never replace ownership. */
-  private activeLeases = new Set<ConcurrencySlot>();
-  private runLeases = new WeakMap<AgentRun, ConcurrencySlot>();
+  private capacity: RunCapacity;
   private disposed = false;
 
   /** Parent-interrupt bindings by record, removed at every terminal transition. */
@@ -126,24 +107,14 @@ export class AgentManager {
   /** In-flight child-session teardowns, tracked so dispose() can await them. */
   private pendingDisposals = new Set<Promise<void>>();
 
-  /** Attached-but-unsettled run promises, tracked so dispose() can await them. */
-  private inFlightRuns = new Set<Promise<string>>();
+  /** Actual execution lifetimes, registered before start callbacks can reenter dispose(). */
+  private inFlightRuns = new Set<Promise<void>>();
 
   /** Session-level cumulative agent cost. Survives record removal (Clear/dispose). */
   private totalAgentCost = 0;
 
   /** Session-level completed agent count. Survives record removal (Clear/dispose). */
   private totalAgentCount = 0;
-
-  /** Per-model concurrency slots keyed by "provider/modelId". */
-  private concurrencySlots = new Map<string, ConcurrencySlot>();
-
-  /** Per-provider concurrency slots — shared pool for all models from a provider. */
-  private providerSlots = new Map<string, ConcurrencySlot>();
-
-  private defaultConcurrency: number;
-
-  private queue: QueueEntry[] = [];
 
   constructor(
     private owner: ExtensionOwner,
@@ -153,15 +124,10 @@ export class AgentManager {
   ) {
     this.onComplete = onComplete;
     this.onStart = onStart;
-    this.defaultConcurrency = concurrency?.default ?? DEFAULT_CONCURRENCY.default;
-
-    for (const [provider, limit] of Object.entries(concurrency?.providers ?? {})) {
-      this.applyConcurrencyEntry(this.providerSlots, provider, limit);
-    }
-
-    for (const [modelKey, limit] of Object.entries(concurrency?.models ?? {})) {
-      this.applyConcurrencyEntry(this.concurrencySlots, modelKey, limit);
-    }
+    this.capacity = new RunCapacity({
+      ...concurrency,
+      default: concurrency?.default ?? DEFAULT_CONCURRENCY.default,
+    });
 
     this.watchdogInterval = setInterval(() => this.checkWatchdogs(), WATCHDOG_TICK_MS);
     this.watchdogInterval.unref();
@@ -173,71 +139,7 @@ export class AgentManager {
    * all active leases under the new routing policy before draining the queue.
    */
   setConcurrency(config: ConcurrencyConfig): void {
-    this.defaultConcurrency = config.default;
-
-    for (const [provider, limit] of Object.entries(config.providers ?? {})) {
-      this.applyConcurrencyEntry(this.providerSlots, provider, limit);
-    }
-
-    for (const key of this.providerSlots.keys()) {
-      if (!(config.providers ?? {})[key]) {
-        this.providerSlots.delete(key);
-      }
-    }
-
-    for (const [modelKey, limit] of Object.entries(config.models ?? {})) {
-      this.applyConcurrencyEntry(this.concurrencySlots, modelKey, limit);
-    }
-
-    for (const key of this.concurrencySlots.keys()) {
-      if (!(config.models ?? {})[key]) {
-        this.concurrencySlots.delete(key);
-      }
-    }
-
-    this.drainQueue();
-  }
-
-  private applyConcurrencyEntry(map: Map<string, ConcurrencySlot>, key: string, limit: number): void {
-    const safeLimit = Math.max(1, limit);
-    const existing = map.get(key);
-    if (existing) {
-      existing.limit = safeLimit;
-    } else {
-      map.set(key, { limit: safeLimit, running: 0 });
-    }
-  }
-
-  private poolKey(modelKey: string): string {
-    if (this.concurrencySlots.has(modelKey)) return `model:${modelKey}`;
-    const provider = modelKey.split("/")[0];
-    return this.providerSlots.has(provider) ? `provider:${provider}` : `model:${modelKey}`;
-  }
-
-  /** Precedence: per-model slot > per-provider shared slot > default (per-model). */
-  private getSlot(modelKey: string): ConcurrencySlot {
-    const provider = modelKey.split("/")[0];
-    const limit =
-      this.concurrencySlots.get(modelKey)?.limit ?? this.providerSlots.get(provider)?.limit ?? this.defaultConcurrency;
-    const pool = this.poolKey(modelKey);
-    const running = [...this.activeLeases].filter(
-      (lease) => lease.modelKey && this.poolKey(lease.modelKey) === pool,
-    ).length;
-    return { modelKey, limit: Math.max(1, limit), running };
-  }
-
-  private availableSlot(modelKey: string): ConcurrencySlot | undefined {
-    const pool = this.poolKey(modelKey);
-    // New admissions (including a reentrant completion callback) cannot pass
-    // work already waiting in the same pool. Other pools remain independent.
-    if (this.queue.some((entry) => this.poolKey(entry.modelKey) === pool)) return undefined;
-    const slot = this.getSlot(modelKey);
-    return slot.running < slot.limit ? slot : undefined;
-  }
-
-  private acquireLease(run: AgentRun, slot: ConcurrencySlot): void {
-    this.activeLeases.add(slot);
-    this.runLeases.set(run, slot);
+    this.capacity.setConcurrency(config);
   }
 
   /** Spawn an agent, returning its ID immediately; queued when the concurrency limit is reached. */
@@ -257,13 +159,11 @@ export class AgentManager {
     const args: SpawnArgs = { pi, ctx, type, prompt, options };
 
     const modelKey = options.modelKey || (options.model && `${options.model.provider}/${options.model.id}`);
-    const concurrencySlot = modelKey ? this.availableSlot(modelKey) : undefined;
-    const queued = modelKey !== undefined && concurrencySlot === undefined;
 
     const record: AgentRecord = {
       id,
       lifecycle: {
-        status: queued ? "queued" : "running",
+        status: "queued",
         startedAt: Date.now(),
         // Flipped synchronously in startAgent; distinguishes never-started stops.
         started: false,
@@ -303,7 +203,8 @@ export class AgentManager {
         spawnCtx: ctx,
         required: options.isBackground === true,
       });
-    this.acceptRun(record, queued, notification);
+    // Capacity schedules synchronous activation after the parent-abort early return.
+    const run = this.acceptRun(record, true, notification);
 
     // Parent interrupt binding: registered before the queued early-return so
     // queued subagents are covered too. An already-aborted signal never starts
@@ -319,14 +220,18 @@ export class AgentManager {
       this.parentBindings.set(record, { signal: options.signal, handler });
     }
 
-    if (queued) {
-      this.queue.push({ id, modelKey, start: (slot) => this.startAgent(id, record, args, slot) });
-      return id;
-    }
-
-    // startAgent can throw — clean up record so callers don't see an orphan
+    // Immediate errors retain the original failStart/delete/rethrow channel;
+    // queued activation failures retain the record and notify through the owner.
     try {
-      this.startAgent(id, record, args, concurrencySlot);
+      this.capacity.schedule(run, modelKey, {
+        canStart: () => this.agents.get(id) === record && run.phase === "queued",
+        start: () => this.trackExecution(() => this.startAgent(id, record, args)),
+        onError: (err) => {
+          const terminal = this.failStart(record, err);
+          // Failed starts notify but aren't tallied as completed agents.
+          if (terminal) this.notifyComplete(terminal, run.notification);
+        },
+      });
     } catch (err) {
       this.failStart(record, err);
       this.agents.delete(id);
@@ -335,15 +240,9 @@ export class AgentManager {
     return id;
   }
 
-  /** Start an agent now or from queue drain; manages the slot's running count when one is held. */
-  private startAgent(
-    id: string,
-    record: AgentRecord,
-    { pi, ctx, type, prompt, options }: SpawnArgs,
-    concurrencySlot?: ConcurrencySlot,
-  ) {
+  /** Activate an admitted initial run now or from the capacity queue. */
+  private startAgent(id: string, record: AgentRecord, { pi, ctx, type, prompt, options }: SpawnArgs) {
     const run = this.currentRun(record);
-    if (concurrencySlot) this.acquireLease(run, concurrencySlot);
     run.start();
     this.projectRun(record, run);
 
@@ -396,7 +295,7 @@ export class AgentManager {
         options.onSessionCreated?.(session);
       },
     });
-    this.attachSettlementChain(record, run, promise);
+    return this.attachSettlementChain(record, run, promise);
   }
 
   /** Reconcile the run's provisional lease with Pi's post-bind model, before the first prompt. */
@@ -404,58 +303,52 @@ export class AgentManager {
     const { signal } = run.controller;
     if (signal.aborted) return;
 
-    // Retain admission order when both models share a provider pool. Record
-    // the actual model so future concurrency changes route this lease correctly.
     record.execution.modelKey = modelKey;
-    const lease = this.runLeases.get(run);
-    if (lease?.modelKey && modelKey && this.poolKey(lease.modelKey) === this.poolKey(modelKey)) {
-      lease.modelKey = modelKey;
-      return;
-    }
-
-    // Binding may change the selected model, but the run has not prompted.
-    // Release a mismatched provisional lease and give the new pool's queue priority.
-    this.releaseLease(run);
-    const slot = modelKey ? this.availableSlot(modelKey) : undefined;
-    if (slot) this.acquireLease(run, slot);
-    if (!modelKey || slot) {
-      if (lease) this.drainQueue();
-      return;
-    }
-
-    run.waitForCapacity();
-    this.projectRun(record, run);
-    const wait = new Promise<void>((resolve, reject) => {
-      const stop = () => resolve(); // Runner checks the signal before handing out the session and owns teardown.
-      signal.addEventListener("abort", stop, { once: true });
-      this.queue.push({
-        id: record.id,
-        modelKey,
-        start: (slot) => {
-          signal.removeEventListener("abort", stop);
-          this.acquireLease(run, slot);
-          run.start();
-          this.projectRun(record, run);
-          this.watchdog.start(record.id);
-          try {
-            this.onStart?.(record);
-            resolve();
-          } catch (err) {
-            reject(err);
-          }
-        },
-      });
+    return this.capacity.reconcile(run, modelKey, {
+      signal,
+      canStart: () =>
+        this.agents.get(record.id) === record &&
+        this.currentRun(record) === run &&
+        (run.phase === "running" || run.phase === "queued"),
+      onWaiting: () => {
+        run.waitForCapacity();
+        this.projectRun(record, run);
+      },
+      onResume: () => {
+        run.start();
+        this.projectRun(record, run);
+        this.watchdog.start(record.id);
+        this.onStart?.(record);
+      },
     });
-    if (lease) this.drainQueue();
-    return wait;
+  }
+
+  /** Reserve the shutdown wait synchronously, then tie it to the entire settlement chain. */
+  private trackExecution(start: () => Promise<void>): void {
+    let attach!: (settlement: Promise<void> | void) => void;
+    const execution = new Promise<void>((resolve) => {
+      attach = resolve;
+    });
+    this.inFlightRuns.add(execution);
+    const forget = () => {
+      this.inFlightRuns.delete(execution);
+    };
+    try {
+      attach(start().finally(forget));
+    } catch (error) {
+      // No execution chain exists. Keep synchronous start errors in the capacity owner's channel.
+      forget();
+      attach();
+      throw error;
+    }
   }
 
   /** Settle only the execution promise; Stop opens the parent gate separately. */
-  private attachSettlementChain(record: AgentRecord, run: AgentRun, runPromise: Promise<RunResult>) {
+  private attachSettlementChain(record: AgentRecord, run: AgentRun, runPromise: Promise<RunResult>): Promise<void> {
     let status: SubagentRunStatus = "completed";
     let result: string | undefined;
     let error: string | undefined;
-    const settled = runPromise
+    return runPromise
       .then(({ responseText, session, aborted, turnLimited, modelError }) => {
         run.finishExecution();
         this.projectRun(record, run);
@@ -463,21 +356,19 @@ export class AgentManager {
         result = responseText;
         if (modelError) error = formatModelError(record.display.type, session?.model, modelError);
         record.execution.session = session;
-        return responseText;
       })
       .catch((err) => {
         run.finishExecution();
         this.projectRun(record, run);
         status = "error";
         error = errorMessage(err);
-        return "";
       })
       .finally(() =>
         run.finishSettlement(
           () => record.execution.session,
           () => {
             this.finalizeOutput(record);
-            this.releaseLease(run);
+            this.capacity.release(run);
             this.detachParentBinding(record);
             const terminal = this.settleRun(record, run, {
               status,
@@ -491,20 +382,11 @@ export class AgentManager {
               this.tallyCompletion(record, terminal.stats.lifetimeUsage.cost);
               this.notifyComplete(terminal, run.notification);
             }
-            this.drainQueue();
+            this.capacity.drain();
             run.publishSettlement();
-            this.inFlightRuns.delete(settled);
           },
         ),
       );
-    this.inFlightRuns.add(settled);
-  }
-
-  private releaseLease(run: AgentRun): void {
-    const lease = this.runLeases.get(run);
-    if (!lease) return;
-    this.runLeases.delete(run);
-    this.activeLeases.delete(lease);
   }
 
   private finalizeOutput(record: AgentRecord): void {
@@ -540,7 +422,7 @@ export class AgentManager {
   private failStart(record: AgentRecord, error: unknown): SubagentRunResult | undefined {
     const run = this.currentRun(record);
     this.finalizeOutput(record);
-    this.releaseLease(run);
+    this.capacity.release(run);
     this.detachParentBinding(record);
     const result = this.settleRun(record, run, { status: "error", error: errorMessage(error) });
     run.publishSettlement();
@@ -698,37 +580,6 @@ export class AgentManager {
     };
   }
 
-  private drainQueue() {
-    // Rescan after starting an entry: callbacks can change the configuration
-    // or the queue synchronously, including adding work for newly free slots.
-    for (let index = 0; !this.disposed && index < this.queue.length;) {
-      const entry = this.queue[index];
-      const record = this.agents.get(entry.id);
-      if (!record || record.lifecycle.status !== "queued") {
-        this.queue.splice(index, 1);
-        continue;
-      }
-
-      const slot = this.getSlot(entry.modelKey);
-      if (slot.running >= slot.limit) {
-        index++;
-        continue;
-      }
-
-      this.queue.splice(index, 1);
-      index = 0;
-      try {
-        entry.start(slot);
-      } catch (err) {
-        // Late failure — surface on the record so the user can see it
-        const run = this.currentRun(record);
-        const terminal = this.failStart(record, err);
-        // Failed starts notify but aren't tallied as completed agents.
-        if (terminal) this.notifyComplete(terminal, run.notification);
-      }
-    }
-  }
-
   /** Structured admission: live steering waits for the SDK's input handlers. */
   async submitMessage(id: string, message: string): Promise<AgentSubmissionResult> {
     const reject = (reason: AgentSubmissionRejection, text: string): AgentSubmissionResult => ({
@@ -742,11 +593,15 @@ export class AgentManager {
     if (this.disposed) return reject("unavailable", "The subagent manager is unavailable.");
     const admission = this.currentRun(record).admitMessage(message, record.execution.session);
     if (!("continuationSession" in admission)) return admission;
-    const modelKey = record.execution.modelKey;
-    const slot = modelKey ? this.availableSlot(modelKey) : undefined;
-    if (modelKey && !slot)
-      return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
-    const run = this.continueSettledAgent(record, admission.continuationSession, message, slot);
+    const run = this.capacity.tryAccept(record.execution.modelKey, () => {
+      // Only construction occurs inside the atomic admission; rejected requests create no run/sequence.
+      const parent = this.currentRun(record).notification;
+      const notification = parent && Object.freeze({ ...parent, required: true });
+      return this.acceptRun(record, false, notification);
+    });
+    if (!run) return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
+    const { continuationSession } = admission;
+    this.trackExecution(() => this.continueSettledAgent(record, continuationSession, message, run));
     return { accepted: true, agentId: id, runId: run.id, delivery: "continuation" };
   }
 
@@ -760,13 +615,9 @@ export class AgentManager {
     record: AgentRecord,
     session: AgentSession,
     message: string,
-    concurrencySlot: ConcurrencySlot | undefined,
-  ): AgentRun {
-    // Accept a new run; cumulative conversation statistics carry over.
-    const parent = this.currentRun(record).notification;
-    const notification = parent && Object.freeze({ ...parent, required: true });
-    const run = this.acceptRun(record, false, notification);
-    if (concurrencySlot) this.acquireLease(run, concurrencySlot);
+    run: AgentRun,
+  ): Promise<void> {
+    // Capacity has already accepted and associated this run's lease.
     run.start();
     this.projectRun(record, run);
     // A stale idle clock from the first run would kill the continuation
@@ -781,11 +632,8 @@ export class AgentManager {
         graceTurns: record.execution.graceTurns,
         signal: run.controller.signal,
       }))();
-    this.attachSettlementChain(record, run, promise);
-    // The run proceeds asynchronously; the caller only learns the wiring
-    // succeeded. The parent abort binding is deliberately NOT re-attached —
-    // the parent turn that spawned the agent is over.
-    return run;
+    // The parent abort binding is deliberately NOT re-attached — the parent turn that spawned the agent is over.
+    return this.attachSettlementChain(record, run, promise);
   }
 
   getRecord(id: string): AgentRecord | undefined {
@@ -834,7 +682,7 @@ export class AgentManager {
   private stopAgent(record: AgentRecord, stoppedBy?: StopInitiator, stopDetail?: WatchdogStopDetail): boolean {
     const run = this.currentRun(record);
     if (!run.requestStop()) return false;
-    this.queue = this.queue.filter((q) => q.id !== record.id);
+    this.capacity.cancelWaiting(run);
     record.lifecycle.stoppedBy = stoppedBy;
     record.lifecycle.stopDetail = stopDetail;
     // Publish intent before abort: listeners may run synchronously.
@@ -900,8 +748,8 @@ export class AgentManager {
    */
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.capacity.close();
     clearInterval(this.watchdogInterval);
-    this.queue = [];
     for (const record of this.agents.values()) {
       const run = this.currentRun(record);
       if (run.phase === "queued" && !record.lifecycle.started) {

@@ -9,7 +9,10 @@
  *   - hidden agents participate in resolution like any registered type
  */
 
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, it, expect, beforeEach } from "vite-plus/test";
+import { createAgentRegistry } from "../../src/agents/agent-types.js";
 
 import type { AgentConfig } from "../../src/agents/types.js";
 
@@ -119,6 +122,71 @@ describe("getAvailableTypes", () => {
     expect(types).toContain("explore");
     expect(types).toContain("general-purpose");
     expect(types).not.toContain("EXPLORE");
+  });
+});
+
+describe("hidden selection boundaries", () => {
+  it("keeps the complete visible listing while exact and ambiguous hidden names remain resolvable", () => {
+    const registry = createAgentRegistry();
+    const hidden = agent("explore", { hidden: true, displayName: "Hidden explorer" });
+    registry.registerAgents(
+      new Map([
+        ["Explore", agent("Explore")],
+        [hidden.name, hidden],
+        ["general-purpose", agent("general-purpose")],
+      ]),
+      { disableDefaultAgents: true },
+    );
+    expect(registry.getVisibleAgentInfos()).toEqual([
+      { name: "Explore", description: "Agent Explore" },
+      { name: "general-purpose", description: "Agent general-purpose" },
+    ]);
+    expect(registry.getAvailableTypes()).toEqual(["Explore", "general-purpose"]);
+    expect(registry.getAllTypes()).toEqual(["Explore", "explore", "general-purpose"]);
+    expect(registry.getAgentConfig("explore")).toBe(hidden);
+    expect(registry.resolveType("EXPLORE")).toEqual({ kind: "ambiguous", candidates: ["Explore", "explore"] });
+    expect(registry.resolveType("Hidden explorer")).toEqual({ kind: "not-found" });
+  });
+
+  it("uses a discovered hidden target snapshot without leaking into another target or instance", async () => {
+    const ownTmp = mkdtempSync("/tmp/pi-f4-type-target-");
+    chmodSync(ownTmp, 0o700);
+    try {
+      const target = join(ownTmp, "target");
+      const otherTarget = join(ownTmp, "other");
+      mkdirSync(target);
+      mkdirSync(otherTarget);
+      writeFileSync(
+        join(target, "Target.md"),
+        "---\nname: Target\ndescription: Target role\nhidden: true\ntools: [read]\nregistered_tools: [read]\nextensions: false\nskills: false\n---\nTarget prompt",
+      );
+      const registry = createAgentRegistry();
+      const other = createAgentRegistry();
+      const general = agent("general-purpose", { extensions: true, skills: true, tools: ["bash"] });
+      registry.registerAgents(new Map([[general.name, general]]), { disableDefaultAgents: true });
+      other.registerAgents(new Map([[general.name, general]]), { disableDefaultAgents: true });
+      expect(await registry.resolveTypeOrDiscover("TARGET", target)).toEqual({ kind: "resolved", key: "Target" });
+      const selected = registry.getAgentConfig("target", target);
+      expect(selected?.hidden).toBe(true);
+      expect(selected?.systemPrompt).toBe("Target prompt");
+      expect(registry.getConfig("Target", true, true, selected)).toEqual({
+        displayName: "Target",
+        description: "Target role",
+        tools: ["read"],
+        registeredTools: ["read"],
+        extensions: false,
+        skills: false,
+      });
+      expect(registry.getAgentConfig("Target")).toBeUndefined();
+      expect(registry.resolveType("Target", otherTarget)).toEqual({ kind: "not-found" });
+      expect(other.resolveType("Target", target)).toEqual({ kind: "not-found" });
+      expect(registry.getVisibleAgentInfos()).toEqual([
+        { name: "general-purpose", description: "Agent general-purpose" },
+      ]);
+      expect(other.getAvailableTypes()).toEqual(["general-purpose"]);
+    } finally {
+      rmSync(ownTmp, { recursive: true, force: true });
+    }
   });
 });
 

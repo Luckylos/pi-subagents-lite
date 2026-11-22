@@ -130,7 +130,7 @@ function createMockCtx(...[selections, inputs, customValues, options]: Parameter
 }
 
 function resetAgentState(): void {
-  mockModules.mockConfig.agent = { default: null, forceBackground: false };
+  mockModules.mockConfig.agent = { forceBackground: false };
   mockModules.mockProjectConfig.agent = {};
   mockModules.mockSessionOverrides = { default: null };
   mockModules.mockSessionShowCost = undefined;
@@ -557,6 +557,7 @@ describe("showModelSettingsMenu — model groups", () => {
   });
 
   it("renders no model groups when every type resolves to the effective default", async () => {
+    mockModules.mockConfig.agent.default = "openai/gpt-4o";
     vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => ({
       name,
       description: "",
@@ -842,6 +843,8 @@ describe("showModelSettingsMenu — clear all overrides per target", () => {
   });
 
   it("shows 'Clear all model overrides...' item", async () => {
+    // Explicit persisted null is a real carrying key, unlike the baked default.
+    mockModules.mockConfig.agent.default = null;
     const ctx = createMockCtx();
     await showModelSettingsMenu(owner, ctx, []);
     const ids = settingsListCalls[0].items.map((i) => i.id);

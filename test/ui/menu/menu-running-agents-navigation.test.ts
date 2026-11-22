@@ -14,6 +14,12 @@ const DOWN = "\x1b[B";
 const ENTER = "\r";
 const ESC = "\x1b";
 const WIDTH = 100;
+vi.mock("../../../src/pi-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../src/pi-settings.js")>()),
+  getHideThinkingBlock: vi.fn(() => true),
+}));
+import { getHideThinkingBlock } from "../../../src/pi-settings.js";
+import { assistantMessage } from "../../agents/session-messages.js";
 
 async function openMenu() {
   const manager = mockModules.mockManager;
@@ -36,6 +42,8 @@ async function openMenu() {
       },
     },
   });
+  ctx.cwd = "/fixture/parent";
+  ctx.isProjectTrusted = () => false;
   await showRunningAgentsMenu(owner, ctx);
   if (!component) throw new Error("Running agents menu did not open");
   const menu = component;
@@ -306,6 +314,42 @@ describe("running agents message composition", () => {
     return { menu, record };
   }
 
+  it.each(["completed", "running"] as const)(
+    "initializes the %s conversation/snapshot from the parent scope",
+    async (status) => {
+      const record = status === "running" ? makeRunningAgent("agent-1") : makeFinishedAgent("agent-1");
+      const messages = [
+        assistantMessage({
+          content: [
+            { type: "thinking", thinking: "private reasoning" },
+            { type: "text", text: "answer" },
+          ],
+        }),
+      ];
+      const before = structuredClone(messages);
+      record.execution.session = asAgentSession({
+        messages,
+        subscribe: vi.fn(() => () => {}),
+        getContextUsage: () => undefined,
+      });
+      setLiveAgents([record]);
+      const menu = await openMenu();
+      menu.press(ENTER, ENTER);
+      await Promise.resolve();
+      expect(getHideThinkingBlock).toHaveBeenLastCalledWith("/fixture/parent", { projectTrusted: false });
+      expect(menu.overlayText()).toContain("Thinking...");
+      expect(menu.overlayText()).not.toContain("private reasoning");
+      menu.press("\x14");
+      expect(menu.overlayText()).toContain("private reasoning");
+      menu.press("q", ENTER);
+      await Promise.resolve();
+      expect(menu.overlayText()).not.toContain("private reasoning");
+      expect(menu.overlayText()).toContain("Thinking...");
+      expect(messages).toEqual(before);
+      menu.press("q");
+    },
+  );
+
   it("routes Continue from the menu's conversation viewer", async () => {
     const record = makeFinishedAgent("agent-1");
     record.execution.session = asAgentSession({ messages: [], state: {}, subscribe: vi.fn(() => () => {}) });
@@ -316,6 +360,7 @@ describe("running agents message composition", () => {
     menu.press(ENTER, ENTER);
     await Promise.resolve();
     expect(menu.overlayText()).toBeDefined();
+    expect(getHideThinkingBlock).toHaveBeenLastCalledWith("/fixture/parent", { projectTrusted: false });
     menu.press(ENTER, " ", "a", " ", ENTER);
     await Promise.resolve();
     expect(submit).toHaveBeenCalledWith(record.id, " a ");

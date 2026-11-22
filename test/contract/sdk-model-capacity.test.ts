@@ -1,8 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import fs, { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { homedir } from "node:os";
+import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { AgentSession, ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { afterAll, afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { AgentManager } from "../../src/agents/agent-manager.js";
 import { executeAgentStatusTool } from "../../src/agents/agent-status.js";
 import { DEFAULT_AGENTS } from "../../src/agents/default-agents.js";
@@ -13,6 +16,15 @@ import { createExtensionOwner } from "../../src/shell.js";
 import { SpawnCoordinator } from "../../src/spawn/spawn-coordinator.js";
 import { fakeCtx, fakePi } from "../fixtures.js";
 
+// Production config paths capture getAgentDir() at import time.
+const suite = await vi.hoisted(async () => {
+  const { mkdtempSync, realpathSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const root = mkdtempSync("/tmp/subagent-model-capacity-");
+  vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"));
+  return { root, cwd: process.cwd(), dependencies: realpathSync("node_modules") };
+});
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => {
@@ -21,9 +33,62 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function setup({ available = true, loadExtensions = false } = {}) {
-  const cwd = mkdtempSync("/tmp/subagent-model-capacity-");
-  vi.stubEnv("PI_CODING_AGENT_DIR", join(cwd, "agent"));
+interface SetupOptions {
+  available?: boolean;
+  loadExtensions?: boolean;
+  onStart?: ConstructorParameters<typeof AgentManager>[3];
+}
+
+function setupResourceFixture() {
+  const root = mkdtempSync(join(suite.root, "case-"));
+  const cwd = join(root, "repo", "child");
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(join(root, "repo", ".git")); // Bound SDK ancestor skill discovery to this fixture.
+  writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "capacity-fixture", type: "module" }));
+  process.chdir(cwd); // The SDK also resolves built-in extension package names from process.cwd().
+  const ancestorFile = join(root, "repo", "AGENTS.md");
+  writeFileSync(ancestorFile, "capacity fixture ancestor");
+  const skillRoot = join(root, "mock-user-skills");
+  mkdirSync(join(skillRoot, "capacity-marker"), { recursive: true });
+  const skillFile = join(skillRoot, "capacity-marker", "SKILL.md");
+  writeFileSync(skillFile, "---\nname: capacity-marker\ndescription: Capacity fixture skill\n---\nFixture body.\n");
+  const userSkills = join(process.env.HOME || homedir(), ".agents", "skills");
+  const markerReads = new Set<string>();
+  const externalBodyReads = new Set<string>();
+  const mockUserPath = (path: unknown) =>
+    typeof path === "string" && (path === userSkills || path.startsWith(`${userSkills}${sep}`))
+      ? skillRoot + path.slice(userSkills.length)
+      : path;
+  // The external SDK imports bare fs and node:fs. Redirect its real home skill
+  // queries (including canonicalization) to our tree without changing HOME.
+  for (const key of ["existsSync", "readdirSync", "statSync", "realpathSync", "readFileSync"] as const) {
+    const original = fs[key];
+    const redirected = new Proxy(original, {
+      apply(fn, receiver, args) {
+        const path = mockUserPath(args[0] instanceof URL ? fileURLToPath(args[0]) : args[0]);
+        // Jiti imports installed code when the fixture's startup extension is enabled.
+        if (typeof path === "string" && path.startsWith(`${suite.dependencies}${sep}`))
+          return Reflect.apply(fn, receiver, args);
+        if (typeof path !== "string" || (path !== root && !path.startsWith(`${root}${sep}`))) {
+          if (key === "existsSync") return false;
+          if (key === "readdirSync") return [];
+          if (key === "readFileSync") externalBodyReads.add(String(path));
+          throw new Error("Resource outside capacity fixture");
+        }
+        if (key === "readFileSync" && (path === ancestorFile || path === skillFile)) markerReads.add(path);
+        return Reflect.apply(fn, receiver, [path, ...args.slice(1)]);
+      },
+    });
+    vi.spyOn(fs, key).mockImplementation(redirected);
+  }
+  syncBuiltinESMExports();
+  vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"));
+  return { cwd, markerReads, ancestorFile, skillFile, externalBodyReads };
+}
+
+async function setup({ available = true, loadExtensions = false, onStart }: SetupOptions = {}) {
+  const resources = setupResourceFixture();
+  const { cwd } = resources;
   vi.stubEnv("PI_OFFLINE", "1");
   const offline = fauxProvider({ provider: "offline-capacity", models: [{ id: "chosen" }, { id: "other" }] });
   const credentials = new InMemoryCredentialStore();
@@ -49,7 +114,13 @@ async function setup({ available = true, loadExtensions = false } = {}) {
   owner.registry.registerAgents(new Map(DEFAULT_AGENTS));
   const config: LoadedConfig = {
     global: {
-      agent: { loadExtensionsImplicitly: loadExtensions, defaultMaxTurns: 2, graceTurns: 0 },
+      agent: {
+        loadExtensionsImplicitly: loadExtensions,
+        loadSkillsImplicitly: false,
+        includeContextFiles: false,
+        defaultMaxTurns: 2,
+        graceTurns: 0,
+      },
       concurrency: { default: 1 },
     },
     project: null,
@@ -65,7 +136,7 @@ async function setup({ available = true, loadExtensions = false } = {}) {
     saveProject: vi.fn(),
   });
   const store = owner.store;
-  const manager = (owner.manager = new AgentManager(owner, undefined, store.concurrency));
+  const manager = (owner.manager = new AgentManager(owner, undefined, store.concurrency, onStart));
   store.setDeps({ manager });
   owner.coordinator = new SpawnCoordinator(owner, manager);
 
@@ -111,7 +182,7 @@ async function setup({ available = true, loadExtensions = false } = {}) {
   async function dispose() {
     for (const release of gates) release();
     await manager.dispose();
-    rmSync(cwd, { recursive: true, force: true });
+    expect([...resources.externalBodyReads]).toEqual([]);
   }
   const complete = (id: string) => manager.getRuns(id).at(-1)!.completion;
   const lifecycle = (id: string) => manager.getRecord(id)!.lifecycle;
@@ -124,6 +195,7 @@ async function setup({ available = true, loadExtensions = false } = {}) {
     runtime,
     ctx,
     modelKey,
+    resources,
     otherKey: `${offline.provider.id}/other`,
     switchOnStartup,
     background,
@@ -136,11 +208,39 @@ async function setup({ available = true, loadExtensions = false } = {}) {
 }
 
 afterEach(() => {
+  process.chdir(suite.cwd);
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
+});
+
+afterAll(() => {
+  vi.unstubAllEnvs();
+  rmSync(suite.root, { recursive: true, force: true });
 });
 
 describe("SDK-selected model capacity", () => {
+  it.each([false, true])(
+    "observes SDK marker body reads only with fixture resource loading enabled (%s)",
+    async (enabled) => {
+      const app = await setup();
+      try {
+        if (enabled) {
+          app.store.mutate.agent.setIncludeContextFiles(true);
+          app.store.mutate.agent.setLoadSkillsImplicitly(true);
+        }
+        app.offline.appendResponses([fauxAssistantMessage("fixture control")]);
+        const id = await app.background("fixture control");
+        await app.complete(id);
+        expect(app.manager.getInitialRun(id)?.outcome?.result).toBe("fixture control");
+        const { markerReads, ancestorFile, skillFile } = app.resources;
+        expect(markerReads).toEqual(new Set(enabled ? [ancestorFile, skillFile] : []));
+      } finally {
+        await app.dispose();
+      }
+    },
+  );
+
   it("starts on the startup hook's model even while the SDK's initial model is full", async () => {
     const app = await setup({ loadExtensions: true });
     try {
@@ -376,6 +476,61 @@ describe("SDK-selected model capacity", () => {
         "late third",
       ]);
     } finally {
+      await app.dispose();
+    }
+  });
+
+  it("rejects a parked startup resume failure and tears down before releasing its claimed lease", async () => {
+    const events: string[] = [];
+    const starts = new Map<string, number>();
+    const app = await setup({
+      onStart: (record) => {
+        const name = record.display.description ?? "";
+        const count = (starts.get(name) ?? 0) + 1;
+        starts.set(name, count);
+        events.push(`start:${name}:${count}`);
+        if (name === "resume failure" && count === 2) throw new Error("startup resume failed locally");
+      },
+    });
+    let restoreDispose: (() => void) | undefined;
+    try {
+      const release = app.hold("holder answer");
+      const holder = app.known("holder");
+      await vi.waitFor(() => expect(app.offline.state.callCount).toBe(1));
+      const parked = await app.background("resume failure");
+      await vi.waitFor(() => expect(app.lifecycle(parked).phase).toBe("queued"));
+      const next = app.known("next");
+      expect(app.lifecycle(next).phase).toBe("queued");
+      const originalDispose = AgentSession.prototype.dispose;
+      const dispose = vi.spyOn(AgentSession.prototype, "dispose").mockImplementation(function (this: AgentSession) {
+        // Resume already claimed capacity; failure must not release it ahead of SDK teardown.
+        events.push(`parked-dispose:${app.lifecycle(next).phase}`);
+        originalDispose.call(this);
+      });
+      restoreDispose = () => dispose.mockRestore();
+      app.manager.setOnComplete((result) => events.push(`complete:${result.agentId}`));
+      app.offline.appendResponses([fauxAssistantMessage("next answer")]);
+      release();
+      await Promise.all([holder, parked, next].map(app.complete));
+      expect(events).toEqual([
+        "start:holder:1",
+        "start:resume failure:1",
+        `complete:${holder}`,
+        "start:resume failure:2",
+        "parked-dispose:queued",
+        `complete:${parked}`,
+        "start:next:1",
+        `complete:${next}`,
+      ]);
+      expect(app.manager.getRuns(parked)).toHaveLength(1);
+      expect(app.manager.getInitialRun(parked)?.outcome).toMatchObject({
+        status: "error",
+        error: "startup resume failed locally",
+      });
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(app.offline.state.callCount).toBe(2);
+    } finally {
+      restoreDispose?.();
       await app.dispose();
     }
   });

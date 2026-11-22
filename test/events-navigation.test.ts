@@ -20,6 +20,11 @@ import { createMockCtx, type ComponentFactory } from "./menu-test-helpers.js";
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: () => "/home/test/.pi/agent",
 }));
+vi.mock("../src/pi-settings.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/pi-settings.js")>()),
+  getHideThinkingBlock: vi.fn(() => false),
+}));
+import { getHideThinkingBlock } from "../src/pi-settings.js";
 import { createNavInputHandler } from "../src/events.js";
 
 /* ------------------------------------------------------------------ */
@@ -353,9 +358,12 @@ describe("navigation key handler (createNavInputHandler)", () => {
           });
         });
         const viewCtx = createMockCtx([], [], [], { ui: { custom } });
+        viewCtx.cwd = "/fixture/parent";
+        viewCtx.isProjectTrusted = () => false;
         const handler = createNavInputHandler(owner, viewCtx);
         expect(handler("\r")).toEqual({ consume: true });
         expect(custom).toHaveBeenCalledExactlyOnceWith(expect.any(Function), undefined);
+        expect(getHideThinkingBlock).toHaveBeenLastCalledWith("/fixture/parent", { projectTrusted: false });
         expect(mockWidget.setViewerOpen.mock.calls).toEqual([[true]]);
         assert(viewer);
         expect(viewer.render(120).join("\n")).toContain("Display model");

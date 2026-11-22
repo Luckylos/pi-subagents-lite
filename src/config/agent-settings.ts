@@ -124,6 +124,16 @@ function isKnownAgentKey(key: string): key is keyof KnownAgentSettings {
   return Object.hasOwn(AGENT_KEY_SPECS, key);
 }
 
+/** Only dynamic keys can represent persisted per-type models in the flat agent object. */
+export function isPerTypeModelKey(key: string): boolean {
+  return !isKnownAgentKey(key) && !LEGACY_AGENT_KEYS.has(key);
+}
+
+/** Type names can coincide with inherited JavaScript properties. */
+export function ownEntry<T>(entries: Readonly<Record<string, T>> | undefined, key: string): T | undefined {
+  return entries && Object.hasOwn(entries, key) ? entries[key] : undefined;
+}
+
 /** Project files and model clearing use the same model-setting classification (ADR-0008). */
 export function isAgentModelKey(key: string): boolean {
   return !isKnownAgentKey(key) || knownSpecs[key].modelFamily === true;

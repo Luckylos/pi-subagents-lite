@@ -1229,6 +1229,34 @@ describe("ConversationViewer", () => {
   });
 
   describe("thinking visibility", () => {
+    it.each([true, false])("uses explicit parent hidden=%s without consulting global settings", (hidden) => {
+      vi.mocked(getHideThinkingBlock).mockReturnValue(!hidden);
+      const session = makeMockSession([
+        { role: "assistant", content: [{ type: "thinking", thinking: "parent reasoning" }] },
+      ]);
+      const record = makeMockRecord({ execution: { session } });
+      const viewer = new ConversationViewer(
+        owner,
+        makeTui(),
+        session,
+        record,
+        noopTheme,
+        vi.fn(),
+        undefined,
+        undefined,
+        undefined,
+        hidden,
+      );
+      try {
+        expect(getHideThinkingBlock).not.toHaveBeenCalled();
+        expect(viewer.render(80).join("\n").includes("parent reasoning")).toBe(!hidden);
+        viewer.handleInput("\x14");
+        expect(viewer.render(80).join("\n").includes("parent reasoning")).toBe(hidden);
+      } finally {
+        viewer.dispose();
+      }
+    });
+
     it("toggles thinking visibility with ctrl+T", () => {
       const session = makeMockSession([
         {

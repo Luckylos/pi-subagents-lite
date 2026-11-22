@@ -144,7 +144,11 @@ describe("showSystemPromptMenu", () => {
     await showSystemPromptMenu(owner, ctx);
     settingsListCalls[0].onChange("createPromptFile", "Create");
     expect(mkdirSpy).toHaveBeenCalled();
-    expect(writeSpy).toHaveBeenCalled();
+    expect(writeSpy).toHaveBeenCalledExactlyOnceWith(
+      "/home/test/.pi/agent/subagents-lite-prompt.md",
+      "You are a Pi, an expert coding sub-agent.\nYou have been invoked to handle a specific task autonomously",
+      { encoding: "utf-8", flag: "wx" },
+    );
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Created prompt file"), "info");
     vi.restoreAllMocks();
   });

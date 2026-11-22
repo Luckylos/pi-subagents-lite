@@ -109,10 +109,17 @@ export function createConfigIO(projectDir?: string): ConfigIO {
       if (target === "project" && (projectStatus === "malformed" || projectStatus === "untrusted")) {
         throw new Error(`Cannot update project config: project layer is ${projectStatus}`);
       }
-      const latest = readLayerForUpdate(filePath, target === "global" || options.createIfMissing === true);
-      mutate(latest);
-      const validated = validateRawLayer(latest, filePath);
-      writeJsonAtomic(filePath, validated);
+      const latest = readLayerObject(filePath, target);
+      const mayCreate = target === "global" || options.createIfMissing === true;
+      if (latest === null && !mayCreate) return io.load();
+      const layer = validateRawLayer(latest ?? {}, filePath);
+      mutate(layer);
+      const validated = validateRawLayer(layer, filePath);
+      writeJsonAtomic(
+        filePath,
+        validated,
+        target === "project" ? () => readLayerObject(filePath, "project") !== null || mayCreate : undefined,
+      );
       return io.load();
     },
     saveGlobal: (config) => {
@@ -123,7 +130,15 @@ export function createConfigIO(projectDir?: string): ConfigIO {
         console.warn(`[subagents] Refusing to write project config (${projectStatus}); change not saved`);
         return;
       }
-      writeJsonAtomic(projectPath, config);
+      writeJsonAtomic(projectPath, config, () => {
+        try {
+          readLayerObject(projectPath, "project");
+          return true;
+        } catch (err) {
+          console.warn(`[subagents] Refusing to write project config: ${String(err)}`);
+          return false;
+        }
+      });
     },
   };
   return io;
@@ -154,29 +169,14 @@ function readGlobalRaw(): RawConfig {
 
 /** Read the project file; missing = absent, unreadable/invalid = malformed + warning. */
 function readProjectRaw(projectPath: string): ProjectRead {
-  if (!fs.existsSync(projectPath)) return null;
-  let parsed: unknown;
+  let raw: Record<string, unknown> | null;
   try {
-    parsed = JSON.parse(fs.readFileSync(projectPath, "utf-8"));
+    raw = readLayerObject(projectPath, "project");
   } catch (err) {
     console.warn(`[subagents] Ignoring malformed project config ${projectPath}: ${String(err)}`);
     return "malformed";
   }
-  if (!isPlainObject(parsed)) {
-    console.warn(`[subagents] Ignoring malformed project config ${projectPath}: not a JSON object`);
-    return "malformed";
-  }
-  const raw = parsed as RawConfig;
-  if (raw.agent !== undefined && !isPlainObject(raw.agent)) return malformedSection(projectPath, "agent");
-  if (raw.concurrency !== undefined && !isPlainObject(raw.concurrency)) {
-    return malformedSection(projectPath, "concurrency");
-  }
-  if (raw.concurrency?.providers !== undefined && !isPlainObject(raw.concurrency.providers)) {
-    return malformedSection(projectPath, "concurrency.providers");
-  }
-  if (raw.concurrency?.models !== undefined && !isPlainObject(raw.concurrency.models)) {
-    return malformedSection(projectPath, "concurrency.models");
-  }
+  if (raw === null) return null;
   // Per-value validation first so dropped keys warn once (type error), not
   // twice (type error plus unknown-key). Unknown keys are computed on the
   // cleaned layer; the file bytes stay untouched.
@@ -185,20 +185,15 @@ function readProjectRaw(projectPath: string): ProjectRead {
   return { raw: cleaned, unknownKeys };
 }
 
-function malformedSection(projectPath: string, section: string): "malformed" {
-  console.warn(`[subagents] Ignoring malformed project config ${projectPath}: "${section}" is not a JSON object`);
-  return "malformed";
-}
-
 // ── Save ─────────────────────────────────────────────────────────────
 
-/** Read a target layer for a mutation without collapsing errors into an empty config. */
-function readLayerForUpdate(filePath: string, allowMissing: boolean): RawConfig {
+/** Project loads and every write guard share the same structural contract. Only ENOENT means absent. */
+function readLayerObject(filePath: string, target: "global" | "project"): Record<string, unknown> | null {
   let text: string;
   try {
     text = fs.readFileSync(filePath, "utf-8");
   } catch (err) {
-    if (allowMissing && (err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error(`[subagents] Failed to read config ${filePath}: ${String(err)}`, { cause: err });
   }
   let parsed: unknown;
@@ -213,19 +208,31 @@ function readLayerForUpdate(filePath: string, allowMissing: boolean): RawConfig 
   if (parsed.agent !== undefined && !isPlainObject(parsed.agent)) {
     throw new Error(`[subagents] Refusing to update malformed config ${filePath}: agent is not an object`);
   }
-  if (parsed.concurrency !== undefined && !isPlainObject(parsed.concurrency)) {
-    throw new Error(`[subagents] Refusing to update malformed config ${filePath}: concurrency is not an object`);
+  if (parsed.concurrency !== undefined) {
+    if (!isPlainObject(parsed.concurrency)) {
+      throw new Error(`[subagents] Refusing to update malformed config ${filePath}: concurrency is not an object`);
+    }
+    if (target === "project") {
+      for (const section of ["providers", "models"] as const) {
+        const entries = parsed.concurrency[section];
+        if (entries !== undefined && !isPlainObject(entries)) {
+          throw new Error(
+            `[subagents] Refusing to update malformed project config ${filePath}: concurrency.${section} is not an object`,
+          );
+        }
+      }
+    }
   }
-  return validateRawLayer(parsed, filePath);
+  return parsed;
 }
 
 /** Write JSON atomically with a unique same-directory temporary file. */
-function writeJsonAtomic(filePath: string, config: unknown): void {
+function writeJsonAtomic(filePath: string, config: unknown, canReplace?: () => boolean): void {
   const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
-    fs.renameSync(tmpPath, filePath);
+    if (!canReplace || canReplace()) fs.renameSync(tmpPath, filePath);
   } catch (err) {
     throw new Error(`[subagents] Failed to save config ${filePath}: ${String(err)}`, { cause: err });
   } finally {

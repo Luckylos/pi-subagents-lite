@@ -3,7 +3,7 @@
  *
  * Merges embedded default agents with user-defined agents from .md files
  * (user, shared, and project dirs). Precedence: default < user < shared < project.
- * Hidden agents are kept registered but excluded from spawning.
+ * Hidden agents are omitted from selection listings but remain callable by name.
  */
 
 import { scanAgentFilesInDir, mergeAgents } from "./agent-discovery.ts";
@@ -374,14 +374,7 @@ function applyGlobalDefaults(
   };
 }
 
-/** Find the first non-hidden config: resolved type, then general-purpose, then undefined. */
-function findActiveConfig(registry: AgentRegistry, type: string): AgentConfig | undefined {
-  const config = registry.getAgentConfig(type);
-  if (config?.hidden !== true) return config;
-  return registry.getAgentConfig("general-purpose");
-}
-
-/** Get config for a type (case-insensitive). Falls back to general-purpose. */
+/** Get the selected or named config (case-insensitive), applying absolute defaults when unknown. */
 function resolveConfig(
   registry: AgentRegistry,
   type: string,
@@ -389,11 +382,7 @@ function resolveConfig(
   loadExtensionsImplicitly: boolean = true,
   selected?: AgentConfig,
 ): ResolvedAgentConfig {
-  const config = selected
-    ? selected.hidden === true
-      ? registry.getAgentConfig("general-purpose")
-      : selected
-    : findActiveConfig(registry, type);
+  const config = selected ?? registry.getAgentConfig(type);
   if (config) {
     const { skills, extensions, registeredTools, ...rest } = config;
     const defaults = applyGlobalDefaults(skills, extensions, loadSkillsImplicitly, loadExtensionsImplicitly);

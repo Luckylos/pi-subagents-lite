@@ -113,8 +113,10 @@ export class ConversationViewer implements Component {
     keybindings?: ViewerKeybindings,
     /** Send a steering message to the agent. Omitted -> no compose affordance. */
     private onSteer?: (message: string) => Promise<AgentSubmissionResult>,
+    /** Persisted parent visibility; omitted keeps the compatible global default. */
+    hideThinkingBlock = getHideThinkingBlock(),
   ) {
-    this.thinkingVisible = !getHideThinkingBlock();
+    this.thinkingVisible = !hideThinkingBlock;
     this.keys = createViewerKeys(keybindings);
     this.unsubscribe = session.subscribe((event) => {
       if (this.closed) return;
@@ -158,6 +160,8 @@ export class ConversationViewer implements Component {
         return this.renderUserMessage(msg, width);
       case "assistant":
         return this.renderAssistantMessage(msg, width, toolResults);
+      case "compactionSummary":
+        return [this.theme.fg("dim", "Compaction summary"), ...wrapTextWithAnsi(plainText(msg.summary), width), ""];
       case "toolResult":
         // Results never render: only the tool call line (with its status
         // background) represents the call in the viewer.
@@ -599,7 +603,7 @@ export class ConversationViewer implements Component {
         cached = this.renderMessage(messages[i], width, results);
         this.messageCache.set(i, cached);
       }
-      lines.push(...cached);
+      for (const line of cached) lines.push(line);
     }
     this.cachedContentLines = lines;
     return lines;

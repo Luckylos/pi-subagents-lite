@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.6] - 2026-11-22
+
+### Fixed
+
+- Create prompt file refuses to overwrite existing content and refreshes the menu after creation attempts, preserving edits made while the menu is open.
+- Cross-repository Spawn applies project trust to inherited context files above the worktree root, including when root discovery falls back to the target directory, while preserving global context and trusted inheritance. Looking up the global trust default skips the parent project settings file.
+- Output transcripts use private, owned directories and exclusively created private files; unsafe paths are rejected without overwriting or following links. New logs have mode 0600 even when the process umask masks owner-write permission. Platforms lacking the required POSIX private-I/O capabilities fail explicitly when transcript logging is enabled.
+
+- Explicitly calling a hidden Subagent type preserves its own tools, extension and skill settings instead of substituting general-purpose resource settings. The Agent tool and Spawn picker omit hidden types. Model Settings can still configure them.
+- A type sharing a name with a built-in setting keeps its own frontmatter and session model. Setting or clearing its model preserves unrelated persisted settings.
+- Model override Clear failures display the remaining overrides. If the project file becomes unreadable after Global was cleared, the menu reports partial success and offers a reload so the user can repair the file and retry.
+- Conversation viewers render real SDK compaction summaries, preserving retained-message order and keeping summaries visible when Thinking blocks are hidden. Large summaries remain scrollable.
+- Conversation viewers initialize Thinking block visibility from the parent project's trusted, persisted Pi settings and the SDK agent directory; Ctrl+T remains local to each viewer.
+
+- Manager shutdown waits for execution and teardown even when a queued run requests shutdown from its own startup callback.
+
+### Changed
+
+- Model settings and Clear feedback read model values, provenance, and clearable levels from ConfigStore without reconstructing configuration layers.
+- Run capacity admission, leases, startup model transfers, and FIFO waiting share one protocol module while retaining the existing cancellation and settlement ownership.
+
+### Documentation
+
+- Clarify Subagent type visibility, Spawn project resources, and Thinking level versus conversation-view visibility terminology.
+- Correct configuration-default model precedence, the Grace turns menu location, and the project configuration model-family scope.
+
 ## [1.17.5] - 2026-11-21
 
 ### Fixed

@@ -87,7 +87,7 @@ export function validateRawLayer(raw: unknown, filePath: string): RawConfig {
  * per-type model keys; legacy keys vanish quietly.
  */
 function cleanAgentEntries(agent: Record<string, unknown>, filePath: string): Record<string, unknown> {
-  const kept: Record<string, unknown> = {};
+  const kept: Record<string, unknown> = Object.create(null);
   for (const [key, value] of Object.entries(agent)) {
     if (LEGACY_AGENT_KEYS.has(key)) continue;
     if (value === undefined) continue;

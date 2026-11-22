@@ -12,6 +12,7 @@
  *   6. parentModelId                   (inherit from parent)
  */
 
+import { isPerTypeModelKey, ownEntry } from "../config/agent-settings.ts";
 import type { SubagentsConfig } from "../config/types.ts";
 
 /**
@@ -58,12 +59,11 @@ export type ModelSource =
 export function resolveModelSource(options: ResolveModelOptions): { model: string; source: ModelSource } {
   const { subagentType, agentConfig, config, parentModelId, sessionOverrides } = options;
 
-  // Cast agent values: index signature includes number (graceTurns), but models are always strings
-  const candidates: Array<[ModelSource, string | null | undefined]> = [
-    ["session-per-type", sessionOverrides?.[subagentType]],
-    ["session-default", sessionOverrides?.["default"]],
-    ["config-per-type", config.agent[subagentType] as string | null | undefined],
-    ["config-default", config.agent["default"]],
+  const candidates: Array<[ModelSource, unknown]> = [
+    ["session-per-type", subagentType !== "default" ? ownEntry(sessionOverrides, subagentType) : undefined],
+    ["session-default", ownEntry(sessionOverrides, "default")],
+    ["config-per-type", isPerTypeModelKey(subagentType) ? ownEntry(config.agent, subagentType) : undefined],
+    ["config-default", ownEntry(config.agent, "default")],
     ["frontmatter", agentConfig?.model],
   ];
   for (const [source, value] of candidates) {
@@ -82,6 +82,6 @@ export function resolveModel(options: ResolveModelOptions): string {
 }
 
 /** True when the value is a usable model string (null/undefined/empty are unset). */
-export function isValidModelValue(value: string | null | undefined): value is string {
+export function isValidModelValue(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }

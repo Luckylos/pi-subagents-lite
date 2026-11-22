@@ -11,12 +11,10 @@ export const DEFAULT_CONCURRENCY: SubagentsConfig["concurrency"] = { default: 4 
  * wins, providers/models combine. Pure — no I/O.
  */
 export function mergeLayers(global: RawConfig, project: RawConfig | null): RawConfig {
-  const agent = { ...global.agent };
-  if (project?.agent) {
-    for (const [key, value] of Object.entries(project.agent)) {
-      if (isAgentModelKey(key)) agent[key] = value;
-    }
-  }
+  const agent = {
+    ...global.agent,
+    ...Object.fromEntries(Object.entries(project?.agent ?? {}).filter(([key]) => isAgentModelKey(key))),
+  };
   return { agent, concurrency: mergeRawConcurrency(global.concurrency, project?.concurrency) };
 }
 

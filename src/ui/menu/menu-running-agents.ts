@@ -333,7 +333,10 @@ export function buildAgentActionsList(
   list.onSelect = async (item) => {
     if (item.value === "view-snapshot" || item.value === "view-conversation") {
       try {
-        await prepareConversationViewer(owner, ctx.ui, record, "overlay")?.();
+        await prepareConversationViewer(owner, ctx.ui, record, "overlay", {
+          cwd: ctx.cwd,
+          projectTrusted: ctx.isProjectTrusted(),
+        })?.();
       } catch (err) {
         ctx.ui.notify(`Failed to open agent viewer: ${String(err)}`, "error");
       }

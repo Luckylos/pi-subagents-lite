@@ -6,6 +6,30 @@ import { fakeCtx, fakePi, makeResolvablePromise } from "../fixtures.js";
 import { mockModules, mockRunResult, type OnAgentComplete } from "./manager-mocks.js";
 import { AgentManager } from "../../src/agents/agent-manager.js";
 import type { ConcurrencyConfig } from "../../src/agents/agent-manager.js";
+import type { runAgent, RunResult } from "../../src/agents/agent-runner.js";
+import { asAgentSession } from "../pi-boundaries.js";
+
+function pendingCapacityRun() {
+  let resolve!: (value: RunResult) => void;
+  const promise = new Promise<RunResult>((done) => {
+    resolve = done;
+  });
+  return {
+    promise,
+    resolve: () => {
+      const result = mockRunResult();
+      resolve({ ...result, session: asAgentSession(result.session) });
+    },
+  };
+}
+
+function trackCapacityRuns(events: string[], pending: ReturnType<typeof pendingCapacityRun>) {
+  const execute = vi.fn<typeof runAgent>((_owner, _ctx, _type, prompt) => {
+    events.push(`run:${prompt}`);
+    return pending.promise;
+  });
+  mockModules.mockRunAgent.mockImplementation(execute);
+}
 
 describe("AgentManager", () => {
   let manager: AgentManager;
@@ -22,6 +46,207 @@ describe("AgentManager", () => {
 
   afterEach(() => {
     void manager?.dispose().catch(() => {});
+  });
+
+  describe("queued callback reentry", () => {
+    it("keeps synchronous nested configuration/drain ordering and starts each waiter once", async () => {
+      const events: string[] = [];
+      const pending = pendingCapacityRun();
+      trackCapacityRuns(events, pending);
+      manager = new AgentManager(owner, onComplete, { default: 1 }, (record) => {
+        const name = record.display.description;
+        if (name === "a") {
+          events.push("a-before");
+          manager.setConcurrency({ default: 3 });
+          events.push("a-after");
+        } else events.push(`start:${name}`);
+      });
+      const spawn = (description: string) =>
+        manager.spawn(fakePi(), fakeCtx(), "general-purpose", description, {
+          description,
+          modelKey: "test/model",
+        });
+      const ids = [spawn("held"), spawn("a"), spawn("b")];
+      manager.setConcurrency({ default: 2 });
+      expect(events).toEqual(["start:held", "run:held", "a-before", "start:b", "run:b", "a-after", "run:a"]);
+      manager.setConcurrency({ default: 3 });
+      expect(mockModules.mockRunAgent).toHaveBeenCalledTimes(3);
+      pending.resolve();
+      await Promise.all(ids.map((id) => manager.getRuns(id)[0].completion));
+    });
+
+    it("removes cancelled waiting work during nested drain without releasing a stopping active run", async () => {
+      const events: string[] = [];
+      const pending = pendingCapacityRun();
+      trackCapacityRuns(events, pending);
+      let cancelled = "";
+      manager = new AgentManager(
+        owner,
+        (result) => events.push(`complete:${result.description}`),
+        { default: 1 },
+        (record) => {
+          const name = record.display.description;
+          if (name === "a") {
+            events.push("a-before");
+            expect(manager.abort(cancelled)).toBe(true);
+            expect(manager.abort(record.id)).toBe(true);
+            manager.setConcurrency({ default: 2 });
+            events.push("a-after");
+          } else events.push(`start:${name}`);
+        },
+      );
+      const spawn = (description: string) =>
+        manager.spawn(fakePi(), fakeCtx(), "general-purpose", description, {
+          description,
+          modelKey: "test/model",
+        });
+      const held = spawn("held");
+      const a = spawn("a");
+      cancelled = spawn("cancelled");
+      const c = spawn("c");
+      manager.setConcurrency({ default: 2 });
+      expect(events).toEqual(["start:held", "run:held", "a-before", "complete:cancelled", "a-after", "run:a"]);
+      expect(manager.getRuns(a)[0].phase).toBe("stopping");
+      expect(manager.getRuns(c)[0].phase).toBe("queued");
+      manager.setConcurrency({ default: 3 });
+      expect(events).toEqual([
+        "start:held",
+        "run:held",
+        "a-before",
+        "complete:cancelled",
+        "a-after",
+        "run:a",
+        "start:c",
+        "run:c",
+      ]);
+      expect(mockModules.mockRunAgent).toHaveBeenCalledTimes(3);
+      expect(manager.getRuns(cancelled)[0].outcome).toMatchObject({ status: "stopped", started: false });
+      pending.resolve();
+      await Promise.all([held, a, c].map((id) => manager.getRuns(id)[0].completion));
+    });
+
+    it("waits for the queued start that synchronously disposes the manager and cancels later waiters", async () => {
+      const events: string[] = [];
+      const held = makeResolvablePromise();
+      const queued = makeResolvablePromise();
+      mockModules.mockRunAgent.mockReturnValueOnce(held.promise).mockReturnValueOnce(queued.promise);
+      let shutdown!: Promise<void>;
+      manager = new AgentManager(owner, onComplete, { default: 1 }, (record) => {
+        if (record.display.description !== "a") return;
+        events.push("start:a");
+        vi.spyOn(record.execution.outputLog!, "finalize").mockImplementation(() => {
+          events.push("finalize:a");
+        });
+        shutdown = manager.dispose().then(() => {
+          events.push("disposed");
+        });
+        manager.setConcurrency({ default: 9 });
+      });
+      const spawn = (description: string) =>
+        manager.spawn(fakePi(), fakeCtx(), "general-purpose", description, {
+          description,
+          modelKey: "test/model",
+        });
+      const heldRun = manager.getRuns(spawn("held"))[0];
+      const queuedRun = manager.getRuns(spawn("a"))[0];
+      const cancelledRun = manager.getRuns(spawn("b"))[0];
+      const completed = queuedRun.completion.then(() => {
+        events.push("completed:a");
+      });
+      manager.setConcurrency({ default: 2 });
+      expect(events).toEqual(["start:a"]);
+      expect(mockModules.mockRunAgent.mock.calls.map((call) => call[3])).toEqual(["held", "a"]);
+      expect(manager.listAgents()).toEqual([]);
+      held.resolve(mockRunResult());
+      await Promise.all([heldRun.completion, cancelledRun.completion]);
+      // Let the first settlement and all of its teardown reactions finish.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(events).toEqual(["start:a"]);
+
+      const lateResult = mockRunResult();
+      lateResult.session.dispose.mockImplementation(() => {
+        events.push("teardown:a");
+      });
+      queued.resolve(lateResult);
+      await Promise.all([completed, shutdown]);
+      expect(events).toEqual(["start:a", "finalize:a", "completed:a", "teardown:a", "disposed"]);
+    });
+
+    it("does not reserve capacity before an already-aborted initial request notifies", async () => {
+      const signal = new AbortController();
+      signal.abort();
+      const events: string[] = [];
+      let replacement: string | undefined;
+      manager = new AgentManager(
+        owner,
+        (result) => {
+          events.push(`complete:${result.description}`);
+          replacement = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "replacement", {
+            description: "replacement",
+            modelKey: "test/model",
+          });
+        },
+        { default: 1 },
+        (record) => events.push(`start:${record.display.description}`),
+      );
+      const pending = pendingCapacityRun();
+      mockModules.mockRunAgent.mockReturnValue(pending.promise);
+      const stopped = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "aborted", {
+        description: "aborted",
+        modelKey: "test/model",
+        signal: signal.signal,
+      });
+      expect(events).toEqual(["complete:aborted", "start:replacement"]);
+      expect(manager.getRuns(stopped)[0].outcome).toMatchObject({ status: "stopped", started: false });
+      expect(manager.getRuns(replacement!)[0].phase).toBe("running");
+      expect(mockModules.mockRunAgent).toHaveBeenCalledTimes(1);
+      manager.setOnComplete(() => {});
+      pending.resolve();
+      await manager.getRuns(replacement!)[0].completion;
+    });
+
+    it("releases a reentrant shutdown wait when start throws synchronously", async () => {
+      let shutdown!: Promise<void>;
+      const error = new Error("start failed after disposal");
+      manager = new AgentManager(owner, onComplete, { default: 1 }, () => {
+        shutdown = manager.dispose();
+        throw error;
+      });
+      expect(() => manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", { description: "task" })).toThrow(
+        error,
+      );
+      await shutdown;
+      expect(mockModules.mockRunAgent).not.toHaveBeenCalled();
+      expect(onComplete).not.toHaveBeenCalled();
+    });
+
+    it("keeps immediate and queued start callback failures in their original owner channels", async () => {
+      const error = new Error("queued callback failed");
+      manager = new AgentManager(owner, onComplete, { default: 1 }, (record) => {
+        if (record.display.description === "failing") throw error;
+      });
+      const spawn = (description: string) =>
+        manager.spawn(fakePi(), fakeCtx(), "general-purpose", description, {
+          description,
+          modelKey: "test/model",
+        });
+      expect(() => spawn("failing")).toThrow(error);
+      expect(manager.listAgents()).toEqual([]);
+      expect(onComplete).not.toHaveBeenCalled();
+      const held = pendingCapacityRun();
+      mockModules.mockRunAgent.mockReturnValueOnce(held.promise).mockResolvedValue(mockRunResult());
+      const active = spawn("active");
+      const failing = spawn("failing");
+      const next = spawn("next");
+      held.resolve();
+      await manager.getRuns(active)[0].completion;
+      await manager.getRuns(next)[0].completion;
+      expect(manager.getRuns(failing)[0].outcome).toMatchObject({ status: "error", error: error.message });
+      expect(onComplete.mock.calls.map(([result]) => result.description)).toEqual(["active", "failing", "next"]);
+      expect(manager.getTotalAgentCount()).toBe(2);
+      expect(mockModules.mockRunAgent).toHaveBeenCalledTimes(2);
+      await manager.dispose();
+    });
   });
 
   describe("concurrency", () => {
