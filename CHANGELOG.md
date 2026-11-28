@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-11-28
+
 ### Added
 
 - Add a parent-only `Workflow` tool for up to eight sequential foreground subagent steps, preserving completed results when a later step cannot proceed.
+- Support Pi fullscreen mouse-wheel scrolling in conversation and run-text viewers.
 
 ### Fixed
 
@@ -37,10 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `MessageParent` reports that the message was submitted.
 - Require Pi 1.5.1 or later.
 - Reuse rendered conversation history on append and sample context usage between updates.
-
-### Added
-
-- Support Pi fullscreen mouse-wheel scrolling in conversation and run-text viewers.
 
 ## [1.17.6] - 2026-11-22
 
