@@ -677,7 +677,7 @@ vi.mock("../src/shell.js", async () =>
             const id = mockModules.mockManager.spawn(_pi, _ctx, intent.type, intent.prompt, options);
             const record = mockModules.mockManager.getRecord(id);
             if (!intent.runInBackground && record?.execution?.promise) {
-              return { agentId: id, record, foregroundReport: await record.execution.promise };
+              await record.execution.promise;
             }
             return { agentId: id, record };
           }),

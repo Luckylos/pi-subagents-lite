@@ -14,7 +14,6 @@ export interface ConfirmSubmenuOptions {
   /** Theme from pi-coding-agent (fg, bold, italic) */
   theme: Theme;
   onConfirm: () => void;
-  onError?: (error: unknown) => void;
 }
 
 export function createConfirmSubmenu(
@@ -30,13 +29,7 @@ export function createConfirmSubmenu(
 
     list.onSelect = (item) => {
       if (item.value === "Yes") {
-        try {
-          options.onConfirm();
-        } catch (error) {
-          if (!options.onError) throw error;
-          options.onError(error);
-          return;
-        }
+        options.onConfirm();
         done("Yes");
       } else {
         done();

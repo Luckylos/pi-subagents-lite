@@ -11,19 +11,27 @@ import type { ExtensionOwner } from "../../shell.ts";
  *   - buildAgentActionsList: per-agent action sub-menu (view result, steer, stop, clear)
  *
  * Private helpers (single-consumer, co-located):
+ *   - showTextViewer: show simple text viewer for result/error
  */
 
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { matchesKey, SelectList, wrapTextWithAnsi, type Component, type SelectItem } from "@earendil-works/pi-tui";
+import {
+  matchesKey,
+  SelectList,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+  type Component,
+  type SelectItem,
+} from "@earendil-works/pi-tui";
 import type { AgentRecord, SubagentRun, SubagentRunResult } from "../../types.ts";
 import type { CompletionNotificationState } from "../../spawn/spawn-coordinator.ts";
 import { SHORT_ID_LENGTH } from "../../types.ts";
 import { prepareConversationViewer } from "../open-conversation-viewer.ts";
-import { showRunTextViewer } from "../run-text-viewer.ts";
 import { canRequestStop, displayAgentStatus } from "../../agents/agent-status.ts";
 import { messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "../message-composer.ts";
 import { captureRunAction, requestRunClear, requestRunStop } from "../run-actions.ts";
-import { agentBulletPrefix, formatMs } from "../format.ts";
+import { getDisplayName, agentBulletPrefix, formatMs } from "../format.ts";
 import { SEPARATOR_ID, buildSelectListTheme, createDelegatingComponent, installSeparatorSkip } from "./helpers.ts";
 import { getCoordinator, getManager } from "../../shell.ts";
 import { plainText } from "../sanitize.ts";
@@ -32,6 +40,106 @@ import type { Theme } from "../types.ts";
 /** Running or queued — the only non-terminal statuses (ADR-0006: active work is never cleared). */
 function isActive(record: AgentRecord): boolean {
   return record.lifecycle.status === "running" || record.lifecycle.status === "queued";
+}
+
+async function showTextViewer(
+  owner: ExtensionOwner,
+  ctx: ExtensionCommandContext,
+  record: AgentRecord,
+  kind: "result" | "error",
+  text: string,
+  runSequence: number,
+): Promise<void> {
+  const shortId = record.id.slice(0, SHORT_ID_LENGTH);
+  const titleSuffix = kind === "result" ? `${shortId} · Run ${runSequence}` : `Error · Run ${runSequence}`;
+  const textLines = plainText(text).split("\n");
+  const displayName = getDisplayName(owner, record.display.type);
+  const chromeLines = 5; // top border + title + sep + footer + bottom border
+  const MIN_VIEWPORT = 3;
+  const VIEWPORT_HEIGHT_PCT = 70;
+  let scrollOffset = 0;
+  let autoScroll = true;
+
+  await ctx.ui.custom<void>(
+    (tui, theme, _kb, done) => {
+      const border = theme.fg("border", "│");
+
+      const viewportHeight = () => {
+        const maxRows = Math.floor((tui.terminal.rows * VIEWPORT_HEIGHT_PCT) / 100);
+        return Math.max(MIN_VIEWPORT, maxRows - chromeLines);
+      };
+
+      return {
+        invalidate() {},
+        render(width: number) {
+          const innerW = width - 4;
+          const out: string[] = [theme.fg("border", `\u256d${"\u2500".repeat(width - 2)}\u256e`)];
+
+          // Title row: │ name · suffix pad │
+          const titleStr = theme.bold(theme.fg("accent", `${displayName} \u00b7 ${titleSuffix}`));
+          const titlePad = Math.max(0, innerW - visibleWidth(titleStr));
+          out.push(`${border} ${truncateToWidth(titleStr + " ".repeat(titlePad), innerW, "...", true)} ${border}`);
+
+          // Separator
+          out.push(`${border} ${theme.fg("dim", "\u2500".repeat(innerW))} ${border}`);
+
+          // Content with scrolling
+          const vp = viewportHeight();
+          const maxScroll = Math.max(0, textLines.length - vp);
+          if (autoScroll) scrollOffset = maxScroll;
+          const vs = Math.min(scrollOffset, maxScroll);
+          const visible = textLines.slice(vs, vs + vp);
+
+          for (let i = 0; i < vp; i++) {
+            const line = visible[i] ?? "";
+            const truncated = truncateToWidth(line, innerW, "...", true);
+            const padLen = Math.max(0, innerW - visibleWidth(truncated));
+            out.push(`${border} ${truncated}${" ".repeat(padLen)} ${border}`);
+          }
+
+          // Footer
+          const scrollPct = textLines.length <= vp ? "100%" : `${Math.round(((vs + vp) / textLines.length) * 100)}%`;
+          const count = theme.fg("dim", `${textLines.length} lines \u00b7 ${scrollPct}`);
+          const footerText = theme.fg("dim", "q/Esc close");
+          const gap = Math.max(1, innerW - visibleWidth(count) - visibleWidth(footerText));
+          out.push(`${border} ${count}${" ".repeat(gap)}${footerText} ${border}`);
+
+          out.push(theme.fg("border", `\u2570${"\u2500".repeat(width - 2)}\u256f`));
+          return out;
+        },
+        handleInput(data: string) {
+          if (matchesKey(data, "q") || matchesKey(data, "escape")) {
+            done();
+            return;
+          }
+
+          const vp = viewportHeight();
+          const maxScroll = Math.max(0, textLines.length - vp);
+
+          if (matchesKey(data, "up")) {
+            scrollOffset = Math.max(0, scrollOffset - 1);
+            autoScroll = scrollOffset >= maxScroll;
+          } else if (matchesKey(data, "down")) {
+            scrollOffset = Math.min(maxScroll, scrollOffset + 1);
+            autoScroll = scrollOffset >= maxScroll;
+          } else if (matchesKey(data, "pageUp")) {
+            scrollOffset = Math.max(0, scrollOffset - vp);
+            autoScroll = false;
+          } else if (matchesKey(data, "pageDown")) {
+            scrollOffset = Math.min(maxScroll, scrollOffset + vp);
+            autoScroll = scrollOffset >= maxScroll;
+          } else if (matchesKey(data, "home") || data === "g") {
+            scrollOffset = 0;
+            autoScroll = false;
+          } else if (data === "G") {
+            scrollOffset = maxScroll;
+            autoScroll = true;
+          }
+        },
+      };
+    },
+    { overlay: true },
+  );
 }
 
 type TerminalRun = SubagentRun & { readonly outcome: SubagentRunResult };
@@ -115,9 +223,9 @@ function buildRunPage(
     actions.onCancel = back;
     actions.onSelect = async (item) => {
       if (item.value === "view-result") {
-        await showRunTextViewer(owner, ctx.ui, record, "result", run.outcome.result || EMPTY_RUN_RESULT, run.sequence);
+        await showTextViewer(owner, ctx, record, "result", run.outcome.result || EMPTY_RUN_RESULT, run.sequence);
       } else if (item.value === "view-error" && run.outcome.error) {
-        await showRunTextViewer(owner, ctx.ui, record, "error", run.outcome.error, run.sequence);
+        await showTextViewer(owner, ctx, record, "error", run.outcome.error, run.sequence);
       } else if (item.value === "retry" && state.notificationId && coordinator && warnedList === actions) {
         // A key burst can arrive before the page's first render or reenter the host call.
         warnedList = undefined;
@@ -233,9 +341,9 @@ export function buildAgentActionsList(
         ctx.ui.notify(`Failed to open agent viewer: ${String(err)}`, "error");
       }
     } else if (item.value === "view-result" && resultRun?.outcome.result) {
-      await showRunTextViewer(owner, ctx.ui, record, "result", resultRun.outcome.result, resultRun.sequence);
+      await showTextViewer(owner, ctx, record, "result", resultRun.outcome.result, resultRun.sequence);
     } else if (item.value === "view-error" && errorRun?.outcome.error) {
-      await showRunTextViewer(owner, ctx.ui, record, "error", errorRun.outcome.error, errorRun.sequence);
+      await showTextViewer(owner, ctx, record, "error", errorRun.outcome.error, errorRun.sequence);
     } else if (item.value === "run-history") {
       showRunHistory(owner, ctx, record, theme, setActive, () => setActive(list));
     } else if (item.value === "steer" || item.value === "continue") {

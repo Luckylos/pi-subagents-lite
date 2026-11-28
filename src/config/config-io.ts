@@ -1,7 +1,7 @@
 /**
  * config-io.ts — Config persistence (read/write) with override layers.
  *
- * Serialize writers per file; write to .tmp then rename for lock-free readers.
+ * Atomic writes: write to .tmp then rename.
  * Loaded at session_start; saved on every /agents menu mutation.
  *
  * Two layers (ADR-0008): the global file ~/.pi/agent/subagents-lite.json and a
@@ -15,7 +15,6 @@
 import * as fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { RawConfig, SubagentsConfig } from "./types.ts";
 import { isAgentModelKey } from "./agent-settings.ts";
@@ -26,9 +25,6 @@ import { isPlainObject, validateRawLayer } from "./config-validation.ts";
 const CONFIG_FILE_NAME = "subagents-lite.json";
 const CONFIG_DIR = getAgentDir();
 const CONFIG_PATH = path.join(CONFIG_DIR, CONFIG_FILE_NAME);
-const CONFIG_LOCK_TIMEOUT_MS = 500;
-const CONFIG_LOCK_RETRY_MS = 25;
-const lockWait = new Int32Array(new SharedArrayBuffer(4));
 /** Path to custom prompt file for subagent system prompts. */
 export const CUSTOM_PROMPT_PATH = path.join(CONFIG_DIR, "subagents-lite-prompt.md");
 export { DEFAULT_AGENT, DEFAULT_GRACE_TURNS } from "./agent-settings.ts";
@@ -73,8 +69,7 @@ type ProjectRead = { raw: RawConfig; unknownKeys: string[] } | "malformed" | nul
  * written; without a project dir the project layer is untrusted and unavailable.
  */
 export function createConfigIO(projectDir?: string): ConfigIO {
-  const projectPath = projectDir ? path.resolve(projectDir, CONFIG_FILE_NAME) : null;
-  const resolveProjectPath = () => (projectPath ? resolveProjectConfigPath(projectPath) : null);
+  const projectPath = projectDir ? path.join(projectDir, CONFIG_FILE_NAME) : null;
   let projectStatus: ProjectLayerStatus = projectDir ? "absent" : "untrusted";
   let projectRaw: RawConfig | null = null;
   let unknownKeysWarned = false;
@@ -83,7 +78,7 @@ export function createConfigIO(projectDir?: string): ConfigIO {
     load: () => {
       const global = readGlobalRaw();
       if (projectPath) {
-        const read = readProjectRaw(projectPath, () => resolveProjectConfigPath(projectPath));
+        const read = readProjectRaw(projectPath);
         if (read === null) {
           projectRaw = null;
           projectStatus = "absent";
@@ -107,75 +102,43 @@ export function createConfigIO(projectDir?: string): ConfigIO {
       return { global, project: projectRaw, projectStatus };
     },
     updateLayer: (target, mutate, options = {}) => {
-      const filePath = target === "global" ? CONFIG_PATH : resolveProjectPath();
+      const filePath = target === "global" ? CONFIG_PATH : projectPath;
       if (!filePath) {
         throw new Error(`Cannot update ${target} config: no trusted project path`);
       }
       if (target === "project" && (projectStatus === "malformed" || projectStatus === "untrusted")) {
         throw new Error(`Cannot update project config: project layer is ${projectStatus}`);
       }
+      const latest = readLayerObject(filePath, target);
       const mayCreate = target === "global" || options.createIfMissing === true;
-      if (!mayCreate && !fs.lstatSync(filePath, { throwIfNoEntry: false })) return io.load();
-      withConfigLock(filePath, () => {
-        if (target === "project") ensureSameProjectPath();
-        const latest =
-          target === "project" ? readConfigForReplacement(filePath, target) : readLayerObject(filePath, target, true);
-        if (latest === null && !mayCreate) return;
-        const layer = validateRawLayer(latest ?? {}, filePath);
-        const before = target === "global" ? structuredClone(layer) : undefined;
-        mutate(layer);
-        const validated = validateRawLayer(layer, filePath);
-        const persisted = before ? applyConfigEdits(latest ?? {}, { ...before }, { ...validated }) : validated;
-        if (target === "project") ensureSameProjectPath();
-        writeJsonAtomic(
-          filePath,
-          persisted,
-          target === "project"
-            ? () => {
-                ensureSameProjectPath();
-                return readConfigForReplacement(filePath, target) !== null || mayCreate;
-              }
-            : undefined,
-        );
-      });
-
-      function ensureSameProjectPath(): void {
-        if (resolveProjectPath() !== filePath) {
-          throw new Error("Cannot update project config: the config path changed");
-        }
-      }
+      if (latest === null && !mayCreate) return io.load();
+      const layer = validateRawLayer(latest ?? {}, filePath);
+      mutate(layer);
+      const validated = validateRawLayer(layer, filePath);
+      writeJsonAtomic(
+        filePath,
+        validated,
+        target === "project" ? () => readLayerObject(filePath, "project") !== null || mayCreate : undefined,
+      );
       return io.load();
     },
     saveGlobal: (config) => {
-      withConfigLock(CONFIG_PATH, () => {
-        readConfigForReplacement(CONFIG_PATH, "global");
-        writeJsonAtomic(CONFIG_PATH, config);
-      });
+      writeJsonAtomic(CONFIG_PATH, config);
     },
     saveProject: (config) => {
       if (!projectPath || projectStatus === "malformed" || projectStatus === "untrusted") {
         console.warn(`[subagents] Refusing to write project config (${projectStatus}); change not saved`);
         return;
       }
-      try {
-        const filePath = resolveProjectConfigPath(projectPath);
-        const ensureSameProjectPath = () => {
-          if (resolveProjectConfigPath(projectPath) !== filePath) {
-            throw new Error("Cannot save project config: the config path changed");
-          }
-        };
-        withConfigLock(filePath, () => {
-          ensureSameProjectPath();
-          readConfigForReplacement(filePath, "project");
-          writeJsonAtomic(filePath, config, () => {
-            ensureSameProjectPath();
-            readConfigForReplacement(filePath, "project");
-            return true;
-          });
-        });
-      } catch (err) {
-        console.warn(`[subagents] Refusing to write project config: ${String(err)}`);
-      }
+      writeJsonAtomic(projectPath, config, () => {
+        try {
+          readLayerObject(projectPath, "project");
+          return true;
+        } catch (err) {
+          console.warn(`[subagents] Refusing to write project config: ${String(err)}`);
+          return false;
+        }
+      });
     },
   };
   return io;
@@ -205,10 +168,10 @@ function readGlobalRaw(): RawConfig {
 }
 
 /** Read the project file; missing = absent, unreadable/invalid = malformed + warning. */
-function readProjectRaw(projectPath: string, resolveProjectPath: () => string): ProjectRead {
+function readProjectRaw(projectPath: string): ProjectRead {
   let raw: Record<string, unknown> | null;
   try {
-    raw = readLayerObject(resolveProjectPath(), "project");
+    raw = readLayerObject(projectPath, "project");
   } catch (err) {
     console.warn(`[subagents] Ignoring malformed project config ${projectPath}: ${String(err)}`);
     return "malformed";
@@ -224,64 +187,18 @@ function readProjectRaw(projectPath: string, resolveProjectPath: () => string): 
 
 // ── Save ─────────────────────────────────────────────────────────────
 
-/** Resolve .pi and the file inside the project, including when either is absent. */
-function resolveProjectConfigPath(projectPath: string): string {
-  const projectDir = path.dirname(projectPath);
-  const root = fs.realpathSync.native(path.dirname(projectDir));
-  const directory = resolveEntry(path.join(root, path.basename(projectDir)));
-  if (directory.exists && !fs.statSync(directory.path).isDirectory()) {
-    throw new Error(`Project config directory ${directory.path} is not a directory`);
-  }
-  const file = resolveEntry(path.join(directory.path, CONFIG_FILE_NAME));
-  if (file.exists && !fs.statSync(file.path).isFile()) {
-    throw new Error(`Project config ${file.path} must be a regular file`);
-  }
-  return file.path;
-
-  function resolveEntry(entry: string): { path: string; exists: boolean } {
-    try {
-      fs.lstatSync(entry);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return { path: entry, exists: false };
-      throw err;
-    }
-    const resolved = fs.realpathSync.native(entry);
-    const relative = path.relative(root, resolved);
-    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error(`Project config path ${entry} points outside the project`);
-    }
-    return { path: resolved, exists: true };
-  }
-}
-
-function readProjectFile(filePath: string): string {
-  const { O_RDONLY, O_NONBLOCK, O_NOFOLLOW } = fs.constants;
-  const fd = fs.openSync(filePath, O_RDONLY | (O_NONBLOCK ?? 0) | (O_NOFOLLOW ?? 0));
-  try {
-    if (!fs.fstatSync(fd).isFile()) throw new Error(`Project config ${filePath} must be a regular file`);
-    return fs.readFileSync(fd, "utf-8");
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 /** Project loads and every write guard share the same structural contract. Only ENOENT means absent. */
-function readLayerObject(
-  filePath: string,
-  target: "global" | "project",
-  forWrite = false,
-): Record<string, unknown> | null {
+function readLayerObject(filePath: string, target: "global" | "project"): Record<string, unknown> | null {
   let text: string;
   try {
-    text = target === "project" ? readProjectFile(filePath) : fs.readFileSync(filePath, "utf-8");
+    text = fs.readFileSync(filePath, "utf-8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw new Error(`[subagents] Failed to read config ${filePath}: ${String(err)}`, { cause: err });
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text, forWrite ? checkNumberForWrite : undefined);
-    if (forWrite) rejectDuplicateKeys(text);
+    parsed = JSON.parse(text);
   } catch (err) {
     throw new Error(`[subagents] Failed to parse config ${filePath}: ${String(err)}`, { cause: err });
   }
@@ -309,143 +226,12 @@ function readLayerObject(
   return parsed;
 }
 
-/** Compare exact decimal values without converting the source back to a Number. */
-function decimalKey(literal: string): string {
-  const [mantissa = "", exponent = "0"] = literal.split(/[eE]/);
-  const [whole = "", fraction = ""] = mantissa.split(".");
-  const digits = `${whole}${fraction}`.replace(/^(-?)0+/, "$1");
-  let end = digits.length;
-  while (end > 0 && digits[end - 1] === "0") end--;
-  const significant = digits.slice(0, end);
-  if (significant === "" || significant === "-") return `${significant}0`;
-  const scale = BigInt(exponent) + BigInt(digits.length - end - fraction.length);
-  return `${significant}e${scale}`;
-}
-
-function checkNumberForWrite(_key: string, value: unknown, context?: { source?: string }): unknown {
-  if (typeof value === "number") {
-    const source = context?.source;
-    const serialized = JSON.stringify(value);
-    if (
-      !source ||
-      !Number.isFinite(value) ||
-      (source !== serialized && decimalKey(source) !== decimalKey(serialized))
-    ) {
-      throw new Error("JSON number cannot be written without changing its value; change not saved");
-    }
-  }
-  return value;
-}
-
-/** Scan keys in already validated JSON; JSON.parse alone keeps only the last one. */
-function rejectDuplicateKeys(text: string): void {
-  const scopes: Array<Set<string> | undefined> = [];
-  const colon = /\s*:/y;
-  for (const match of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|[{}]|\[|\]/g)) {
-    const token = match[0];
-    if (token === "{") scopes.push(new Set());
-    else if (token === "[") scopes.push(undefined);
-    else if (token === "}" || token === "]") scopes.pop();
-    else {
-      const keys = scopes.at(-1);
-      colon.lastIndex = match.index + token.length;
-      if (!keys || !colon.test(text)) continue;
-      const key = JSON.parse(token) as string;
-      if (keys.has(key)) throw new Error("duplicate JSON key; change not saved");
-      keys.add(key);
-    }
-  }
-}
-
-/** Apply only changes to validated fields, retaining unrelated persisted values. */
-function applyConfigEdits(
-  raw: Record<string, unknown>,
-  before: Record<string, unknown>,
-  after: Record<string, unknown>,
-): Record<string, unknown> {
-  const result = new Map(Object.entries(raw));
-  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
-    const oldValue = Object.hasOwn(before, key) ? before[key] : undefined;
-    const newValue = Object.hasOwn(after, key) ? after[key] : undefined;
-    const persisted = result.get(key);
-    if (
-      (oldValue === undefined || isPlainObject(oldValue)) &&
-      (newValue === undefined || isPlainObject(newValue)) &&
-      isPlainObject(persisted)
-    ) {
-      const edited = applyConfigEdits(persisted, oldValue ?? {}, newValue ?? {});
-      if (newValue !== undefined || Object.keys(edited).length > 0) result.set(key, edited);
-      else result.delete(key);
-    } else if (!isDeepStrictEqual(oldValue, newValue)) {
-      if (newValue === undefined) result.delete(key);
-      else result.set(key, newValue);
-    }
-  }
-  return Object.fromEntries(result);
-}
-
-/** Refuse to normalize away existing data when replacing an entire config. */
-function readConfigForReplacement(filePath: string, target: "global" | "project"): Record<string, unknown> | null {
-  const raw = readLayerObject(filePath, target, true);
-  if (!raw) return null;
-  const comparable = { ...raw };
-  if (isPlainObject(raw.concurrency)) {
-    const concurrency = { ...raw.concurrency };
-    for (const section of ["providers", "models"]) {
-      if (isPlainObject(concurrency[section]) && Object.keys(concurrency[section]).length === 0) {
-        delete concurrency[section];
-      }
-    }
-    comparable.concurrency = concurrency;
-  }
-  for (const section of ["agent", "concurrency"]) {
-    const value = comparable[section];
-    if (isPlainObject(value) && Object.keys(value).length === 0) delete comparable[section];
-  }
-  // Compare the persisted JSON shape rather than the validator's object prototypes.
-  const cleaned: unknown = JSON.parse(JSON.stringify(validateRawLayer(raw, filePath)));
-  if (!isDeepStrictEqual(comparable, cleaned)) {
-    throw new Error(
-      `[subagents] Refusing to write ${target} config ${filePath}: existing fields would be discarded; change not saved`,
-    );
-  }
-  return raw;
-}
-
-/** mkdir excludes other writers without following an existing lock entry. */
-function withConfigLock(filePath: string, write: () => void): void {
-  const lockPath = `${filePath}.lock`;
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const deadline = performance.now() + CONFIG_LOCK_TIMEOUT_MS;
-  while (true) {
-    try {
-      fs.mkdirSync(lockPath, { mode: 0o700 });
-      break;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      const remaining = deadline - performance.now();
-      if (remaining <= 0) {
-        throw new Error(`[subagents] Timed out waiting for config lock ${lockPath}; change not saved`);
-      }
-      Atomics.wait(lockWait, 0, 0, Math.min(CONFIG_LOCK_RETRY_MS, remaining));
-    }
-  }
-  try {
-    write();
-  } finally {
-    try {
-      fs.rmdirSync(lockPath);
-    } catch (err) {
-      console.warn(`[subagents] Failed to release config lock ${lockPath}: ${String(err)}`);
-    }
-  }
-}
-
 /** Write JSON atomically with a unique same-directory temporary file. */
 function writeJsonAtomic(filePath: string, config: unknown, canReplace?: () => boolean): void {
   const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), { encoding: "utf-8", flag: "wx" });
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(tmpPath, JSON.stringify(config, null, 2), "utf-8");
     if (!canReplace || canReplace()) fs.renameSync(tmpPath, filePath);
   } catch (err) {
     throw new Error(`[subagents] Failed to save config ${filePath}: ${String(err)}`, { cause: err });

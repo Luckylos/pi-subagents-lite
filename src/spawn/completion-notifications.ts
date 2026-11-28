@@ -35,13 +35,6 @@ interface Notification {
   submitting: boolean;
 }
 
-type DeliveryOptions = NonNullable<Parameters<ExtensionAPI["sendMessage"]>[1]>;
-
-interface Submission {
-  status: CompletionNotificationRetryResult;
-  sendReturned: boolean;
-}
-
 interface CompletionEntry {
   readonly agentId: string;
   readonly notification?: Notification;
@@ -65,17 +58,12 @@ export class CompletionNotifications {
   private readonly unconfirmed = new Map<string, Notification>();
   private timer?: ReturnType<typeof setTimeout>;
   private observing = false;
-  private flushing = false;
-  private parentRunning = false;
-  private waitingForUser = false;
-  private userInput = false;
 
   constructor(
     private readonly pi: ExtensionAPI,
     private readonly ownerGeneration: number,
     private readonly parentSessionId: string | undefined,
     private readonly currentParent: () => ExtensionContext | null,
-    private readonly ownsContext: (ctx: ExtensionContext) => boolean,
   ) {}
 
   record(result: SubagentRunResult, binding: RunNotificationBinding): void {
@@ -120,7 +108,7 @@ export class CompletionNotifications {
     };
     this.entries.set(result.runId, { agentId: result.agentId, notification });
     this.pending.add(notification);
-    this.scheduleFlush();
+    this.timer ??= setTimeout(() => this.flush(), NUDGE_DELAY_MS);
   }
 
   state(runId: string): CompletionNotificationState {
@@ -176,34 +164,7 @@ export class CompletionNotifications {
     }
     if (notification.status === "observed") return "observed";
     if (notification.status !== "submitted" || notification.submitting || this.observing) return "not-eligible";
-    return this.submit(notification).status;
-  }
-
-  parentStarted(): void {
-    this.parentRunning = true;
-    this.cancelTimer();
-  }
-
-  parentSettled(aborted: boolean, ctx: ExtensionContext): void {
-    this.parentRunning = false;
-    if (aborted) {
-      this.waitingForUser = true;
-      this.userInput = false;
-      this.cancelTimer();
-    }
-    this.observe(ctx);
-    this.flushWhenIdle();
-  }
-
-  parentInput(isUser: boolean): void {
-    if (this.waitingForUser) this.userInput = isUser;
-  }
-
-  parentUserPrompt(): void {
-    if (!this.waitingForUser || !this.userInput) return;
-    this.waitingForUser = false;
-    // Pi consumes nextTurn messages as part of the user run being prepared.
-    this.flush("nextTurn");
+    return this.submit(notification, ctx);
   }
 
   clearAgent(agentId: string): void {
@@ -230,98 +191,36 @@ export class CompletionNotifications {
     this.timer = undefined;
   }
 
-  private scheduleFlush(): void {
-    if (!this.pending.size || this.parentRunning || this.waitingForUser) return;
-    this.timer ??= setTimeout(() => this.flushWhenIdle(), NUDGE_DELAY_MS);
+  private ownsContext(ctx: ExtensionContext): boolean {
+    return !!this.currentParent() && readParentSessionId(ctx) === this.parentSessionId;
   }
 
-  private flushWhenIdle(): void {
-    this.cancelTimer();
-    if (this.flushing || !this.pending.size || this.parentRunning || this.waitingForUser) return;
-    const ctx = this.currentParent();
-    if (!ctx) return;
-    try {
-      if (ctx.isIdle()) {
-        this.flush("followUp");
-        return;
-      }
-    } catch {
-      // No submission was attempted. Leave the snapshot pending.
-    }
-    // The SDK can be busy outside an agent run, for example during manual compaction.
-    this.scheduleFlush();
+  private flush(): void {
+    this.timer = undefined;
+    // Keep the batch stable under synchronous callbacks; they may clear other runs.
+    const batch = [...this.pending];
+    this.pending.clear();
+    for (const notification of batch) this.submit(notification);
   }
 
-  private flush(deliverAs: "followUp" | "nextTurn"): void {
-    if (this.flushing) return;
-    this.flushing = true;
-    try {
-      // Retain unsubmitted snapshots if a synchronous callback interrupts the batch.
-      const batch = [...this.pending];
-      let triggered = false;
-      for (const [index, notification] of batch.entries()) {
-        if (this.waitingForUser || (deliverAs === "followUp" && this.parentRunning)) break;
-        if (!this.pending.has(notification)) continue;
-        const triggerTurn = deliverAs === "followUp" && index === batch.length - 1;
-        const { sendReturned } = this.submit(notification, { deliverAs, triggerTurn });
-        if (triggerTurn) triggered = sendReturned;
-      }
-      if (deliverAs === "followUp" && batch.length > 1 && !triggered) this.wakeForObservedBatch(batch);
-    } finally {
-      this.flushing = false;
-      this.scheduleFlush();
-    }
-  }
-
-  /** A skipped or throwing final send may leave earlier notices in history without a wake. */
-  private wakeForObservedBatch(batch: readonly Notification[]): void {
-    const ctx = this.currentParent();
-    if (!ctx || this.waitingForUser || this.parentRunning) return;
-    this.observe(ctx);
-    if (
-      !batch.some(
-        (notice) =>
-          notice.status === "observed" && this.entries.get(notice.message.details.runId)?.notification === notice,
-      )
-    )
-      return;
-    try {
-      if (!ctx.isIdle() || this.waitingForUser || this.parentRunning || !this.ownsContext(ctx)) return;
-      this.pi.sendMessage(
-        {
-          customType: "subagent-results-ready",
-          content: "Subagent completion notifications are available.",
-          display: false,
-        },
-        { deliverAs: "followUp", triggerTurn: true },
-      );
-    } catch {
-      // Best effort only. The observed notifications remain in history; never resend them.
-    }
-  }
-
-  private submit(notification: Notification, delivery?: DeliveryOptions): Submission {
+  private submit(notification: Notification, retryCtx?: ExtensionContext): CompletionNotificationRetryResult {
     const { runId, notificationId } = notification.message.details;
     const isRetained = () => this.entries.get(runId)?.notification === notification;
-    if (notification.submitting) return { status: "not-eligible", sendReturned: false };
     notification.submitting = true;
     try {
+      if (retryCtx) this.observe(retryCtx);
       const ctx = this.currentParent();
-      if (!ctx || !isRetained()) return { status: "unavailable", sendReturned: false };
-      if (!delivery) this.observe(ctx);
-      if (notification.status === "observed") return { status: "observed", sendReturned: false };
-      const options = delivery ?? { deliverAs: ctx.isIdle() ? "followUp" : "steer", triggerTurn: true };
-      if (!this.currentParent() || !isRetained()) return { status: "unavailable", sendReturned: false };
-      this.pending.delete(notification);
+      if (!ctx || !isRetained()) return "unavailable";
+      const deliverAs = ctx.isIdle() ? "followUp" : "steer";
+      if (!this.currentParent() || !isRetained()) return "unavailable";
+      if (notification.status === "observed") return "observed";
 
       // Register before crossing the SDK boundary: sendMessage may synchronously
       // reenter a lifecycle handler, and void says nothing about host acceptance.
       notification.status = "submitted";
       this.unconfirmed.set(notificationId, notification);
-      let sendReturned = false;
       try {
-        this.pi.sendMessage(notification.message, options);
-        sendReturned = true;
+        this.pi.sendMessage(notification.message, { deliverAs, triggerTurn: true });
       } catch {
         this.observe(ctx);
         if (notification.status === "submitted" && isRetained() && this.currentParent()) {
@@ -332,10 +231,10 @@ export class CompletionNotifications {
           }
         }
       }
-      return { status: isRetained() && this.currentParent() ? notification.status : "unavailable", sendReturned };
+      return isRetained() && this.currentParent() ? notification.status : "unavailable";
     } catch {
       // The host context became unusable before sendMessage was reached.
-      return { status: "unavailable", sendReturned: false };
+      return "unavailable";
     } finally {
       notification.submitting = false;
     }

@@ -10,7 +10,6 @@ import type { ExtensionOwner } from "./shell.ts";
 import { AgentManager } from "./agents/agent-manager.ts";
 import { AgentWidget, type UICtx } from "./ui/agent-widget.ts";
 import { prepareConversationViewer } from "./ui/open-conversation-viewer.ts";
-import { showRunTextViewer } from "./ui/run-text-viewer.ts";
 import { SpawnCoordinator } from "./spawn/spawn-coordinator.ts";
 import { invalidateAgentRow, cleanupInvalidations } from "./ui/renderer.ts";
 import { registerAgentTool } from "./registration.ts";
@@ -109,13 +108,10 @@ export async function loadConfigAndRegisterAgents(
 async function openViewer(owner: ExtensionOwner, ctx: ExtensionContext, record: AgentRecord | null): Promise<void> {
   const widget = getWidget(owner);
   if (!widget) return;
-  const open =
-    record?.lifecycle.status === "error" && !record.execution.session
-      ? () => showRunTextViewer(owner, ctx.ui, record, "error", record.error || "Unknown error.", undefined, "editor")
-      : prepareConversationViewer(owner, ctx.ui, record, "editor", {
-          cwd: ctx.cwd,
-          projectTrusted: ctx.isProjectTrusted(),
-        });
+  const open = prepareConversationViewer(owner, ctx.ui, record, "editor", {
+    cwd: ctx.cwd,
+    projectTrusted: ctx.isProjectTrusted(),
+  });
   if (!open) return;
 
   try {
@@ -228,14 +224,7 @@ export function setupEventListeners(pi: ExtensionAPI, owner: ExtensionOwner): vo
   pi.on("context", observe);
   pi.on("turn_end", observe);
   pi.on("agent_end", observe);
-  pi.on("agent_start", (_event, ctx) => getCoordinator(owner)?.onParentStarted(ctx));
-  pi.on("agent_settled", (event, ctx) => getCoordinator(owner)?.onParentSettled(ctx, event.aborted));
-  pi.on("input", (event, ctx) => {
-    getCoordinator(owner)?.onParentInput(ctx, event.source !== "extension");
-  });
-  pi.on("before_agent_start", (event, ctx) => {
-    if (event.messageType === "user") getCoordinator(owner)?.onParentUserPrompt(ctx);
-  });
+  pi.on("agent_settled", observe);
   pi.on("session_tree", observe);
   pi.on("turn_start", async (event, ctx) => {
     observe(event, ctx);

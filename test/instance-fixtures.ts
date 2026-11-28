@@ -69,21 +69,12 @@ export function parent(): ParentFixture {
 
 export async function emit(
   parent: ParentFixture,
-  event:
-    | "session_start"
-    | "session_shutdown"
-    | "turn_start"
-    | "agent_start"
-    | "agent_settled"
-    | "before_agent_start"
-    | "input"
-    | "session_tree",
+  event: "session_start" | "session_shutdown" | "turn_start" | "agent_settled" | "session_tree",
   ctx = fakeCtx({ hasUI: false }),
-  details = {},
 ) {
   const listener = parent.api.listeners.find((listener) => listener.event === event);
   if (!listener) throw new Error(`${event} handler missing`);
-  await listener.handler({ type: event, ...details }, ctx);
+  await listener.handler({ type: event }, ctx);
   return ctx;
 }
 

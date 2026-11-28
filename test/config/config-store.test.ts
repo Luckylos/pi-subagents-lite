@@ -10,7 +10,7 @@
  * config-store-widget-sync.test.ts.
  */
 
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, vi } from "vite-plus/test";
 import { ConfigStore } from "../../src/config/config-store.js";
 import type { ConfigIO } from "../../src/config/config-store.js";
 import { memIO, minimalIO, widgetStub, managerStub, statsVisibilityPayloads } from "./config-store-helpers.js";
@@ -264,15 +264,33 @@ describe("ConfigStore override layers", () => {
     expect(saves[1].config.agent).toEqual({});
   });
 
-  it.each(["untrusted", "malformed"] as const)("rejects project mutations when the target is %s", (projectStatus) => {
-    const { io, saves } = memIO({ projectStatus });
+  it("mutating the project layer without a trusted project is refused with a warning", () => {
+    const { io, saves } = memIO({ projectStatus: "untrusted" });
     const store = new ConfigStore(io);
-    expect(() => store.mutate.agent.setDefaultModel("x", "project")).toThrow(projectStatus);
-    expect(() => store.mutate.concurrency.setDefault(8, "project")).toThrow(projectStatus);
-    expect(() => store.mutate.concurrency.removeDefault("project")).toThrow(projectStatus);
-    expect(saves).toHaveLength(0);
-    expect(store.agent.defaultModel).toBeNull();
-    expect(store.concurrency.default).toBe(4);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      store.mutate.agent.setDefaultModel("x", "project");
+      store.mutate.concurrency.setDefault(8, "project");
+      expect(saves).toHaveLength(0);
+      expect(store.agent.defaultModel).toBeNull();
+      expect(store.concurrency.default).toBe(4);
+      expect(warn).toHaveBeenCalledTimes(2);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("mutating the project layer when the file is malformed is refused; nothing is saved", () => {
+    const { io, saves } = memIO({ projectStatus: "malformed" });
+    const store = new ConfigStore(io);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      store.mutate.agent.setDefaultModel("x", "project");
+      expect(saves).toHaveLength(0);
+      expect(store.agent.defaultModel).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("the first project write in a trusted project without a file creates the layer", () => {

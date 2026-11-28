@@ -36,17 +36,14 @@ function validTarget(path: string): WorktreeValidationResult {
 
 async function openWizard(hasParentModel = true) {
   const fixture = parent();
-  fixture.api.api.exec.mockImplementation(async (_cmd: string, args: string[]) => {
-    if (args[0] === "worktree") {
-      expect(args).toEqual(["worktree", "list", "--porcelain", "-z"]);
-      return {
-        code: 0,
-        stdout: "worktree /feature\0branch refs/heads/feature\0\0worktree /other\0branch refs/heads/other\0\0",
-        stderr: "",
-      };
-    }
-    return { code: 0, stdout: "/parent/.git", stderr: "" };
-  });
+  fixture.api.api.exec.mockImplementation(async (_cmd: string, args: string[]) => ({
+    code: 0,
+    stdout:
+      args[0] === "worktree"
+        ? "worktree /feature\nbranch refs/heads/feature\n\nworktree /other\nbranch refs/heads/other"
+        : "/parent/.git",
+    stderr: "",
+  }));
   vi.mocked(validateWorktreePath)
     .mockReset()
     .mockImplementation(async (_pi, path) => validTarget(path));

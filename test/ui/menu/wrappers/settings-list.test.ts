@@ -150,37 +150,6 @@ describe("SettingsListWrapper — __sep__ navigation", () => {
 });
 
 describe("SettingsListWrapper — onRebuild sets items directly", () => {
-  it("keeps the selected ID when a submenu saves and moves the row", () => {
-    const other = { id: "a", label: "A", currentValue: "0", values: ["0", "1"] };
-    const selected: SettingItem = {
-      id: "b",
-      label: "B",
-      currentValue: "0",
-      submenu: (_value, done) => ({ render: () => [], invalidate: () => {}, handleInput: () => done("1") }),
-    };
-    let rebuild: ((items: SettingItem[]) => void) | undefined;
-    const onChange = vi.fn<(id: string, value: string) => void>((id) => {
-      if (id === "b") rebuild?.([selected, other]);
-    });
-    const list = new SettingsList([other, selected], 10, buildSettingsListTheme(theme), onChange, vi.fn());
-    const wrapper = new SettingsListWrapper(list, {
-      title: "T",
-      theme,
-      onRebuild: (callback) => {
-        rebuild = callback;
-      },
-    });
-
-    list.selectItem("b");
-    wrapper.handleInput("\r");
-    wrapper.handleInput("\r");
-    wrapper.handleInput("\r");
-    wrapper.handleInput("\r");
-    expect(onChange.mock.calls).toEqual([
-      ["b", "1"],
-      ["b", "1"],
-    ]);
-  });
   it("rebuild replaces items without appending wrapper (__sep__/__back__) items", () => {
     const list = makeSettingsList([{ id: "a", label: "A", currentValue: "" }]);
     let rebuild: ((items: SettingItem[]) => void) | undefined;

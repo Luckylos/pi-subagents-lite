@@ -4,7 +4,6 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { formatAgentTypeDescriptions } from "./agents/agent-types.ts";
 import { executeAgentTool, executeMessageAgentTool, executeStopAgentTool } from "./agents/tool-execution.ts";
 import { executeAgentStatusTool } from "./agents/agent-status.ts";
-import { executeWorkflow, workflowParameters } from "./spawn/workflow.ts";
 import {
   renderAgentToolCall,
   renderAgentToolResult,
@@ -151,15 +150,6 @@ export function registerTools(pi: ExtensionAPI, owner: ExtensionOwner): void {
     execute: executeAgentStatusTool.bind(null, owner),
   };
   pi.registerTool(agentStatusTool);
-
-  pi.registerTool({
-    name: "Workflow",
-    label: "Workflow",
-    description: ".",
-    parameters: workflowParameters,
-    execute: executeWorkflow.bind(null, owner),
-    constrainedSampling: CONSTRAINED_SAMPLING,
-  });
 
   // Message renderer — subagent-result (background agent completion)
   pi.registerMessageRenderer("subagent-result", (message, options, theme) => {

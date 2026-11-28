@@ -114,10 +114,7 @@ describe("streamToOutputFile", () => {
 
     const session = setupSession([
       { role: "user", content: "explore auth module" },
-      {
-        role: "assistant",
-        content: [{ type: "toolUse", name: "read", input: { path: "src/auth.ts" } }],
-      },
+      { role: "assistant", content: [{ type: "toolUse", name: "read", input: { path: "src/auth.ts" } }] },
     ]);
     const cleanup = streamToOutputFile(session, path);
     session._fireTurnEnd();
@@ -135,14 +132,7 @@ describe("streamToOutputFile", () => {
       { role: "user", content: "check imports" },
       {
         role: "assistant",
-        content: [
-          {
-            type: "toolCall",
-            id: "call_123",
-            name: "grep",
-            arguments: { pattern: "import", path: "./src" },
-          },
-        ],
+        content: [{ type: "toolCall", id: "call_123", name: "grep", arguments: { pattern: "import", path: "./src" } }],
       },
     ]);
     const cleanup = streamToOutputFile(session, path);
@@ -287,69 +277,44 @@ describe("streamToOutputFile", () => {
     cleanup();
   });
 
-  it("writes retained messages only once and keeps the first new messages after compaction", async () => {
-    const path = createOutputFilePath(testAgentId, fixture.getDir());
-    writeInitialEntry(path, "initial");
-    const user = (content: string): FeedMessage => ({ role: "user", content });
-    const assistant = (text: string): FeedMessage => ({
-      role: "assistant",
-      content: [{ type: "text", text }],
-    });
-    const retained = [user("kept question"), assistant("kept answer")];
-    const session = setupSession([user("initial"), assistant("old answer"), ...retained]);
+  it("re-anchors writtenCount after successful compaction", async () => {
+    const dir = fixture.getDir();
+    const path = createOutputFilePath(testAgentId, dir);
+    writeInitialEntry(path, "test");
+
+    const session = setupSession([
+      { role: "user", content: "test" },
+      { role: "assistant", content: [{ type: "text", text: "pre-compaction message" }] },
+    ]);
     const cleanup = streamToOutputFile(session, path);
+
     session._fireTurnEnd();
-    session._fireCompactionStart("threshold");
-    const compacted = [{ role: "compactionSummary", content: "summary" }, ...retained];
-    Object.defineProperty(session, "messages", { get: () => compacted, configurable: true });
+
+    // Simulate compaction by replacing messages with shorter array
+    const compactedMessages = [
+      { role: "user", content: "test" },
+      { role: "assistant", content: [{ type: "text", text: "summary" }] },
+      { role: "assistant", content: [{ type: "text", text: "post-compaction message" }] },
+    ];
+    Object.defineProperty(session, "messages", { get: () => compactedMessages, configurable: true });
+
     session._fireCompactionEnd({
       reason: "threshold",
       aborted: false,
-      result: { tokensBefore: 10000 },
+      result: { tokensBefore: 10000, tokensAfter: 2000 },
     });
-    await Promise.resolve();
-    compacted.push(user("new question"), assistant("new answer"));
+
+    // Wait for microtask to complete (re-anchoring writtenCount)
+    await new Promise<void>((resolve) => queueMicrotask(() => resolve()));
+
+    // Fire turn_end to trigger flush of post-compaction message
     session._fireTurnEnd();
+
+    const content = readFileSync(path, "utf-8");
+    expect(content).toContain("pre-compaction message");
+    expect(content).toContain("summary");
+    expect(content).toContain("post-compaction message");
     cleanup();
-
-    expect(readFileSync(path, "utf-8").match(/\[(?:USER|ASSISTANT)\] [^\n]+/g)).toEqual([
-      "[USER] initial",
-      "[ASSISTANT] old answer",
-      "[USER] kept question",
-      "[ASSISTANT] kept answer",
-      "[USER] new question",
-      "[ASSISTANT] new answer",
-    ]);
-  });
-
-  it("writes new messages when a boundary compaction shortens the projection without a compaction event", () => {
-    const path = createOutputFilePath(testAgentId, fixture.getDir());
-    writeInitialEntry(path, "initial");
-    const assistant = (text: string): FeedMessage => ({
-      role: "assistant",
-      content: [{ type: "text", text }],
-    });
-    const session = setupSession([
-      { role: "user", content: "initial" },
-      assistant("old answer"),
-      { role: "user", content: "old follow-up" },
-      assistant("old follow-up answer"),
-    ]);
-    const cleanup = streamToOutputFile(session, path);
-    session._fireTurnEnd();
-    Object.defineProperty(session, "messages", {
-      get: () => [{ role: "compactionSummary", content: "summary" }, assistant("new answer")],
-      configurable: true,
-    });
-    cleanup();
-
-    expect(readFileSync(path, "utf-8").match(/\[(?:USER|ASSISTANT)\] [^\n]+/g)).toEqual([
-      "[USER] initial",
-      "[ASSISTANT] old answer",
-      "[USER] old follow-up",
-      "[ASSISTANT] old follow-up answer",
-      "[ASSISTANT] new answer",
-    ]);
   });
 
   it("does not re-anchor on aborted compaction", () => {
@@ -387,11 +352,7 @@ describe("streamToOutputFile", () => {
       {
         role: "assistant",
         content: [
-          {
-            type: "toolCall",
-            name: "write",
-            arguments: { path: "/tmp/test.txt", content: "hello world\nline2" },
-          },
+          { type: "toolCall", name: "write", arguments: { path: "/tmp/test.txt", content: "hello world\nline2" } },
         ],
       },
     ]);
@@ -440,10 +401,7 @@ describe("streamToOutputFile", () => {
 
     const session = setupSession([
       { role: "user", content: "run command" },
-      {
-        role: "assistant",
-        content: [{ type: "toolCall", name: "bash", arguments: { command: "npm run build" } }],
-      },
+      { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "npm run build" } }] },
     ]);
     const cleanup = streamToOutputFile(session, path);
     session._fireTurnEnd();
@@ -461,13 +419,7 @@ describe("streamToOutputFile", () => {
       { role: "user", content: "run heredoc" },
       {
         role: "assistant",
-        content: [
-          {
-            type: "toolCall",
-            name: "bash",
-            arguments: { command: "cat <<EOF\nline1\nline2\nEOF" },
-          },
-        ],
+        content: [{ type: "toolCall", name: "bash", arguments: { command: "cat <<EOF\nline1\nline2\nEOF" } }],
       },
     ]);
     const cleanup = streamToOutputFile(session, path);
@@ -484,10 +436,7 @@ describe("streamToOutputFile", () => {
 
     const session = setupSession([
       { role: "user", content: "long command" },
-      {
-        role: "assistant",
-        content: [{ type: "toolCall", name: "bash", arguments: { command: "a".repeat(400) } }],
-      },
+      { role: "assistant", content: [{ type: "toolCall", name: "bash", arguments: { command: "a".repeat(400) } }] },
     ]);
     const cleanup = streamToOutputFile(session, path);
     session._fireTurnEnd();

@@ -43,13 +43,7 @@ import {
   type RawConcurrency,
 } from "./config-io.ts";
 
-import {
-  clearAgentModelKeys,
-  isConcurrencyLimit,
-  mergeDefaults,
-  mergeLayers,
-  mergeRawConcurrency,
-} from "./config-layers.ts";
+import { clearAgentModelKeys, mergeDefaults, mergeLayers, mergeRawConcurrency } from "./config-layers.ts";
 
 export type { ConfigIO, ConfigTarget, ProjectLayerStatus, RawConfig, RawConcurrency } from "./config-io.ts";
 
@@ -164,8 +158,6 @@ export interface ConfigStoreDeps {
 export class ConfigStore {
   private globalRaw: RawConfig;
   private projectRaw: RawConfig | null;
-  // Only used to report an incomplete All levels clear when the file cannot be read.
-  private lastReadableProject: RawConfig | null;
   private projectStatus: ProjectLayerStatus;
   private config: SubagentsConfig;
   private io: ConfigIO;
@@ -183,7 +175,6 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
-    this.lastReadableProject = loaded.project;
     this.config = mergeDefaults(mergeLayers(this.globalRaw, this.projectRaw));
   }
 
@@ -193,7 +184,6 @@ export class ConfigStore {
    */
   setProjectDir(projectDir: string | undefined): void {
     this.io = createConfigIO(projectDir);
-    this.lastReadableProject = null;
   }
 
   // ── Reads ──────────────────────────────────────────────────────
@@ -456,17 +446,17 @@ export class ConfigStore {
     },
     concurrency: {
       setDefault: (n: number, target: ConfigTarget = "global"): void => {
-        this.applyConcurrencyWrite(n, target, (layer) => {
+        this.applyConcurrencyWrite(target, (layer) => {
           layer.default = n;
         });
       },
       setProvider: (key: string, n: number, target: ConfigTarget = "global"): void => {
-        this.applyConcurrencyWrite(n, target, (layer) => {
+        this.applyConcurrencyWrite(target, (layer) => {
           layer.providers = { ...layer.providers, [key]: n };
         });
       },
       setModel: (key: string, n: number, target: ConfigTarget = "global"): void => {
-        this.applyConcurrencyWrite(n, target, (layer) => {
+        this.applyConcurrencyWrite(target, (layer) => {
           layer.models = { ...layer.models, [key]: n };
         });
       },
@@ -489,10 +479,7 @@ export class ConfigStore {
           (layer) => {
             delete layer.concurrency;
           },
-          {
-            after: () => this.applyConcurrency(),
-            includes: (layer) => concurrencyLayerHasSettings(layer.concurrency ?? {}),
-          },
+          { after: () => this.applyConcurrency() },
         );
       },
     },
@@ -552,7 +539,6 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
-    this.lastReadableProject = loaded.project;
     this.rebuildEffective();
     this.sessionOverrides = { default: null };
     this.sessionConcurrencyLayer = {};
@@ -581,16 +567,12 @@ export class ConfigStore {
     this.adoptPersisted(this.io.load());
   }
 
-  private requireProjectTarget(): void {
-    if (!this.projectTargetOffered) this.refreshPersisted();
-    if (!this.projectTargetOffered) {
-      throw new Error(`[subagents] Project config target unavailable (${this.projectStatus}); change not saved`);
-    }
-  }
-
   /** Write an agent key against a freshly read persisted layer; undefined deletes it. */
   private setAgentLayerEntry(key: string, value: unknown, target: "global" | "project"): void {
-    if (target === "project") this.requireProjectTarget();
+    if (target === "project" && !this.projectTargetOffered) {
+      console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
+      return;
+    }
     this.updatePersistedLayer(
       target,
       (layer) => {
@@ -612,17 +594,16 @@ export class ConfigStore {
   }
 
   /** Write a concurrency value into the target layer, then persist and re-sync the manager. */
-  private applyConcurrencyWrite(limit: number, target: ConfigTarget, write: (layer: RawConcurrency) => void): void {
-    if (!isConcurrencyLimit(limit)) {
-      console.warn("[subagents] Concurrency limit must be a positive integer; change ignored");
-      return;
-    }
+  private applyConcurrencyWrite(target: ConfigTarget, write: (layer: RawConcurrency) => void): void {
     if (target === "session") {
       write(this.sessionConcurrencyLayer);
       this.applyConcurrency();
       return;
     }
-    if (target === "project") this.requireProjectTarget();
+    if (target === "project" && !this.projectTargetOffered) {
+      console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
+      return;
+    }
     this.updatePersistedLayer(
       target,
       (layer) => {
@@ -660,7 +641,6 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
-    if (this.projectTargetOffered) this.lastReadableProject = loaded.project;
     this.rebuildEffective();
     this.syncAllDeps();
   }
@@ -699,29 +679,32 @@ export class ConfigStore {
       return;
     }
     if (target === "all") {
-      // Re-read on every attempt, including retries in the same confirmation.
-      this.refreshPersisted();
+      // Capture the offered layers before re-reading: a newly malformed project
+      // has no readable keys but still needs to be reported as a failed Clear.
       const globalPending = includes(this.globalRaw);
+      const projectPending = this.projectRaw !== null && includes(this.projectRaw);
       if (globalPending) this.updatePersistedLayer("global", layerClear);
-      try {
-        if (!this.projectTargetOffered && this.lastReadableProject !== null && includes(this.lastReadableProject)) {
-          throw new Error(`project layer is ${this.projectStatus}`);
-        }
-        if (this.projectRaw !== null && includes(this.projectRaw)) {
+      else if (projectPending) this.refreshPersisted();
+      if (projectPending && this.projectStatus !== "absent") {
+        try {
+          if (this.projectStatus !== "loaded") throw new Error(`project layer is ${this.projectStatus}`);
           this.updatePersistedLayer("project", layerClear, { createIfMissing: false });
+        } catch (err) {
+          if (!globalPending) throw err;
+          throw new Error(`Global config was cleared but project config failed: ${String(err)}`, { cause: err });
         }
-      } catch (err) {
-        if (!globalPending) throw err;
-        throw new Error(`Global config was cleared but project config failed: ${String(err)}`, { cause: err });
       }
       sessionClear();
       after?.();
       return;
     }
-    if (target === "project") {
-      this.requireProjectTarget();
-      if (!this.projectRaw && this.projectStatus === "absent") return;
+    if (target === "project" && !this.projectTargetOffered) {
+      if (this.projectStatus !== "absent") {
+        console.warn(`[subagents] Project config target unavailable (${this.projectStatus}); change ignored`);
+      }
+      return;
     }
+    if (target === "project" && !this.projectRaw && this.projectStatus === "absent") return;
     this.updatePersistedLayer(target, layerClear, { createIfMissing: false });
     after?.();
   }
@@ -744,13 +727,7 @@ export class ConfigStore {
       target,
       () => removeFrom(this.sessionConcurrencyLayer),
       (layer) => removeFrom(layer.concurrency),
-      {
-        after: () => this.applyConcurrency(),
-        includes: ({ concurrency }) =>
-          section === "default"
-            ? concurrency?.default !== undefined
-            : !!key && ownEntry(concurrency?.[section], key) !== undefined,
-      },
+      { after: () => this.applyConcurrency() },
     );
   }
 

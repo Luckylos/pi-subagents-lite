@@ -10,10 +10,10 @@ import type { RunCallbacks } from "../src/types.js";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { continueAgentSession, runAgent } from "../src/agents/agent-runner.js";
 
-function expectResult(api: ReturnType<typeof parent>["api"]) {
+function expectResult(api: ReturnType<typeof parent>["api"], deliverAs: "followUp" | "steer") {
   expect(api.api.sendMessage).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({ customType: "subagent-result", content: expect.stringContaining("A finished work") }),
-    { deliverAs: "followUp", triggerTurn: true },
+    { deliverAs, triggerTurn: true },
   );
 }
 
@@ -97,8 +97,7 @@ describe("session-bound completion notifications", () => {
     const historyA = parentHistory("web-parent-A");
     const historyB = parentHistory("web-parent-B");
     const ctxA = historyA.ctx;
-    let bIdle = false;
-    const ctxB = { ...historyB.ctx, isIdle: () => bIdle };
+    const ctxB = { ...historyB.ctx, isIdle: () => false };
     await Promise.all([emit(a, "session_start", ctxA), emit(b, "session_start", ctxB)]);
     const servicesA = services(a);
     const servicesB = services(b);
@@ -192,12 +191,9 @@ describe("session-bound completion notifications", () => {
       ["web-parent-A", aFirst.id, "A1 output", 30, 2, 4, 2],
       ["web-parent-A", aNext.id, "A1 next output", 40, 5, 10, 5],
     ]);
-    expect(summary(b)).toEqual([]);
-    bIdle = true;
-    await emit(b, "agent_settled", ctxB, { aborted: false });
     expect(summary(b)).toEqual([["web-parent-B", bFirst.id, "B1 output", 30, 10, 20, 10]]);
     expect(a.api.api.sendMessage.mock.calls.map(([, options]) => options)).toEqual([
-      { deliverAs: "followUp", triggerTurn: false },
+      { deliverAs: "followUp", triggerTurn: true },
       { deliverAs: "followUp", triggerTurn: true },
     ]);
     const bOriginal = messages(b)[0];
@@ -226,7 +222,7 @@ describe("session-bound completion notifications", () => {
       ["web-parent-B", bNext.id, "B1 next output", 200, 14, 28, 14],
     ]);
     expect(b.api.api.sendMessage.mock.calls.map(([, options]) => options)).toEqual(
-      [true, false, true].map((triggerTurn) => ({ deliverAs: "followUp", triggerTurn })),
+      Array.from({ length: 3 }, () => ({ deliverAs: "steer", triggerTurn: true })),
     );
     expect(servicesB.manager.getRuns(b1.agentId)[0].outcome).toBe(firstBResult);
     expect(servicesB.coordinator.retryCompletionNotification(bFirst.id, bOriginal.details.notificationId, ctxB)).toBe(
@@ -239,50 +235,6 @@ describe("session-bound completion notifications", () => {
     expect(servicesB.coordinator.getCompletionNotification(bNext.id).status).toBe("submitted");
     expect(messages(a)).toHaveLength(2);
     expect(messages(b)).toHaveLength(4);
-  });
-
-  it("holds notifications after Esc until a user run starts in their owning parent", async () => {
-    const { a, coordinator, runId, ctx } = await startWithHistory();
-    await emit(a, "agent_start", ctx);
-    await vi.advanceTimersByTimeAsync(200);
-    expect(a.api.api.sendMessage).not.toHaveBeenCalled();
-    await emit(a, "agent_settled", ctx, { aborted: true });
-    await emit(a, "before_agent_start", ctx, { messageType: "custom" });
-    await emit(a, "agent_start", ctx);
-    await emit(a, "agent_settled", ctx, { aborted: false });
-    await emit(a, "input", ctx, { source: "extension" });
-    await emit(a, "before_agent_start", ctx, { messageType: "user" });
-    const foreign = parentHistory().ctx;
-    await emit(a, "input", foreign, { source: "interactive" });
-    await emit(a, "before_agent_start", foreign, { messageType: "user" });
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(a.api.api.sendMessage).not.toHaveBeenCalled();
-    expect(coordinator.getCompletionNotification(runId)).toMatchObject({ status: "pending", canRetry: false });
-
-    await emit(a, "input", ctx, { source: "interactive" });
-    await emit(a, "before_agent_start", ctx, { messageType: "user" });
-    expect(a.api.api.sendMessage).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ customType: "subagent-result" }),
-      {
-        deliverAs: "nextTurn",
-        triggerTurn: false,
-      },
-    );
-    expect(coordinator.getCompletionNotification(runId)).toMatchObject({ status: "submitted", canRetry: true });
-  });
-
-  it("keeps a snapshot pending when the idle check fails before submission", async () => {
-    const { a, coordinator, runId, ctx } = await startWithHistory();
-    vi.spyOn(ctx, "isIdle").mockImplementationOnce(() => {
-      throw new Error("context temporarily unavailable");
-    });
-    await vi.advanceTimersByTimeAsync(200);
-    expect(a.api.api.sendMessage).not.toHaveBeenCalled();
-    expect(coordinator.getCompletionNotification(runId)).toMatchObject({ status: "pending", canRetry: false });
-
-    await emit(a, "agent_settled", ctx, { aborted: false });
-    expect(a.api.api.sendMessage).toHaveBeenCalledOnce();
-    expect(coordinator.getCompletionNotification(runId)).toMatchObject({ status: "submitted", canRetry: true });
   });
 
   it("keeps void submission unconfirmed across time and lifecycle, without scanning before submission", async () => {
@@ -317,35 +269,6 @@ describe("session-bound completion notifications", () => {
     expect(a.api.api.sendMessage).toHaveBeenCalledOnce();
   });
 
-  it("only observes a receipt from the owning SessionManager, even when session IDs match", async () => {
-    const { a, coordinator, runId, ctx, append } = await startWithHistory();
-    await vi.advanceTimersByTimeAsync(200);
-    const { details } = a.api.api.sendMessage.mock.calls[0][0];
-    const foreign = parentHistory(ctx.sessionManager.getSessionId());
-    foreign.append(details);
-
-    await emit(a, "turn_start", foreign.ctx);
-    expect(foreign.getEntries).not.toHaveBeenCalled();
-    expect(coordinator.getCompletionNotification(runId)).toMatchObject({ status: "submitted", canRetry: true });
-
-    append(details);
-    await emit(a, "turn_start", { ...ctx });
-    expect(coordinator.getCompletionNotification(runId)).toMatchObject({ status: "observed", canRetry: false });
-  });
-
-  it("rejects retry from a different SessionManager with the same session ID", async () => {
-    const { a, coordinator, runId, ctx } = await startWithHistory();
-    await vi.advanceTimersByTimeAsync(200);
-    const { notificationId } = a.api.api.sendMessage.mock.calls[0][0].details;
-    const foreign = parentHistory(ctx.sessionManager.getSessionId());
-
-    expect(coordinator.retryCompletionNotification(runId, notificationId, foreign.ctx)).toBe("unavailable");
-    expect(a.api.api.sendMessage).toHaveBeenCalledOnce();
-
-    expect(coordinator.retryCompletionNotification(runId, notificationId, { ...ctx })).toBe("submitted");
-    expect(a.api.api.sendMessage).toHaveBeenCalledTimes(2);
-  });
-
   it("requires owning history and a custom message matching the whole identity", async () => {
     const { a, coordinator, runId, ctx, append } = await startWithHistory();
     await vi.advanceTimersByTimeAsync(200);
@@ -377,47 +300,6 @@ describe("session-bound completion notifications", () => {
     });
     expect(a.api.api.sendMessage).toHaveBeenCalledOnce();
   });
-
-  it.each(["failed", "cleared", "aborted", "unobserved"] as const)(
-    "does not resend results when the last batch notice is %s",
-    async (mode) => {
-      const { a, coordinator, runId, ctx, append, manager } = await startWithHistory();
-      const { agentId } = await spawn(a, ctx);
-      const lastRun = manager.getRuns(agentId)[0];
-      a.api.api.sendMessage.mockImplementation((message, options) => {
-        if (message.customType !== "subagent-result") return;
-        if (!options.triggerTurn) {
-          if (mode !== "unobserved") append(message.details);
-          if (mode === "cleared") expect(manager.clear(agentId)).toBe(true);
-          return;
-        }
-        if (mode === "aborted") coordinator.onParentSettled(ctx, true);
-        throw new Error("last notification failed");
-      });
-
-      await vi.advanceTimersByTimeAsync(200);
-
-      const calls = a.api.api.sendMessage.mock.calls;
-      const wakes = calls.filter(([message]) => message.customType === "subagent-results-ready");
-      const resultCalls = calls.filter(([message]) => message.customType === "subagent-result");
-      expect(resultCalls.map(([message]) => message.details.runId)).toEqual(
-        mode === "cleared" ? [runId] : [runId, lastRun.id],
-      );
-      if (mode === "failed" || mode === "cleared") {
-        expect(wakes).toEqual([
-          [expect.objectContaining({ display: false }), { deliverAs: "followUp", triggerTurn: true }],
-        ]);
-        expect(coordinator.getCompletionNotification(runId).status).toBe("observed");
-      } else {
-        expect(wakes).toHaveLength(0);
-      }
-      expect(coordinator.getCompletionNotification(lastRun.id).status).toBe(
-        mode === "cleared" ? "unavailable" : "submitted",
-      );
-      await vi.advanceTimersByTimeAsync(60_000);
-      expect(a.api.api.sendMessage).toHaveBeenCalledTimes(resultCalls.length + wakes.length);
-    },
-  );
 
   it("keeps an asynchronous host failure unconfirmed without retrying", async () => {
     const { a, coordinator, runId, ctx } = await startWithHistory();
@@ -536,7 +418,7 @@ describe("session-bound completion notifications", () => {
       record.stats.turnCount = 12;
       record.stats.lifetimeUsage.output = 100;
       await vi.advanceTimersByTimeAsync(200);
-      expectResult(a.api);
+      expectResult(a.api, "followUp");
       expect(a.api.api.sendMessage.mock.calls[0][0].details).toMatchObject({
         status: "completed",
         turnCount: 0,
@@ -569,10 +451,12 @@ describe("session-bound completion notifications", () => {
       expect(calls[index][0].content).toContain(result);
     }
   });
-  it.each([true, false])("keeps the bound parent after an unbound factory reload (idle=%s)", async (idle) => {
+  it.each([
+    { idle: true, deliverAs: "followUp" as const },
+    { idle: false, deliverAs: "steer" as const },
+  ])("keeps the bound parent after an unbound factory reload ($deliverAs)", async ({ idle, deliverAs }) => {
     const a = parent();
-    let parentIdle = idle;
-    const ctx = await emit(a, "session_start", fakeCtx({ hasUI: false, isIdle: () => parentIdle }));
+    const ctx = await emit(a, "session_start", fakeCtx({ hasUI: false, isIdle: () => idle }));
     await spawn(a, ctx);
 
     const b = parent();
@@ -581,12 +465,7 @@ describe("session-bound completion notifications", () => {
     });
     await vi.advanceTimersByTimeAsync(200);
 
-    if (!idle) {
-      expect(a.api.api.sendMessage).not.toHaveBeenCalled();
-      parentIdle = true;
-      await emit(a, "agent_settled", ctx, { aborted: false });
-    }
-    expectResult(a.api);
+    expectResult(a.api, deliverAs);
     expect(b.api.api.sendMessage).not.toHaveBeenCalled();
     expect(ctx.ui.notify).not.toHaveBeenCalled();
   });
@@ -606,7 +485,7 @@ describe("session-bound completion notifications", () => {
     const starting = emit(b, "session_start", fakeCtx({ hasUI: false, isIdle: () => false }));
     try {
       await vi.advanceTimersByTimeAsync(200);
-      expectResult(a.api);
+      expectResult(a.api, "followUp");
       expect(b.api.api.sendMessage).not.toHaveBeenCalled();
     } finally {
       releaseScan([]);
@@ -622,7 +501,7 @@ describe("session-bound completion notifications", () => {
     withChildExtensionLoad(true, () => factory(asExtensionAPI(child.api)));
     await vi.advanceTimersByTimeAsync(200);
     expect(child.listeners).toEqual([]);
-    expectResult(a.api);
+    expectResult(a.api, "followUp");
     expect(child.api.sendMessage).not.toHaveBeenCalled();
   });
 });

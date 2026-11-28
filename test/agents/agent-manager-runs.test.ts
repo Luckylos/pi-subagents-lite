@@ -151,35 +151,6 @@ describe("Subagent run ownership", () => {
     await flush();
   });
 
-  it("does not retain a child session whose handoff failed", async () => {
-    manager = new AgentManager(owner);
-    const session = mockAgentSession();
-    const error = new Error("handoff failed");
-    mockModules.mockRunAgent.mockImplementationOnce(async (_owner, _ctx, _type, _prompt, options) => {
-      try {
-        options.onSessionCreated?.(session);
-      } catch (err) {
-        session.dispose();
-        throw err;
-      }
-      return mockRunResult({ session });
-    });
-    mockModules.mockContinueAgentSession.mockResolvedValue(mockRunResult({ session }));
-    const id = manager.spawn(fakePi(), fakeCtx(), "general-purpose", "task", {
-      description: "task",
-      onSessionCreated: () => {
-        throw error;
-      },
-    });
-    await manager.getRuns(id)[0].completion;
-
-    expect(manager.getRuns(id)[0].outcome).toMatchObject({ status: "error", error: "handoff failed" });
-    expect(session.dispose).toHaveBeenCalledOnce();
-    expect(await manager.submitMessage(id, "continue")).toMatchObject({ accepted: false, reason: "unavailable" });
-    expect(manager.getRecord(id)?.execution.session).toBeUndefined();
-    expect(mockModules.mockContinueAgentSession).not.toHaveBeenCalled();
-  });
-
   it("rejects continuation during completion publication and accepts it afterwards", async () => {
     const first = makeResolvablePromise();
     const second = makeResolvablePromise();
@@ -360,7 +331,7 @@ describe("Subagent run ownership", () => {
     const id = spawn("task");
     expect(await manager.submitMessage(id, "  ")).toMatchObject({ accepted: false, reason: "empty_message" });
     expect(await manager.submitMessage(id, "early")).toMatchObject({ accepted: true, delivery: "pending_steer" });
-    const session = mockAgentSession({ model: { provider: "test", id: "model" } });
+    const session = mockAgentSession();
     mockModules.mockRunAgent.mock.calls[0][4].onSessionCreated(session);
     expect(await manager.submitMessage(id, "live")).toMatchObject({ accepted: true, delivery: "steer" });
     first.resolve(mockRunResult({ session }));

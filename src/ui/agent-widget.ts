@@ -10,8 +10,7 @@ import { formatWatchdogSummary } from "../status-note.ts";
 import type { AgentRecord, AgentLifecycle } from "../types.ts";
 import type { Theme } from "./types.ts";
 import type { ModelThinkingPlacement } from "../config/types.ts";
-import { formatCost } from "../agents/usage.ts";
-import { ContextSampler } from "./context-sampler.ts";
+import { formatCost, getSessionContextPercent } from "../agents/usage.ts";
 import {
   applyAgentColor,
   buildStatsParts,
@@ -24,7 +23,6 @@ import {
   type StatsVisibility,
 } from "./format.ts";
 import { plainText } from "./sanitize.ts";
-import { summarizeRunText } from "./run-text-viewer.ts";
 import { agentColorAnsi } from "../agent-color.ts";
 import type { LiveView } from "../types.ts";
 import {
@@ -45,6 +43,9 @@ const WIDGET_KEY = "agents";
 const STATUS_KEY = "subagents";
 
 const WIDGET_REFRESH_INTERVAL = 80;
+
+/** Context statistics need not be recomputed for every spinner frame. */
+const CONTEXT_SAMPLE_MAX_AGE_MS = 500;
 
 /** Navigation freeze window: roster order is deferred while the user is actively navigating. */
 const NAV_FREEZE_MS = 2000;
@@ -79,6 +80,12 @@ interface RenderBlock {
 interface LazyRenderBlock {
   height: number;
   render(): RenderBlock;
+}
+
+interface ContextSample {
+  key: readonly unknown[];
+  sampledAt: number;
+  percent: number | null;
 }
 
 // ---- Re-exports from format.ts (backward compatibility) ----
@@ -119,7 +126,7 @@ export class AgentWidget {
   /** Snapshot of the last rows actually handed to the TUI, not the caller-owned array. */
   private lastWidgetLines: string[] | undefined;
   private hasAnimatedRows = false;
-  private contextSamples = new ContextSampler();
+  private contextSamples = new WeakMap<AgentRecord, ContextSample>();
 
   /** Whether to use compact mode (1-line per agent). */
   private compactMode = false;
@@ -495,7 +502,7 @@ export class AgentWidget {
       this.theme = undefined;
       this.lastStatusText = undefined;
       this.lastWidgetLines = undefined;
-      this.contextSamples = new ContextSampler();
+      this.contextSamples = new WeakMap();
     }
   }
 
@@ -551,8 +558,8 @@ export class AgentWidget {
         };
       }
       case "error": {
-        const summary = error && summarizeRunText(error);
-        return { icon, statusText: theme.fg("error", summary ? ` error: ${summary}` : " error") };
+        const errMsg = error ? `: ${plainText(error).slice(0, 60)}` : "";
+        return { icon, statusText: theme.fg("error", ` error${errMsg}`) };
       }
       default:
         // aborted
@@ -581,11 +588,10 @@ export class AgentWidget {
       theme,
       this.statsVisibility,
     );
-    const label = `${icon} ${theme.fg("dim", name)}${this.modelThinkingHeaderTag(a, theme)}`;
-    const description = theme.fg("dim", plainText(a.display.description));
-    const stats = wrapInDim(theme, statsParts.join("·"));
-    if (a.lifecycle.status === "error") return `${label}${statusText}  ${description}  ${stats}`;
-    return `${label}  ${description}  ${stats}${statusText}`;
+    const statsLine = statsParts.join("·");
+    const tagPart = this.modelThinkingHeaderTag(a, theme);
+
+    return `${icon} ${theme.fg("dim", name)}${tagPart}  ${theme.fg("dim", plainText(a.display.description))}  ${wrapInDim(theme, statsLine)}${statusText}`;
   }
 
   /** Build the dim-styled model/thinking tag for the header line, or "" when it belongs on the metadata line. */
@@ -601,7 +607,52 @@ export class AgentWidget {
       this.contextSamples.delete(agent);
       return null;
     }
-    return this.contextSamples.read(agent);
+    const session = agent.execution.session;
+    if (!session) return agent.stats.contextPercent ?? null;
+
+    try {
+      const manager = session.sessionManager;
+      // Legacy/custom sessions without a cheap branch stamp remain uncached.
+      if (!manager?.getLeafId || !manager.getLeafEntry || !manager.getSessionId) {
+        return getSessionContextPercent(session);
+      }
+      const selectedModel = session.model;
+      const limitsModel = session.routedModel?.model ?? selectedModel;
+      const key = [
+        session,
+        session.getContextUsage,
+        session.getSessionStats,
+        manager,
+        manager.getSessionId(),
+        manager.getLeafId(),
+        manager.getLeafEntry(),
+        selectedModel,
+        selectedModel?.contextWindow,
+        limitsModel,
+        limitsModel?.contextWindow,
+        agent.stats.compactionCount,
+      ];
+      const now = Date.now();
+      const previous = this.contextSamples.get(agent);
+      if (
+        previous &&
+        now >= previous.sampledAt &&
+        now - previous.sampledAt < CONTEXT_SAMPLE_MAX_AGE_MS &&
+        key.length === previous.key.length &&
+        key.every((value, i) => Object.is(value, previous.key[i]))
+      ) {
+        return previous.percent;
+      }
+      const percent = getSessionContextPercent(session);
+      // Leaf/model changes refresh immediately. The age limit also refreshes
+      // unversioned in-place changes; this is bounded sampling, not a promise
+      // that the SDK's mutable records have a complete revision key.
+      this.contextSamples.set(agent, { key, sampledAt: now, percent });
+      return percent;
+    } catch {
+      this.contextSamples.delete(agent);
+      return getSessionContextPercent(session);
+    }
   }
 
   private buildStatsLine(agent: AgentRecord, theme: Theme): string {
@@ -834,10 +885,7 @@ export class AgentWidget {
 
     // Queued: individual rows during nav, aggregated block otherwise.
     const queuedBlocks: LazyRenderBlock[] = this.navActive
-      ? queued.map((a) => ({
-          height: 1,
-          render: () => this.buildQueuedIndividualBlocks([a], theme, w)[0],
-        }))
+      ? queued.map((a) => ({ height: 1, render: () => this.buildQueuedIndividualBlocks([a], theme, w)[0] }))
       : queued.length > 0
         ? [{ height: 1, render: () => this.buildQueuedBlock(queued, theme, w)! }]
         : [];
@@ -1098,6 +1146,6 @@ export class AgentWidget {
     this.theme = undefined;
     this.lastStatusText = undefined;
     this.lastWidgetLines = undefined;
-    this.contextSamples = new ContextSampler();
+    this.contextSamples = new WeakMap();
   }
 }

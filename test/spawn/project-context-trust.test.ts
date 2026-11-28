@@ -143,7 +143,6 @@ describe("project context trust with real SDK dependencies", () => {
       stdout: args.includes("--show-toplevel") ? "" : join(options?.cwd ?? target, ".git"),
       stderr: "",
       killed: false,
-      truncated: false,
     }));
     const validation = await validateWorktreePath({ exec }, target, parentCwd);
     expect(validation).toMatchObject({ ok: true, sameRepo: false, worktreeRoot: target });

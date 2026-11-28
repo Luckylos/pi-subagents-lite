@@ -172,13 +172,7 @@ interface ChildCase {
 
 async function verifyChild({ hidden, allowed, selected, trusted }: ChildCase) {
   const pi = asExtensionAPI({
-    exec: vi.fn<ExtensionAPI["exec"]>(async () => ({
-      code: 1,
-      stdout: "",
-      stderr: "",
-      killed: false,
-      truncated: false,
-    })),
+    exec: vi.fn<ExtensionAPI["exec"]>(async () => ({ code: 1, stdout: "", stderr: "", killed: false })),
   });
   const owner = createExtensionOwner(pi);
   owner.store = new ConfigStore({

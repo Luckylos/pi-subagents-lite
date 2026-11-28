@@ -1,5 +1,3 @@
-import { DEFAULT_CONCURRENCY, isConcurrencyLimit } from "../config/config-layers.ts";
-
 /** Run-owned admission, startup model transfer and per-pool FIFO; no execution lifecycle ownership. */
 export interface ConcurrencyConfig {
   /** Default concurrency is per model, not a global pool. */
@@ -38,7 +36,7 @@ interface WaitingWork {
 }
 
 export class RunCapacity {
-  private defaultConcurrency = DEFAULT_CONCURRENCY.default;
+  private defaultConcurrency: number;
   private providers = new Map<string, number>();
   private models = new Map<string, number>();
   /** Ownership stays fixed; counts are derived from each lease's actual model under current routing. */
@@ -48,20 +46,28 @@ export class RunCapacity {
   private closed = false;
 
   constructor(config: ConcurrencyConfig) {
-    this.setConcurrency(config);
+    this.defaultConcurrency = config.default;
+    this.copyLimits(this.providers, config.providers);
+    this.copyLimits(this.models, config.models);
   }
 
   setConcurrency(config: ConcurrencyConfig): void {
-    this.defaultConcurrency = isConcurrencyLimit(config.default) ? config.default : DEFAULT_CONCURRENCY.default;
-    this.copyLimits(this.providers, config.providers);
-    this.copyLimits(this.models, config.models);
+    this.defaultConcurrency = config.default;
+    // Preserve the existing setter's falsy-entry removal and limit clamping,
+    // while never retaining caller-owned configuration objects.
+    this.copyLimits(this.providers, config.providers, true);
+    this.copyLimits(this.models, config.models, true);
     this.drain();
   }
 
-  private copyLimits(target: Map<string, number>, entries: Record<string, number> | undefined): void {
+  private copyLimits(
+    target: Map<string, number>,
+    entries: Record<string, number> | undefined,
+    removeFalsy = false,
+  ): void {
     target.clear();
     for (const [key, limit] of Object.entries(entries ?? {})) {
-      if (isConcurrencyLimit(limit)) target.set(key, limit);
+      if (!removeFalsy || limit) target.set(key, Math.max(1, limit));
     }
   }
 
@@ -73,7 +79,7 @@ export class RunCapacity {
 
   private hasCapacity(modelKey: string): boolean {
     const provider = modelKey.split("/")[0];
-    const limit = this.models.get(modelKey) ?? this.providers.get(provider) ?? this.defaultConcurrency;
+    const limit = Math.max(1, this.models.get(modelKey) ?? this.providers.get(provider) ?? this.defaultConcurrency);
     const pool = this.poolKey(modelKey);
     let running = 0;
     for (const lease of this.activeLeases) {

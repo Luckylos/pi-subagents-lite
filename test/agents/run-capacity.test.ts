@@ -25,16 +25,6 @@ function startup(controller = new AbortController(), overrides: Partial<StartupC
 
 // Opaque run tokens and public callbacks only: no Manager/SDK or private accounting inspection.
 describe("RunCapacity", () => {
-  it("ignores invalid overrides at construction and reconfiguration", () => {
-    const config = { default: 1, providers: { p: 1.5 }, models: { "p/a": Infinity } };
-    const capacity = new RunCapacity(config);
-    for (const suffix of ["a", "b"]) {
-      expect(capacity.schedule({}, `p/${suffix}`, work())).toBe("started");
-      expect(capacity.schedule({}, `p/${suffix}`, work())).toBe("queued");
-      capacity.setConcurrency(config);
-    }
-  });
-
   it("routes model before provider before default, with independent default pools", () => {
     const capacity = new RunCapacity({ default: 1, providers: { p: 2 }, models: { "p/a": 1 } });
     expect(capacity.schedule({}, "p/a", work())).toBe("started");

@@ -403,33 +403,6 @@ describe("navigation key handler (createNavInputHandler)", () => {
       expect(mockWidget.setViewerOpen).not.toHaveBeenCalled();
     });
 
-    it("opens the full error when a failed agent has no session", async () => {
-      const error = `Model setup failed\nProvider configuration is missing ${"x".repeat(90)} End of diagnostic`;
-      mockWidget.navSelect.mockReturnValueOnce(makeAgentRecord({ lifecycle: { status: "error" }, error }));
-      mockMatchesKey.mockImplementation((data, key) => data === (key === "enter" ? "\r" : key));
-      const custom = vi.fn((factory: ComponentFactory, _options?: { overlay?: boolean }) => {
-        const tui = { terminal: { rows: 40 }, requestRender: vi.fn() };
-        const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-        return new Promise<void>((resolve) => {
-          const view = factory(tui, theme, undefined, () => resolve());
-          assert(view && typeof view === "object");
-          assert("render" in view && typeof view.render === "function");
-          assert("handleInput" in view && typeof view.handleInput === "function");
-          const rendered = view.render(80).join("\n");
-          expect(rendered).toContain("Model setup failed");
-          expect(rendered).toContain("Provider configuration is missing");
-          expect(rendered).toContain("End of diagnostic");
-          view.handleInput("escape");
-        });
-      });
-      const viewCtx = createMockCtx([], [], [], { ui: { custom } });
-
-      expect(createNavInputHandler(owner, viewCtx)("\r")).toEqual({ consume: true });
-      expect(custom).toHaveBeenCalledExactlyOnceWith(expect.any(Function), undefined);
-      await vi.waitFor(() => expect(mockWidget.setViewerOpen.mock.calls).toEqual([[true], [false]]));
-      expect(viewCtx.ui.notify).not.toHaveBeenCalled();
-    });
-
     it("resets viewer-open when the UI fails to open", async () => {
       const session = asAgentSession({ messages: [] });
       mockWidget.navSelect.mockReturnValueOnce(makeAgentRecord({ execution: { session } }));

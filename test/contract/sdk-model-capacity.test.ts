@@ -19,13 +19,10 @@ import { fakeCtx, fakePi } from "../fixtures.js";
 // Production config paths capture getAgentDir() at import time.
 const suite = await vi.hoisted(async () => {
   const { mkdtempSync, realpathSync } = await import("node:fs");
-  const { dirname, join } = await import("node:path");
+  const { join } = await import("node:path");
   const root = mkdtempSync("/tmp/subagent-model-capacity-");
   vi.stubEnv("PI_CODING_AGENT_DIR", join(root, "agent"));
-  const { fileURLToPath } = await import("node:url");
-  const sdkEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-coding-agent"));
-  const sdkDependencies = dirname(dirname(dirname(dirname(sdkEntry))));
-  return { root, cwd: process.cwd(), dependencies: realpathSync("node_modules"), sdkDependencies };
+  return { root, cwd: process.cwd(), dependencies: realpathSync("node_modules") };
 });
 
 function deferred() {
@@ -69,11 +66,8 @@ function setupResourceFixture() {
     const redirected = new Proxy(original, {
       apply(fn, receiver, args) {
         const path = mockUserPath(args[0] instanceof URL ? fileURLToPath(args[0]) : args[0]);
-        // Jiti can resolve the host SDK and its dependencies through symlinks.
-        if (
-          typeof path === "string" &&
-          (path.startsWith(`${suite.dependencies}${sep}`) || path.startsWith(`${suite.sdkDependencies}${sep}`))
-        )
+        // Jiti imports installed code when the fixture's startup extension is enabled.
+        if (typeof path === "string" && path.startsWith(`${suite.dependencies}${sep}`))
           return Reflect.apply(fn, receiver, args);
         if (typeof path !== "string" || (path !== root && !path.startsWith(`${root}${sep}`))) {
           if (key === "existsSync") return false;
@@ -361,44 +355,6 @@ describe("SDK-selected model capacity", () => {
         result: "continued on other",
         stats: { modelId: "other" },
       });
-    } finally {
-      await app.dispose();
-    }
-  });
-
-  it("admits continuations against the model selected after the first run", async () => {
-    const app = await setup();
-    try {
-      app.offline.appendResponses([fauxAssistantMessage("initial on default")]);
-      const id = await app.background("switch after first prompt");
-      await app.complete(id);
-      const session = app.manager.getRecord(id)!.execution.session!;
-      const other = app.offline.getModel("other")!;
-      await session.setModel(other);
-
-      const release = app.hold("active on other");
-      const holder = app.known("other holder", other);
-      await vi.waitFor(() => expect(app.offline.state.callCount).toBe(2));
-      expect(await app.manager.submitMessage(id, "continue")).toMatchObject({ accepted: false, reason: "capacity" });
-      expect(app.manager.getRuns(id)).toHaveLength(1);
-
-      release();
-      await app.complete(holder);
-      const releaseOriginal = app.hold("active on original");
-      const originalHolder = app.known("original holder");
-      await vi.waitFor(() => expect(app.offline.state.callCount).toBe(3));
-      app.offline.appendResponses([fauxAssistantMessage("continued on other")]);
-      expect(await app.manager.submitMessage(id, "continue")).toMatchObject({
-        accepted: true,
-        delivery: "continuation",
-      });
-      await app.complete(id);
-      expect(app.manager.getRuns(id)[1]?.outcome).toMatchObject({
-        result: "continued on other",
-        stats: { modelId: "other" },
-      });
-      releaseOriginal();
-      await app.complete(originalHolder);
     } finally {
       await app.dispose();
     }

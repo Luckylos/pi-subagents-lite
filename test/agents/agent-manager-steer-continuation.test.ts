@@ -38,8 +38,6 @@ describe("AgentManager", () => {
     await completed;
   }
 
-  const sessionModel = { provider: "test", id: "model" };
-
   function spawnForeground(prompt: string, options: Record<string, unknown> = {}): string {
     return manager.spawn(fakePi(), fakeCtx(), "general-purpose", prompt, {
       description: prompt,
@@ -65,8 +63,7 @@ describe("AgentManager", () => {
   }
 
   async function spawnSettled(options: Record<string, unknown> = {}): Promise<string> {
-    const model = "modelKey" in options && options.modelKey === undefined ? undefined : sessionModel;
-    mockModules.mockRunAgent.mockResolvedValue(mockRunResult({ session: mockAgentSession({ model }) }));
+    mockModules.mockRunAgent.mockResolvedValue(mockRunResult());
     const id = spawnForeground("first task", options);
     await manager.getRecord(id)!.execution.promise;
     return id;
@@ -168,7 +165,7 @@ describe("AgentManager", () => {
     const idB = spawnForeground("B");
     expect(manager.getRecord(idB)!.lifecycle.status).toBe("queued");
 
-    firstRun.resolve(mockRunResult({ session: mockAgentSession({ model: sessionModel }) }));
+    firstRun.resolve(mockRunResult());
     await manager.getRecord(idA)!.execution.promise;
     // B drained into the slot after A settled.
     expect(manager.getRecord(idB)!.lifecycle.status).toBe("running");

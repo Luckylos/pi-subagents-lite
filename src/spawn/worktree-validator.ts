@@ -61,7 +61,7 @@ interface PiExec {
 }
 
 /**
- * Run `git rev-parse --git-common-dir` and remove its line terminator.
+ * Run `git rev-parse --git-common-dir` and return the trimmed result.
  * Returns a failure result when the command fails or git is unavailable;
  * a non-repo directory yields NOT_IN_GIT_REPO.
  */
@@ -73,7 +73,7 @@ async function getGitCommonDir(
   try {
     const result = await pi.exec("git", ["rev-parse", "--git-common-dir"], { cwd, timeout: GIT_EXEC_TIMEOUT_MS });
     if (result.code !== 0) return { ok: false, error: WORKTREE_VALIDATION_ERRORS.NOT_IN_GIT_REPO };
-    const commonDir = gitPathOutput(result.stdout);
+    const commonDir = result.stdout.trim();
     if (!commonDir) return { ok: false, error: WORKTREE_VALIDATION_ERRORS.NOT_IN_GIT_REPO };
     return { ok: true, commonDir };
   } catch (err: unknown) {
@@ -89,27 +89,18 @@ async function getGitCommonDir(
   }
 }
 
-function gitPathOutput(stdout: string): string {
-  // A POSIX filename can end with whitespace, including a carriage return.
-  return stdout.replace(process.platform === "win32" ? /\r?\n$/ : /\n$/, "");
-}
+/** Resolve a git path and normalize it for reliable cross-platform comparison. */
+function normalizeGitPath(gitPath: string, cwd: string): string {
+  const isWindowsStyle =
+    /^[A-Za-z]:[\\/]/.test(gitPath) ||
+    /^[A-Za-z]:[\\/]/.test(cwd) ||
+    gitPath.startsWith("\\\\") ||
+    cwd.startsWith("\\\\");
+  const pathApi = isWindowsStyle ? path.win32 : path;
+  const absolutePath = pathApi.isAbsolute(gitPath) ? gitPath : pathApi.resolve(cwd, gitPath);
+  const normalizedPath = pathApi.normalize(absolutePath).replace(/\\/g, "/");
 
-export function absoluteFrom(cwd: string, filePath: string, pathApi = path): string {
-  if (pathApi.isAbsolute(filePath)) return filePath;
-  // Resolve a Windows drive prefix, but leave the tail for native realpath.
-  const { root } = pathApi.parse(filePath);
-  const base = root ? pathApi.resolve(cwd, root) : cwd;
-  const tail = filePath.slice(root.length);
-  return tail ? `${base}${base.endsWith(pathApi.sep) ? "" : pathApi.sep}${tail}` : base;
-}
-
-function gitDirectoryIdentity(gitPath: string, cwd: string): string {
-  const absolutePath = absoluteFrom(cwd, gitPath);
-  try {
-    return realpathSync.native(absolutePath);
-  } catch {
-    return path.resolve(cwd, gitPath);
-  }
+  return isWindowsStyle ? normalizedPath.toLowerCase() : normalizedPath;
 }
 
 /**
@@ -130,7 +121,7 @@ export async function validateWorktreePath(
   }
 
   // Step 2: Resolve relative paths against parent cwd
-  const resolved = absoluteFrom(parentCwd, worktreePath);
+  const resolved = path.isAbsolute(worktreePath) ? worktreePath : path.resolve(parentCwd, worktreePath);
 
   // Step 3: Check existence
   if (!existsSync(resolved)) {
@@ -144,7 +135,7 @@ export async function validateWorktreePath(
     if (!stat.isDirectory()) {
       return { ok: false, error: WORKTREE_VALIDATION_ERRORS.NOT_A_DIRECTORY };
     }
-    realPath = realpathSync.native(resolved);
+    realPath = realpathSync(resolved);
   } catch {
     // stat failed — likely a broken symlink or permission issue
     return { ok: false, error: WORKTREE_VALIDATION_ERRORS.PATH_DOES_NOT_EXIST };
@@ -161,7 +152,7 @@ export async function validateWorktreePath(
   const parentResult = await getGitCommonDir(pi, parentCwd, onWarning);
   const sameRepo =
     parentResult.ok &&
-    gitDirectoryIdentity(parentResult.commonDir, parentCwd) === gitDirectoryIdentity(targetResult.commonDir, realPath);
+    normalizeGitPath(parentResult.commonDir, parentCwd) === normalizeGitPath(targetResult.commonDir, realPath);
 
   // Step 7: Get the worktree root via git rev-parse --show-toplevel
   let worktreeRoot: string;
@@ -173,18 +164,24 @@ export async function validateWorktreePath(
     if (result.code !== 0) {
       worktreeRoot = realPath;
     } else {
-      const raw = gitPathOutput(result.stdout);
-      worktreeRoot = raw ? absoluteFrom(realPath, raw) : realPath;
+      const raw = result.stdout.trim();
+      worktreeRoot = raw ? (path.isAbsolute(raw) ? raw : path.resolve(realPath, raw)) : realPath;
     }
   } catch {
     worktreeRoot = realPath;
   }
 
+  // Step 8: Compute display label (normalizes internally), then normalize
+  // the returned paths.
+  const label = computeLabel(realPath, worktreeRoot);
+  const normalizedRealPath = realPath.replace(/\\/g, "/");
+  const normalizedRoot = worktreeRoot.replace(/\\/g, "/");
+
   return {
     ok: true,
-    resolvedPath: realPath,
-    worktreeRoot,
-    label: computeLabel(realPath, worktreeRoot),
+    resolvedPath: normalizedRealPath,
+    worktreeRoot: normalizedRoot,
+    label,
     sameRepo,
   };
 }
@@ -197,8 +194,17 @@ export async function validateWorktreePath(
  * - Subdirectory → basename/relative (e.g., "/wt/feature/packages/web" → "feature/packages/web")
  * - Always forward slashes regardless of host OS
  */
-export function computeLabel(resolvedPath: string, worktreeRoot: string, pathApi = path): string {
-  const rootBasename = pathApi.basename(worktreeRoot);
-  const relative = pathApi.relative(worktreeRoot, resolvedPath).split(pathApi.sep).join("/");
-  return relative ? `${rootBasename}/${relative}` : rootBasename;
+export function computeLabel(resolvedPath: string, worktreeRoot: string): string {
+  const normalizedResolved = resolvedPath.replace(/\\/g, "/");
+  const normalizedRoot = worktreeRoot.replace(/\\/g, "/");
+
+  const rootBasename = normalizedRoot.split("/").filter(Boolean).pop() ?? "";
+
+  if (normalizedResolved === normalizedRoot) {
+    return rootBasename;
+  }
+
+  const relative = path.posix.relative(normalizedRoot, normalizedResolved);
+
+  return `${rootBasename}/${relative}`;
 }

@@ -89,20 +89,13 @@ export function createLevelPickerSubmenu(options: {
   theme: Theme;
   items: SettingItem[];
   onPick: (id: string, done: (selectedValue?: string) => void) => Component | void;
-  onError?: (error: unknown) => void;
 }): (currentValue: string, done: (selectedValue?: string) => void) => Component {
   return (_currentValue, done) => {
     const items = options.items.map((item) => ({
       ...item,
       submenu: (cv: string, subDone: (selectedValue?: string) => void): Component => {
-        try {
-          const next = options.onPick(item.id, subDone);
-          if (next) return next;
-        } catch (error) {
-          if (!options.onError) throw error;
-          options.onError(error);
-          return null as unknown as Component;
-        }
+        const next = options.onPick(item.id, subDone);
+        if (next) return next;
         // No chained step: the pick completes immediately.
         subDone(item.id);
         return null as unknown as Component;
@@ -146,7 +139,6 @@ export interface TargetSelectSubmenuOptions {
    * return void to close the submenu (the settings list rebuilds).
    */
   onPick: (target: TargetChoice, done: (selectedValue?: string) => void) => Component | void;
-  onError?: (error: unknown) => void;
   /** Clear the key at the picked level; required when showClear is set. */
   onClear?: (target: TargetChoice) => void;
 }
@@ -172,7 +164,6 @@ export function createTargetSelectSubmenu(
   return createLevelPickerSubmenu({
     theme: options.theme,
     items,
-    onError: options.onError,
     onPick: (id, subDone) => {
       if (id === "clear") {
         // "Clear..." routes to a nested per-level picker; "all" clears every layer.
@@ -199,7 +190,6 @@ export function createClearPickerSubmenu(options: {
   includeSession?: boolean;
   availableLevels?: AvailableLevels;
   onClear: (target: TargetChoice) => void;
-  onError?: (error: unknown) => void;
 }): (currentValue: string, done: (selectedValue?: string) => void) => Component {
   return createTargetSelectSubmenu({
     theme: options.theme,
@@ -208,7 +198,6 @@ export function createClearPickerSubmenu(options: {
     includeAll: true,
     availableLevels: options.availableLevels,
     onPick: (target) => options.onClear(target),
-    onError: options.onError,
   });
 }
 
@@ -224,7 +213,6 @@ export function createClearAllSubmenu(options: {
   /** Confirm prompt, e.g. "Clear all model overrides at the {target} level?" */
   message: (target: TargetChoice) => string;
   onConfirm: (target: TargetChoice) => void;
-  onError?: (error: unknown) => void;
 }): (currentValue: string, done: (selectedValue?: string) => void) => Component {
   return (currentValue, done) =>
     createTargetSelectSubmenu({
@@ -237,7 +225,6 @@ export function createClearAllSubmenu(options: {
           message: options.message(target),
           theme: options.theme,
           onConfirm: () => options.onConfirm(target),
-          onError: options.onError,
         })(currentValue, pickDone),
     })(currentValue, done);
 }

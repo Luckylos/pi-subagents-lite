@@ -30,7 +30,7 @@ export interface SettingsListWrapperOptions {
   passthroughKeys?: boolean;
   onCancel?: () => void;
   /** Called with a rebuild(newItems) function so the caller can trigger in-place updates. */
-  onRebuild?: (rebuild: (items: SettingItem[]) => void) => void;
+  onRebuild?: (rebuild: (items: any[]) => void) => void;
 }
 
 /**
@@ -80,16 +80,10 @@ export class SettingsListWrapper implements Component {
     // wrapper-controlled items: descriptions are read dynamically at render
     // time, so they remain correct after a rebuild.
     if (options.onRebuild) {
-      const rebuild = (newItems: SettingItem[]) => {
-        const selectedId = (list.filteredItems ?? list.items)?.[list.selectedIndex]?.id;
+      const rebuild = (newItems: any[]) => {
         list.items = newItems;
         list.filteredItems = newItems;
-        list.selectedIndex = Math.max(
-          0,
-          newItems.findIndex((item) => item.id === selectedId),
-        );
-        // Pi closes the submenu after onChange; don't let it restore an old row index.
-        list.submenuItemIndex = null;
+        list.selectedIndex = 0;
         list.submenuComponent = null;
       };
       options.onRebuild(rebuild);
@@ -151,7 +145,7 @@ export class SettingsListWrapper implements Component {
   }
 
   /** Supply display copies before pi-tui truncates values or wraps descriptions. */
-  private renderList(width: number): readonly string[] {
+  private renderList(width: number): string[] {
     const list = this.settingsList as Component & { items?: SettingItem[]; filteredItems?: SettingItem[] };
     if (!list.items?.every((item) => typeof item.currentValue === "string")) {
       return list.render(width);

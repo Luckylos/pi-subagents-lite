@@ -57,7 +57,7 @@ export function createParentMessageTool(opts: ParentMessageToolOptions): ToolDef
       if (!opts.deliver(text)) throw new Error("Not delivered: the parent session is unavailable.");
 
       delivered++;
-      return { content: [{ type: "text", text: "Submitted to the parent session." }], details: undefined };
+      return { content: [{ type: "text", text: "Delivered to the parent session." }], details: undefined };
     },
   };
 }
