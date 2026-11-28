@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.1] - 2026-11-28
+
+### Fixed
+
+- Preserve unrelated global configuration values when saving settings, and refuse to overwrite files containing duplicate JSON keys or numbers that cannot be written without changing their value.
+- Re-read both persisted layers on an all-levels clear and skip layers without the requested entries, including on retry after a project configuration failure.
+
 ## [1.18.0] - 2026-11-28
 
 ### Added

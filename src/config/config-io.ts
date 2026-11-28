@@ -118,19 +118,22 @@ export function createConfigIO(projectDir?: string): ConfigIO {
       if (!mayCreate && !fs.lstatSync(filePath, { throwIfNoEntry: false })) return io.load();
       withConfigLock(filePath, () => {
         if (target === "project") ensureSameProjectPath();
-        const latest = target === "project" ? readProjectForWrite(filePath) : readLayerObject(filePath, target);
+        const latest =
+          target === "project" ? readConfigForReplacement(filePath, target) : readLayerObject(filePath, target, true);
         if (latest === null && !mayCreate) return;
         const layer = validateRawLayer(latest ?? {}, filePath);
+        const before = target === "global" ? structuredClone(layer) : undefined;
         mutate(layer);
         const validated = validateRawLayer(layer, filePath);
+        const persisted = before ? applyConfigEdits(latest ?? {}, { ...before }, { ...validated }) : validated;
         if (target === "project") ensureSameProjectPath();
         writeJsonAtomic(
           filePath,
-          validated,
+          persisted,
           target === "project"
             ? () => {
                 ensureSameProjectPath();
-                return readProjectForWrite(filePath) !== null || mayCreate;
+                return readConfigForReplacement(filePath, target) !== null || mayCreate;
               }
             : undefined,
         );
@@ -144,7 +147,10 @@ export function createConfigIO(projectDir?: string): ConfigIO {
       return io.load();
     },
     saveGlobal: (config) => {
-      withConfigLock(CONFIG_PATH, () => writeJsonAtomic(CONFIG_PATH, config));
+      withConfigLock(CONFIG_PATH, () => {
+        readConfigForReplacement(CONFIG_PATH, "global");
+        writeJsonAtomic(CONFIG_PATH, config);
+      });
     },
     saveProject: (config) => {
       if (!projectPath || projectStatus === "malformed" || projectStatus === "untrusted") {
@@ -160,10 +166,10 @@ export function createConfigIO(projectDir?: string): ConfigIO {
         };
         withConfigLock(filePath, () => {
           ensureSameProjectPath();
-          readProjectForWrite(filePath);
+          readConfigForReplacement(filePath, "project");
           writeJsonAtomic(filePath, config, () => {
             ensureSameProjectPath();
-            readProjectForWrite(filePath);
+            readConfigForReplacement(filePath, "project");
             return true;
           });
         });
@@ -260,7 +266,11 @@ function readProjectFile(filePath: string): string {
 }
 
 /** Project loads and every write guard share the same structural contract. Only ENOENT means absent. */
-function readLayerObject(filePath: string, target: "global" | "project"): Record<string, unknown> | null {
+function readLayerObject(
+  filePath: string,
+  target: "global" | "project",
+  forWrite = false,
+): Record<string, unknown> | null {
   let text: string;
   try {
     text = target === "project" ? readProjectFile(filePath) : fs.readFileSync(filePath, "utf-8");
@@ -270,7 +280,8 @@ function readLayerObject(filePath: string, target: "global" | "project"): Record
   }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(text, forWrite ? checkNumberForWrite : undefined);
+    if (forWrite) rejectDuplicateKeys(text);
   } catch (err) {
     throw new Error(`[subagents] Failed to parse config ${filePath}: ${String(err)}`, { cause: err });
   }
@@ -298,10 +309,84 @@ function readLayerObject(filePath: string, target: "global" | "project"): Record
   return parsed;
 }
 
-/** mkdir excludes other writers without following an existing lock entry. */
-/** Refuse to normalize away existing data when replacing a project file. */
-function readProjectForWrite(filePath: string): Record<string, unknown> | null {
-  const raw = readLayerObject(filePath, "project");
+/** Compare exact decimal values without converting the source back to a Number. */
+function decimalKey(literal: string): string {
+  const [mantissa = "", exponent = "0"] = literal.split(/[eE]/);
+  const [whole = "", fraction = ""] = mantissa.split(".");
+  const digits = `${whole}${fraction}`.replace(/^(-?)0+/, "$1");
+  let end = digits.length;
+  while (end > 0 && digits[end - 1] === "0") end--;
+  const significant = digits.slice(0, end);
+  if (significant === "" || significant === "-") return `${significant}0`;
+  const scale = BigInt(exponent) + BigInt(digits.length - end - fraction.length);
+  return `${significant}e${scale}`;
+}
+
+function checkNumberForWrite(_key: string, value: unknown, context?: { source?: string }): unknown {
+  if (typeof value === "number") {
+    const source = context?.source;
+    const serialized = JSON.stringify(value);
+    if (
+      !source ||
+      !Number.isFinite(value) ||
+      (source !== serialized && decimalKey(source) !== decimalKey(serialized))
+    ) {
+      throw new Error("JSON number cannot be written without changing its value; change not saved");
+    }
+  }
+  return value;
+}
+
+/** Scan keys in already validated JSON; JSON.parse alone keeps only the last one. */
+function rejectDuplicateKeys(text: string): void {
+  const scopes: Array<Set<string> | undefined> = [];
+  const colon = /\s*:/y;
+  for (const match of text.matchAll(/"(?:\\[\s\S]|[^"\\])*"|[{}]|\[|\]/g)) {
+    const token = match[0];
+    if (token === "{") scopes.push(new Set());
+    else if (token === "[") scopes.push(undefined);
+    else if (token === "}" || token === "]") scopes.pop();
+    else {
+      const keys = scopes.at(-1);
+      colon.lastIndex = match.index + token.length;
+      if (!keys || !colon.test(text)) continue;
+      const key = JSON.parse(token) as string;
+      if (keys.has(key)) throw new Error("duplicate JSON key; change not saved");
+      keys.add(key);
+    }
+  }
+}
+
+/** Apply only changes to validated fields, retaining unrelated persisted values. */
+function applyConfigEdits(
+  raw: Record<string, unknown>,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Record<string, unknown> {
+  const result = new Map(Object.entries(raw));
+  for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    const oldValue = Object.hasOwn(before, key) ? before[key] : undefined;
+    const newValue = Object.hasOwn(after, key) ? after[key] : undefined;
+    const persisted = result.get(key);
+    if (
+      (oldValue === undefined || isPlainObject(oldValue)) &&
+      (newValue === undefined || isPlainObject(newValue)) &&
+      isPlainObject(persisted)
+    ) {
+      const edited = applyConfigEdits(persisted, oldValue ?? {}, newValue ?? {});
+      if (newValue !== undefined || Object.keys(edited).length > 0) result.set(key, edited);
+      else result.delete(key);
+    } else if (!isDeepStrictEqual(oldValue, newValue)) {
+      if (newValue === undefined) result.delete(key);
+      else result.set(key, newValue);
+    }
+  }
+  return Object.fromEntries(result);
+}
+
+/** Refuse to normalize away existing data when replacing an entire config. */
+function readConfigForReplacement(filePath: string, target: "global" | "project"): Record<string, unknown> | null {
+  const raw = readLayerObject(filePath, target, true);
   if (!raw) return null;
   const comparable = { ...raw };
   if (isPlainObject(raw.concurrency)) {
@@ -321,12 +406,13 @@ function readProjectForWrite(filePath: string): Record<string, unknown> | null {
   const cleaned: unknown = JSON.parse(JSON.stringify(validateRawLayer(raw, filePath)));
   if (!isDeepStrictEqual(comparable, cleaned)) {
     throw new Error(
-      `[subagents] Refusing to write project config ${filePath}: existing fields would be discarded; change not saved`,
+      `[subagents] Refusing to write ${target} config ${filePath}: existing fields would be discarded; change not saved`,
     );
   }
   return raw;
 }
 
+/** mkdir excludes other writers without following an existing lock entry. */
 function withConfigLock(filePath: string, write: () => void): void {
   const lockPath = `${filePath}.lock`;
   fs.mkdirSync(path.dirname(filePath), { recursive: true });

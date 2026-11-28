@@ -164,6 +164,8 @@ export interface ConfigStoreDeps {
 export class ConfigStore {
   private globalRaw: RawConfig;
   private projectRaw: RawConfig | null;
+  // Only used to report an incomplete All levels clear when the file cannot be read.
+  private lastReadableProject: RawConfig | null;
   private projectStatus: ProjectLayerStatus;
   private config: SubagentsConfig;
   private io: ConfigIO;
@@ -181,6 +183,7 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
+    this.lastReadableProject = loaded.project;
     this.config = mergeDefaults(mergeLayers(this.globalRaw, this.projectRaw));
   }
 
@@ -190,6 +193,7 @@ export class ConfigStore {
    */
   setProjectDir(projectDir: string | undefined): void {
     this.io = createConfigIO(projectDir);
+    this.lastReadableProject = null;
   }
 
   // ── Reads ──────────────────────────────────────────────────────
@@ -485,7 +489,10 @@ export class ConfigStore {
           (layer) => {
             delete layer.concurrency;
           },
-          { after: () => this.applyConcurrency() },
+          {
+            after: () => this.applyConcurrency(),
+            includes: (layer) => concurrencyLayerHasSettings(layer.concurrency ?? {}),
+          },
         );
       },
     },
@@ -545,6 +552,7 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
+    this.lastReadableProject = loaded.project;
     this.rebuildEffective();
     this.sessionOverrides = { default: null };
     this.sessionConcurrencyLayer = {};
@@ -652,6 +660,7 @@ export class ConfigStore {
     this.globalRaw = loaded.global;
     this.projectRaw = loaded.project;
     this.projectStatus = loaded.projectStatus;
+    if (this.projectTargetOffered) this.lastReadableProject = loaded.project;
     this.rebuildEffective();
     this.syncAllDeps();
   }
@@ -690,20 +699,20 @@ export class ConfigStore {
       return;
     }
     if (target === "all") {
-      // Capture the offered layers before re-reading: a newly malformed project
-      // has no readable keys but still needs to be reported as a failed Clear.
+      // Re-read on every attempt, including retries in the same confirmation.
+      this.refreshPersisted();
       const globalPending = includes(this.globalRaw);
-      const projectPending = this.projectRaw !== null && includes(this.projectRaw);
       if (globalPending) this.updatePersistedLayer("global", layerClear);
-      else if (projectPending) this.refreshPersisted();
-      if (projectPending && this.projectStatus !== "absent") {
-        try {
-          if (this.projectStatus !== "loaded") throw new Error(`project layer is ${this.projectStatus}`);
-          this.updatePersistedLayer("project", layerClear, { createIfMissing: false });
-        } catch (err) {
-          if (!globalPending) throw err;
-          throw new Error(`Global config was cleared but project config failed: ${String(err)}`, { cause: err });
+      try {
+        if (!this.projectTargetOffered && this.lastReadableProject !== null && includes(this.lastReadableProject)) {
+          throw new Error(`project layer is ${this.projectStatus}`);
         }
+        if (this.projectRaw !== null && includes(this.projectRaw)) {
+          this.updatePersistedLayer("project", layerClear, { createIfMissing: false });
+        }
+      } catch (err) {
+        if (!globalPending) throw err;
+        throw new Error(`Global config was cleared but project config failed: ${String(err)}`, { cause: err });
       }
       sessionClear();
       after?.();
@@ -735,7 +744,13 @@ export class ConfigStore {
       target,
       () => removeFrom(this.sessionConcurrencyLayer),
       (layer) => removeFrom(layer.concurrency),
-      { after: () => this.applyConcurrency() },
+      {
+        after: () => this.applyConcurrency(),
+        includes: ({ concurrency }) =>
+          section === "default"
+            ? concurrency?.default !== undefined
+            : !!key && ownEntry(concurrency?.[section], key) !== undefined,
+      },
     );
   }
 

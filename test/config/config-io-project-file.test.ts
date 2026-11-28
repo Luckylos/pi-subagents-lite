@@ -87,6 +87,110 @@ describe("project config file boundaries", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("refuses duplicate keys in a linked project config before writing", () => {
+    const target = join(projectDir, "duplicate-key-target.json");
+    const original = String.raw`{"concurrency":{"unknown":true},"concurr\u0065ncy":{"default":4}}`;
+    writeFileSync(target, original);
+    symlinkSync(target, join(projectDir, "subagents-lite.json"));
+    const io = createConfigIO(projectDir);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const mutate = vi.fn();
+      expect(() => io.updateLayer("project", mutate)).toThrow(/duplicate JSON key/);
+      expect(mutate).not.toHaveBeenCalled();
+      io.saveProject({ concurrency: { default: 6 } });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("duplicate JSON key"));
+      expect(readFileSync(target, "utf8")).toBe(original);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("rejects nested duplicate keys before either kind of global write", () => {
+    const original = '{"agent":{"showCost":true,"showCost":false}}';
+    writeFileSync(GLOBAL_CONFIG_PATH, original);
+    const io = createConfigIO();
+    const mutate = vi.fn();
+    expect(() => io.updateLayer("global", mutate)).toThrow(/duplicate JSON key/);
+    expect(mutate).not.toHaveBeenCalled();
+    expect(() => io.saveGlobal({ agent: { showCost: true } })).toThrow(/duplicate JSON key/);
+    expect(readFileSync(GLOBAL_CONFIG_PATH, "utf8")).toBe(original);
+  });
+
+  it("accepts the same key in separate objects and ignores JSON punctuation in strings", () => {
+    const extra = [{ key: '{"key":1}', quote: '"' }, { key: "[]" }];
+    writeGlobal({ extra });
+    const store = new ConfigStore(createConfigIO());
+    store.mutate.agent.setShowCost(true);
+    expect(readGlobalFile()).toEqual({ extra, agent: { showCost: true } });
+  });
+
+  it.each(["9007199254740993", "1e400", "1e-400", "1.00000000000000001"])(
+    "refuses a write that would change the exact value of %s",
+    (literal) => {
+      const original = `{"extra":[${literal}]}`;
+      writeFileSync(GLOBAL_CONFIG_PATH, original);
+      const store = new ConfigStore(createConfigIO());
+      expect(() => store.mutate.agent.setShowCost(true)).toThrow(
+        /number cannot be written without changing its value/i,
+      );
+      expect(readFileSync(GLOBAL_CONFIG_PATH, "utf8")).toBe(original);
+    },
+  );
+
+  it("accepts numeric literals that differ only in spelling", () => {
+    writeFileSync(GLOBAL_CONFIG_PATH, '{"extra":[1.50,15e-1,1E+21,0.00e+10]}');
+    new ConfigStore(createConfigIO()).mutate.agent.setShowCost(true);
+    expect(readGlobalFile()).toEqual({ extra: [1.5, 1.5, 1e21, 0], agent: { showCost: true } });
+  });
+
+  it("preserves ignored global values while applying only the requested edits", () => {
+    const original = { concurrency: { default: 1.5, providers: { old: 2.5, active: 2 } }, extra: true };
+    writeGlobal(original);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = new ConfigStore(createConfigIO());
+      store.mutate.agent.setShowCost(true);
+      expect(readGlobalFile()).toEqual({ ...original, agent: { showCost: true } });
+      store.mutate.concurrency.setProvider("active", 3);
+      store.mutate.concurrency.removeProvider("active");
+      expect(readGlobalFile()).toEqual({
+        agent: { showCost: true },
+        concurrency: { default: 1.5, providers: { old: 2.5 } },
+        extra: true,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("retries an all-layer clear against the repaired project file", () => {
+    writeGlobal({ concurrency: { default: 5 } });
+    const repaired = '{"concurrency":{"default":4,"providers":{"keep":2}}}';
+    writeProjectRaw(repaired);
+    const store = new ConfigStore(createConfigIO(projectDir));
+    const clear = () => store.mutate.concurrency.removeDefault("all");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      writeProjectRaw("{");
+      expect(clear).toThrow(/global config was cleared but project config failed/i);
+      expect(readGlobalFile()).toEqual({});
+      const afterGlobalClear = "{ }";
+      writeFileSync(GLOBAL_CONFIG_PATH, afterGlobalClear);
+      expect(clear).toThrow(/^project layer is malformed$/i);
+      expect(readFileSync(GLOBAL_CONFIG_PATH, "utf8")).toBe(afterGlobalClear);
+      const unrelated = '{ "concurrency": { "providers": { "keep": 2 } } }';
+      writeProjectRaw(unrelated);
+      expect(clear).not.toThrow();
+      expect(readFileSync(join(projectDir, "subagents-lite.json"), "utf8")).toBe(unrelated);
+      writeProjectRaw(repaired);
+      expect(clear).not.toThrow();
+      expect(readProjectFile()).toEqual({ concurrency: { providers: { keep: 2 } } });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("reports repeated mutations against a malformed project and recovers after repair", () => {
     writeProjectRaw('{"concurrency":{"default":4}}');
     const store = new ConfigStore(createConfigIO(projectDir));
@@ -165,6 +269,10 @@ describe("project config file boundaries", () => {
 
 function writeGlobal(config: unknown): void {
   writeFileSync(GLOBAL_CONFIG_PATH, JSON.stringify(config));
+}
+
+function readGlobalFile(): unknown {
+  return JSON.parse(readFileSync(GLOBAL_CONFIG_PATH, "utf8"));
 }
 
 function writeProject(config: unknown): void {
