@@ -47,8 +47,12 @@ export class SpawnCoordinator {
     const parent = getSessionCtx(owner);
     this.parentSessionId = readParentSessionId(parent);
     this.parentSessionManager = this.parentSessionId ? parent?.sessionManager : undefined;
-    this.notifications = new CompletionNotifications(getPiInstance(owner), this.generation, this.parentSessionId, () =>
-      this.currentParent(),
+    this.notifications = new CompletionNotifications(
+      getPiInstance(owner),
+      this.generation,
+      this.parentSessionId,
+      () => this.currentParent(),
+      (ctx) => this.isCurrentParent(ctx),
     );
   }
 
@@ -136,6 +140,22 @@ export class SpawnCoordinator {
 
   observeCompletionNotifications(ctx: ExtensionContext): void {
     this.notifications.observe(ctx);
+  }
+
+  onParentStarted(ctx: ExtensionContext): void {
+    if (this.isCurrentParent(ctx)) this.notifications.parentStarted();
+  }
+
+  onParentSettled(ctx: ExtensionContext, aborted: boolean): void {
+    if (this.isCurrentParent(ctx)) this.notifications.parentSettled(aborted, ctx);
+  }
+
+  onParentInput(ctx: ExtensionContext, isUser: boolean): void {
+    if (this.isCurrentParent(ctx)) this.notifications.parentInput(isUser);
+  }
+
+  onParentUserPrompt(ctx: ExtensionContext): void {
+    if (this.isCurrentParent(ctx)) this.notifications.parentUserPrompt();
   }
 
   retryCompletionNotification(

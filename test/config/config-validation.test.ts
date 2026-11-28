@@ -4,6 +4,21 @@ import { parseModelKey, findModelInRegistry } from "../../src/utils.js";
 import { buildModelOptions, extractConfiguredModels } from "../../src/ui/menu/helpers.js";
 
 describe("validateRawLayer — concurrency", () => {
+  it("drops fractional, zero, and unsafe limits without losing valid siblings", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(
+        validateRawLayer(
+          { concurrency: { default: 1.5, providers: { p: 0, q: 2 }, models: { "q/a": 1e20 } } },
+          "config.json",
+        ).concurrency,
+      ).toEqual({ providers: { q: 2 } });
+      expect(warn).toHaveBeenCalledTimes(3);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("drops non-number concurrency entries with warnings and keeps valid ones", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

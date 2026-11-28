@@ -165,6 +165,16 @@ describe("widget rendering format", () => {
   });
 
   describe("finished agents", () => {
+    it("keeps a multiline startup failure on one widget row", () => {
+      const agent = makeFinishedAgent("a1");
+      agent.lifecycle.status = "error";
+      agent.error = "Model setup failed\nProvider configuration is missing";
+      manager.listAgents = () => [agent];
+
+      const lines = renderWidgetLines(widget);
+      expect(lines[1]).toMatch(/error: Model setup failed.*Finished agent a1/);
+      expect(lines.join("\n")).not.toContain("Provider configuration is missing");
+    });
     it("uses 2-space prefix for finished agent headers", () => {
       const a1 = makeFinishedAgent("a1");
       const a2 = makeFinishedAgent("a2");

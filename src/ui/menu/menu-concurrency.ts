@@ -38,6 +38,7 @@ import { getStore } from "../../shell.ts";
 import type { RawConcurrency } from "../../config/config-store.ts";
 import type { SelectOption } from "../searchable-select.ts";
 import { plainText } from "../sanitize.ts";
+import { errorMessage } from "../../utils.ts";
 import type { Theme } from "../types.ts";
 
 export async function showConcurrencySettingsMenu(
@@ -45,6 +46,7 @@ export async function showConcurrencySettingsMenu(
   ctx: ExtensionCommandContext,
   modelOptions: string[],
 ): Promise<void> {
+  const notifySaveError = (error: unknown) => ctx.ui.notify(plainText(errorMessage(error)), "error");
   const buildItems = (store: ReturnType<typeof getStore>, theme: Theme, modelOptions: string[]): SettingItem[] => {
     const providers = [...new Set(modelOptions.map((m) => m.split("/")[0]))].sort();
     const items: SettingItem[] = [];
@@ -76,7 +78,10 @@ export async function showConcurrencySettingsMenu(
           theme,
           projectOffered,
           onPick: (target, pickDone) =>
-            createNumericSubmenu(ctx, { min: 1 }, (parsed) => onPick(target as SetTarget, parsed))(initial, pickDone),
+            createNumericSubmenu(ctx, { min: 1, integer: true }, (parsed) => onPick(target as SetTarget, parsed))(
+              initial,
+              pickDone,
+            ),
         })(currentValue, done);
 
     // Submenu factory: set at a target level (value input) or Clear via a
@@ -105,10 +110,11 @@ export async function showConcurrencySettingsMenu(
                 projectOffered,
                 availableLevels,
                 onClear: onRemove,
+                onError: notifySaveError,
               })("", subDone);
             }
             const target = id as SetTarget;
-            return createNumericSubmenu(ctx, { min: 1 }, (parsed) => onSet(target, parsed))(
+            return createNumericSubmenu(ctx, { min: 1, integer: true }, (parsed) => onSet(target, parsed))(
               String(currentLimit),
               subDone,
             );
@@ -270,6 +276,7 @@ export async function showConcurrencySettingsMenu(
           projectOffered,
           availableLevels,
           message: (target) => `Clear all concurrency limits at the ${target} level?`,
+          onError: notifySaveError,
           onConfirm: (target) => {
             store.mutate.concurrency.clearAll(target);
             ctx.ui.notify(`Concurrency limits cleared (${target})`, "info");

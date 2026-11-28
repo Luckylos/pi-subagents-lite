@@ -38,6 +38,7 @@ export interface ModelSelectSubmenuOptions {
   /** Opt-in availability for the nested clear picker; see target-select. */
   availableLevels?: AvailableLevels;
   onSet: (target: "session" | "global" | "project", model: string | null) => void;
+  onSetError?: (error: unknown) => void;
   /** Clear the key at the picked layer; required when showClear is set. */
   onClear?: (target: TargetChoice) => void;
 }
@@ -73,7 +74,13 @@ export function createModelSelectSubmenu(
         currentModel,
         {
           onSelect: (modelValue) => {
-            options.onSet(target, modelValue);
+            try {
+              options.onSet(target, modelValue);
+            } catch (error) {
+              if (!options.onSetError) throw error;
+              options.onSetError(error);
+              return;
+            }
             subDone(modelValue);
           },
           onCancel: () => subDone(),

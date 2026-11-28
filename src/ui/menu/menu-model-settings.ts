@@ -51,16 +51,16 @@ export async function showModelSettingsMenu(
         ? `Unavailable. Spawn uses parent model ${plainText(parentModelId)}.`
         : "Unavailable. No parent model is set. Pi selects the model on spawn.";
 
-    const notifyClearError = (err: unknown) => {
+    const notifySaveError = (err: unknown) => {
       offerReload ||= projectOffered && !store.projectTargetOffered;
-      ctx.ui.notify(errorMessage(err), "error");
+      ctx.ui.notify(plainText(errorMessage(err)), "error");
     };
     const clearOverride = (key: string, target: TargetChoice) => {
       try {
         if (key === "default") store.mutate.agent.clearDefaultModel(target);
         else store.mutate.agent.clearModelOverride(key, target);
       } catch (err) {
-        notifyClearError(err);
+        notifySaveError(err);
         return;
       }
       const { model, layer } = store.describeModelSetting(
@@ -90,6 +90,7 @@ export async function showModelSettingsMenu(
         currentModel: effectiveModel,
         availableLevels,
         fallbackLabel: "Clear override at this level",
+        onSetError: notifySaveError,
         onSet: (target, model) => {
           if (model === null || model === "(inherits parent)") {
             clearOverride(typeName, target);
@@ -222,7 +223,7 @@ export async function showModelSettingsMenu(
             try {
               store.mutate.agent.clearAllModelOverrides(target);
             } catch (err) {
-              notifyClearError(err);
+              notifySaveError(err);
               return;
             }
             ctx.ui.notify(`Model overrides cleared (${target})`, "info");

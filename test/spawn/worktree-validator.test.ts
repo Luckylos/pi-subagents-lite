@@ -4,11 +4,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mkdirSync, symlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import {
   validateWorktreePath,
   computeLabel,
+  absoluteFrom,
   WORKTREE_VALIDATION_ERRORS,
   type WorktreeValidationSuccess,
   type WorktreeValidationFailure,
@@ -62,6 +63,11 @@ function makeTempDir(prefix = "wt-test"): { dir: string; cleanup: () => void } {
 }
 
 // ── tests ────────────────────────────────────────────────────────
+
+it("anchors Windows drive-relative paths without normalizing the remaining segments", () => {
+  expect(absoluteFrom("C:\\repo", "C:feature", win32)).toBe("C:\\repo\\feature");
+  expect(absoluteFrom("C:\\repo", "c:link\\..\\feature", win32)).toBe("c:\\repo\\link\\..\\feature");
+});
 
 describe("validateWorktreePath", () => {
   let tmpDir: string;
@@ -155,6 +161,28 @@ describe("validateWorktreePath", () => {
     expect(result.ok).toBe(true);
     expect((result as WorktreeValidationSuccess).resolvedPath).toBe(worktreePath);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "preserves POSIX backslashes in repo identity and the target path",
+    async () => {
+      const parent = join(tmpDir, "parent");
+      const target = join(tmpDir, "linked\\worktree");
+      mkdirSync(parent);
+      mkdirSync(target);
+      const gitResults = new Map([
+        [parent, join(tmpDir, "repo", ".git")],
+        [target, join(tmpDir, "repo\\.git")],
+      ]);
+      const pi = makePi(gitResults, new Map([[target, target]]));
+
+      await expect(validateWorktreePath(pi, target, parent)).resolves.toMatchObject({
+        ok: true,
+        sameRepo: false,
+        resolvedPath: target,
+        worktreeRoot: target,
+      });
+    },
+  );
 
   it("returns worktree root and non-empty label on success", async () => {
     const parentCwd = join(tmpDir, "parent");
@@ -283,7 +311,7 @@ describe("validateWorktreePath", () => {
 
   it("label uses forward slashes even for Windows-style relative paths", () => {
     // On any OS, computeLabel should produce forward-slash output
-    const label = computeLabel("C:\\Users\\dev\\feature\\packages\\web", "C:\\Users\\dev\\feature");
+    const label = computeLabel("C:\\Users\\dev\\feature\\packages\\web", "C:\\Users\\dev\\feature", win32);
     expect(label).toBe("feature/packages/web");
     expect(label).not.toContain("\\\\");
   });

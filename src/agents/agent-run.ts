@@ -34,7 +34,7 @@ export class AgentRun {
   private queueCleanupFailed = false;
   private readonly steerLifetime = new AbortController();
   private pendingSteers?: string[];
-  private callbacks = new Set<Promise<void>>();
+  private steerTail?: Promise<void>;
   readonly parentWait: Promise<SubagentParentReport>;
   readonly completion: Promise<void>;
   private resolveParent?: (report: SubagentParentReport) => void;
@@ -133,7 +133,11 @@ export class AgentRun {
           message: "The subagent is still stopping. Wait for execution to settle.",
         };
       case "queued":
-        return { accepted: false, reason: "queued", message: "The subagent is queued and has not started." };
+        return {
+          accepted: false,
+          reason: "queued",
+          message: "The subagent is queued and has not started.",
+        };
       case "settling":
         return { accepted: false, reason: "settling", message: RUN_SETTLING };
       case "running":
@@ -144,7 +148,11 @@ export class AgentRun {
         if (!this.settlementPublished) return { accepted: false, reason: "settling", message: RUN_SETTLING };
         if (this.queueCleanupFailed) return { accepted: false, reason: "unavailable", message: QUEUE_CLEANUP_FAILED };
         if (!session || session.isStreaming)
-          return { accepted: false, reason: "unavailable", message: "The subagent session is unavailable or busy." };
+          return {
+            accepted: false,
+            reason: "unavailable",
+            message: "The subagent session is unavailable or busy.",
+          };
         return { continuationSession: session };
     }
   }
@@ -158,15 +166,36 @@ export class AgentRun {
     this.pendingSteers = undefined;
   }
 
-  private async steer(session: AgentSession, message: string): Promise<AgentSubmissionResult> {
-    if (this.isPromptClosed(session.isStreaming)) return { accepted: false, reason: "settling", message: RUN_SETTLING };
+  private steer(session: AgentSession, message: string): Promise<AgentSubmissionResult> {
+    // Keep the first submission eager, but make later calls wait through its SDK queue write.
+    const previous = this.steerTail;
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.steerTail = tail;
+    const delivery = previous
+      ? previous.then(() => this.deliverSteer(session, message))
+      : this.deliverSteer(session, message);
+    const settled = () => {
+      if (this.steerTail === tail) this.steerTail = undefined;
+      release();
+    };
+    void delivery.then(settled, settled);
+    return delivery;
+  }
+
+  private async deliverSteer(session: AgentSession, message: string): Promise<AgentSubmissionResult> {
+    if (this.steerLifetime.signal.aborted || this.isPromptClosed(session.isStreaming)) return this.closedSteer();
     try {
-      await this.trackCallback(
-        steerForRun(session, message, this.steerLifetime.signal, () => !this.isPromptClosed(session.isStreaming)),
-      );
+      await steerForRun(session, message, this.steerLifetime.signal, () => !this.isPromptClosed(session.isStreaming));
     } catch (err) {
       if (!(err instanceof RunSteerClosed)) {
-        return { accepted: false, reason: "delivery_failed", message: "The session refused the message." };
+        return {
+          accepted: false,
+          reason: "delivery_failed",
+          message: "The session refused the message.",
+        };
       }
       return this.closedSteer();
     }
@@ -188,22 +217,8 @@ export class AgentRun {
     return this.executionFinished || this.promptSettled || (this.promptState === "started" && !isStreaming);
   }
 
-  private trackCallback<T>(work: Promise<T>): Promise<T> {
-    const done = work.then(
-      () => {},
-      () => {},
-    );
-    this.callbacks.add(done);
-    void done.then(() => this.callbacks.delete(done));
-    return work;
-  }
-
-  private async drainCallbacks(): Promise<void> {
-    while (this.callbacks.size > 0) await Promise.all(this.callbacks);
-  }
-
   async finishSettlement(getSession: () => AgentSession | undefined, publish: () => void): Promise<void> {
-    await this.drainCallbacks();
+    await this.steerTail;
     // The SDK can still consume independent inputs after agent_settled. Read
     // the session after draining because owner teardown can detach it.
     const session = getSession();

@@ -8,7 +8,8 @@
  * and fix hint. Never migrates fork shapes or throws.
  */
 import { Check } from "typebox/value";
-import { agentKeySpec, LEGACY_AGENT_KEYS, NUM, type KeySpec } from "./agent-settings.ts";
+import { agentKeySpec, LEGACY_AGENT_KEYS, type KeySpec } from "./agent-settings.ts";
+import { isConcurrencyLimit } from "./config-layers.ts";
 import type { RawConfig } from "./types.ts";
 
 /** Received-kind label for warnings: arrays and null get their own names. */
@@ -99,8 +100,7 @@ function cleanAgentEntries(agent: Record<string, unknown>, filePath: string): Re
 }
 
 /**
- * Keep valid concurrency entries, warn and drop the rest. Plain typeof
- * checks: every value here is a bare number, so TypeBox adds nothing.
+ * Keep valid concurrency entries, warn and drop the rest.
  */
 function cleanConcurrencySection(concurrency: unknown, filePath: string): NonNullable<RawConfig["concurrency"]> {
   const kept: NonNullable<RawConfig["concurrency"]> = {};
@@ -109,8 +109,8 @@ function cleanConcurrencySection(concurrency: unknown, filePath: string): NonNul
     return kept;
   }
   if (concurrency.default !== undefined) {
-    if (typeof concurrency.default === "number") kept.default = concurrency.default;
-    else warnIncompatible(filePath, "concurrency.default", concurrency.default, NUM.expected);
+    if (isConcurrencyLimit(concurrency.default)) kept.default = concurrency.default;
+    else warnIncompatible(filePath, "concurrency.default", concurrency.default, "positive integer");
   }
   for (const section of ["providers", "models"] as const) {
     const entries = concurrency[section];
@@ -121,8 +121,8 @@ function cleanConcurrencySection(concurrency: unknown, filePath: string): NonNul
     }
     const keptEntries: Record<string, number> = {};
     for (const [key, value] of Object.entries(entries)) {
-      if (typeof value === "number") keptEntries[key] = value;
-      else warnIncompatible(filePath, `concurrency.${section}.${key}`, value, NUM.expected);
+      if (isConcurrencyLimit(value)) keptEntries[key] = value;
+      else warnIncompatible(filePath, `concurrency.${section}.${key}`, value, "positive integer");
     }
     if (Object.keys(keptEntries).length > 0) kept[section] = keptEntries;
   }

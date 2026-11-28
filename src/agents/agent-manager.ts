@@ -288,11 +288,15 @@ export class AgentManager {
       onSessionCreated: (session) => {
         if (!this.isCurrentRun(record, run)) return;
         record.execution.session = session;
-        run.flushPendingSteers(() => record.execution.session);
-        if (record.execution.outputLog) {
-          record.execution.outputLog.attach(session);
+        try {
+          run.flushPendingSteers(() => record.execution.session);
+          record.execution.outputLog?.attach(session);
+          options.onSessionCreated?.(session);
+        } catch (error) {
+          // The runner disposes a session whose handoff throws.
+          if (record.execution.session === session) record.execution.session = undefined;
+          throw error;
         }
-        options.onSessionCreated?.(session);
       },
     });
     return this.attachSettlementChain(record, run, promise);
@@ -593,14 +597,17 @@ export class AgentManager {
     if (this.disposed) return reject("unavailable", "The subagent manager is unavailable.");
     const admission = this.currentRun(record).admitMessage(message, record.execution.session);
     if (!("continuationSession" in admission)) return admission;
-    const run = this.capacity.tryAccept(record.execution.modelKey, () => {
+    const { continuationSession } = admission;
+    const model = continuationSession.model;
+    const modelKey = model && `${model.provider}/${model.id}`;
+    const run = this.capacity.tryAccept(modelKey, () => {
       // Only construction occurs inside the atomic admission; rejected requests create no run/sequence.
       const parent = this.currentRun(record).notification;
       const notification = parent && Object.freeze({ ...parent, required: true });
       return this.acceptRun(record, false, notification);
     });
     if (!run) return reject("capacity", "The model concurrency limit is full. Retry when capacity is available.");
-    const { continuationSession } = admission;
+    record.execution.modelKey = modelKey;
     this.trackExecution(() => this.continueSettledAgent(record, continuationSession, message, run));
     return { accepted: true, agentId: id, runId: run.id, delivery: "continuation" };
   }

@@ -62,6 +62,7 @@ import {
   createAssistantMessageEventStream,
   fauxAssistantMessage,
   fauxProvider,
+  fauxToolCall,
   InMemoryCredentialStore,
 } from "@earendil-works/pi-ai";
 import { createChildSession, runAgent } from "../../src/agents/agent-runner.js";
@@ -389,13 +390,13 @@ describe("contract: child session matches a normal pi session", () => {
   });
 
   // Cold-loads a copy of src/ through jiti: ~1.5s alone, 4-5s under the full parallel suite.
-  it("does not register its four tools while retaining an unrelated extension", { timeout: 20_000 }, async () => {
+  it("does not register its parent tools while retaining an unrelated extension", { timeout: 20_000 }, async () => {
     const workspace = makeWorkspace("self-exclusion");
     workspace.writeGlobalSettings({ defaultTools: ["+codemode"] });
     workspace.writeForkExtension();
     workspace.writePeerExtension();
     const child = await spawnChild(workspace);
-    const ownTools = ["Agent", "StopAgent", "MessageAgent", "AgentStatus"];
+    const ownTools = ["Agent", "StopAgent", "MessageAgent", "AgentStatus", "Workflow"];
 
     for (const name of ownTools) {
       expect(registryOf(child)).not.toContain(name);
@@ -443,6 +444,72 @@ describe("contract: child session matches a normal pi session", () => {
     expect(workspace.probeCount()).toBe(1);
     await disposeChildSession(reference);
     expect(workspace.probeCount()).toBe(0);
+  });
+
+  it.each(["child", "reference"] as const)("validates nested codemode arguments in a %s session", async (kind) => {
+    const workspace = makeWorkspace("live-codemode-" + kind);
+    workspace.writeGlobalSettings({ defaultTools: ["codemode"] });
+    const extensionDir = path.join(workspace.project, ".pi", "extensions");
+    fs.mkdirSync(extensionDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(extensionDir, "schema-probe.ts"),
+      `
+import { appendFileSync } from "node:fs";
+export default function(pi) {
+  pi.registerTool({
+    name: "schema_probe",
+    label: "Schema probe",
+    description: "Returns a constant for the codemode contract",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    exposure: "deferred",
+    async execute() {
+      appendFileSync(${JSON.stringify(workspace.markerPath)}, "called" + String.fromCharCode(10));
+      return { content: [{ type: "text", text: "schema-probe-ok" }], details: {} };
+    },
+  });
+}
+`,
+    );
+    const offline = fauxProvider({ provider: "offline-schema", models: [{ id: "probe" }] });
+    const credentials = new InMemoryCredentialStore();
+    await credentials.modify(offline.provider.id, async () => ({ type: "api_key", key: "test-only" }));
+    const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+    runtime.registerNativeProvider(offline.provider);
+    const createRuntime = vi.spyOn(ModelRuntime, "create").mockResolvedValue(runtime);
+    let session: AgentSession | undefined;
+    try {
+      session = kind === "child" ? await spawnChild(workspace) : await spawnReference(workspace);
+      await session.setModel(offline.getModel());
+      expect(callableOf(session)).toContain("schema_probe");
+      const call = (args: string, id: string) =>
+        fauxAssistantMessage(
+          fauxToolCall("codemode", { code: "text(await tools.schema_probe(" + args + "))" }, { id }),
+          {
+            stopReason: "toolUse",
+          },
+        );
+      offline.setResponses([
+        call("{}", "invalid"),
+        fauxAssistantMessage("first"),
+        call('{text: "fixture"}', "valid"),
+        fauxAssistantMessage("second"),
+      ]);
+      await session.prompt("Check invalid arguments");
+      const invalid = session.messages.find(
+        (message) => message.role === "toolResult" && message.toolCallId === "invalid",
+      );
+      expect(invalid).toMatchObject({ isError: true });
+      expect(JSON.stringify(invalid)).toMatch(/required|validation/i);
+      expect(workspace.markers()).toEqual([]);
+      await session.prompt("Check valid arguments");
+      const valid = session.messages.find((message) => message.role === "toolResult" && message.toolCallId === "valid");
+      expect(valid).toMatchObject({ isError: false });
+      expect(JSON.stringify(valid)).toContain("schema-probe-ok");
+      expect(workspace.markers()).toEqual(["called"]);
+    } finally {
+      if (session) await disposeChildSession(session);
+      createRuntime.mockRestore();
+    }
   });
 
   it("replacement-style defaultTools resolves the same in both sessions", async () => {
@@ -645,6 +712,41 @@ describe("contract: implicit OFF and explicit frontmatter", () => {
 
     await disposeChildSession(session);
     expect(workspace.probeCount()).toBe(0);
+  });
+});
+
+describe("contract: child setup failure", () => {
+  it.each(["before binding", "during handoff"] as const)("disposes the session when setup fails %s", async (stage) => {
+    const workspace = makeWorkspace("setup-failure");
+    const offline = fauxProvider({ provider: "offline-setup", models: [{ id: "setup-test" }] });
+    const error = new Error("setup failed");
+    const dispose = vi.spyOn(AgentSession.prototype, "dispose");
+    const thinking =
+      stage === "before binding"
+        ? vi.spyOn(AgentSession.prototype, "setThinkingLevel").mockImplementation(() => {
+            throw error;
+          })
+        : undefined;
+    try {
+      await expect(
+        createChildSession(owner, parentCtx(workspace.project), "general-purpose", {
+          pi: stubPi(),
+          cwd: workspace.project,
+          model: offline.getModel(),
+          deferredDefaultThinking: stage === "before binding" ? "low" : undefined,
+          onSessionCreated:
+            stage === "during handoff"
+              ? () => {
+                  throw error;
+                }
+              : undefined,
+        }),
+      ).rejects.toBe(error);
+      expect(dispose).toHaveBeenCalledTimes(1);
+    } finally {
+      thinking?.mockRestore();
+      dispose.mockRestore();
+    }
   });
 });
 
@@ -1035,7 +1137,7 @@ describe("contract: spawn-bound MessageParent obeys frontmatter tool gating", ()
       expect(result.session.messages.find((message) => message.role === "toolResult")).toMatchObject({
         toolName: "MessageParent",
         isError: false,
-        content: [{ type: "text", text: "Delivered to the parent session." }],
+        content: [{ type: "text", text: "Submitted to the parent session." }],
       });
       expect(notify).not.toHaveBeenCalled();
     } finally {

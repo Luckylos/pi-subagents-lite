@@ -4,6 +4,10 @@ import type { RawConcurrency, RawConfig, SubagentsConfig } from "./types.ts";
 /** Default concurrency config — used when no layer specifies a limit. */
 export const DEFAULT_CONCURRENCY: SubagentsConfig["concurrency"] = { default: 4 };
 
+export function isConcurrencyLimit(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
 /**
  * Merge the two raw layers into one raw config: project keys win, absent keys
  * inherit from global. Project agent keys that are not model keys are dropped

@@ -89,7 +89,7 @@ describe("ConfigStore fresh persisted mutations", () => {
   });
 
   it("does not create an absent project file for a clear", () => {
-    const { io, saves, project } = memIO({ global: { agent: { default: "global/model" } } });
+    const { io, saves, project } = memIO({ global: { agent: { default: "global/model" } }, projectStatus: "absent" });
     const store = new ConfigStore(io);
 
     store.mutate.agent.clearDefaultMaxTurns("project");

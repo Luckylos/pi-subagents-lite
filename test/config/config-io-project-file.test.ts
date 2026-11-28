@@ -6,7 +6,17 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vite-plus/test";
 import { join } from "node:path";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, mkdirSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 
 // Per-run temp dirs: must never read a real user config file.
@@ -19,20 +29,138 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 
 // Import after mock is set up
 const { createConfigIO, loadConfig, mergeLayers, mergeDefaults } = await import("../../src/config/config-io.js");
+const { ConfigStore } = await import("../../src/config/config-store.js");
 
+let projectRoot: string;
 let projectDir: string;
 
 beforeEach(() => {
-  projectDir = mkdtempSync(join(tmpdir(), "pi-subagents-project-"));
+  projectRoot = mkdtempSync(join(tmpdir(), "pi-subagents-project-"));
+  projectDir = join(projectRoot, ".pi");
+  mkdirSync(projectDir);
   rmSync(GLOBAL_CONFIG_PATH, { force: true });
 });
 
 afterEach(() => {
-  rmSync(projectDir, { recursive: true, force: true });
+  rmSync(projectRoot, { recursive: true, force: true });
 });
 
 afterAll(() => {
   rmSync(MOCK_AGENT_DIR, { recursive: true, force: true });
+});
+
+describe("project config file boundaries", () => {
+  it.skipIf(process.platform === "win32")("reads and saves through a file link within the project", () => {
+    const linked = join(projectDir, "subagents-lite.json");
+    const target = join(projectRoot, "local.json");
+    writeFileSync(target, JSON.stringify({ agent: { graceTurns: 5 } }));
+    symlinkSync(target, linked);
+    const io = createConfigIO(projectDir);
+
+    expect(io.load().project).toEqual({ agent: { graceTurns: 5 } });
+    io.updateLayer("project", (config) => {
+      config.agent = { graceTurns: 7 };
+    });
+
+    expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(target, "utf-8"))).toEqual({ agent: { graceTurns: 7 } });
+  });
+
+  it.skipIf(process.platform === "win32")("does not overwrite unrelated contents through an internal link", () => {
+    const target = join(projectDir, "other-settings.json");
+    const original = JSON.stringify({ unrelated: true });
+    writeFileSync(target, original);
+    symlinkSync(target, join(projectDir, "subagents-lite.json"));
+    const io = createConfigIO(projectDir);
+    io.load();
+
+    const mutate = vi.fn();
+    expect(() => io.updateLayer("project", mutate)).toThrow(/existing fields would be discarded/);
+    expect(mutate).not.toHaveBeenCalled();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      io.saveProject({ concurrency: { default: 6 } });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("existing fields would be discarded"));
+      expect(readFileSync(target, "utf-8")).toBe(original);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("reports repeated mutations against a malformed project and recovers after repair", () => {
+    writeProjectRaw('{"concurrency":{"default":4}}');
+    const store = new ConfigStore(createConfigIO(projectDir));
+    writeProjectRaw("{");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => store.mutate.concurrency.setDefault(6, "project")).toThrow(/parse config/);
+      expect(() => store.mutate.concurrency.setDefault(6, "project")).toThrow(/malformed/);
+      expect(() => store.mutate.concurrency.removeDefault("project")).toThrow(/malformed/);
+      expect(() => store.mutate.agent.setDefaultModel("p/m", "project")).toThrow(/malformed/);
+      expect(readFileSync(join(projectDir, "subagents-lite.json"), "utf-8")).toBe("{");
+
+      writeProjectRaw("{}");
+      store.mutate.concurrency.setDefault(6, "project");
+      expect(readProjectFile()).toEqual({ concurrency: { default: 6 } });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("does not silently discard a legacy fractional limit when saving another project setting", () => {
+    const original = JSON.stringify({ concurrency: { default: 1.5 } });
+    writeProjectRaw(original);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const io = createConfigIO(projectDir);
+      io.load();
+      expect(() =>
+        io.updateLayer("project", (layer) => {
+          layer.agent = { default: "model" };
+        }),
+      ).toThrow(/existing fields would be discarded/);
+      expect(readFileSync(join(projectDir, "subagents-lite.json"), "utf-8")).toBe(original);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses reads and writes when the config directory points outside the project",
+    () => {
+      const external = mkdtempSync(join(tmpdir(), "pi-subagents-external-"));
+      const externalConfig = join(external, "subagents-lite.json");
+      const original = JSON.stringify({ agent: { graceTurns: 5 } });
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        writeFileSync(externalConfig, original);
+        rmSync(projectDir, { recursive: true });
+        symlinkSync(external, projectDir);
+        const io = createConfigIO(projectDir);
+
+        expect(io.load()).toMatchObject({ project: null, projectStatus: "malformed" });
+        expect(() => io.updateLayer("project", () => {}, { createIfMissing: true })).toThrow(/outside the project/);
+        io.saveProject({ agent: { graceTurns: 7 } });
+        expect(readFileSync(externalConfig, "utf-8")).toBe(original);
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining("outside the project"));
+      } finally {
+        warn.mockRestore();
+        rmSync(external, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("refuses a non-regular config file", () => {
+    mkdirSync(join(projectDir, "subagents-lite.json"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const io = createConfigIO(projectDir);
+      expect(io.load()).toMatchObject({ project: null, projectStatus: "malformed" });
+      expect(() => io.updateLayer("project", () => {})).toThrow(/regular file/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 function writeGlobal(config: unknown): void {

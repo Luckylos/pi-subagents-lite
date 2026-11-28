@@ -31,7 +31,7 @@ const noopTheme: Theme = { fg: (_c, t) => t, bg: (_c, t) => t, bold: (t) => t };
 const hostile = "A\u009b?1049hB\u001b]0;window-title\u0007C";
 
 // Theme SGR and the real Markdown component's normal OSC8 are allowed in the raw frame.
-function expectSafeFrame(frame: string[]): void {
+function expectSafeFrame(frame: readonly string[]): void {
   for (const line of frame) {
     expect(line).toMatch(
       // oxlint-disable-next-line no-control-regex -- check raw frames, allowing only generated SGR and normal OSC8

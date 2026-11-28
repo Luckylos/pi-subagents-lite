@@ -10,6 +10,16 @@ import { ConfigStore } from "../../src/config/config-store.js";
 import { memIO } from "./config-store-helpers.js";
 
 describe("ConfigStore concurrency layers", () => {
+  it("does not replace valid session or persisted limits with invalid values", () => {
+    const { io, saves } = memIO({ global: { concurrency: { default: 2, providers: { p: 3 }, models: { "p/a": 4 } } } });
+    const store = new ConfigStore(io);
+    store.mutate.concurrency.setDefault(1.5, "session");
+    store.mutate.concurrency.setProvider("p", 0);
+    store.mutate.concurrency.setModel("p/a", Infinity, "session");
+    expect(store.concurrency).toEqual({ default: 2, providers: { p: 3 }, models: { "p/a": 4 } });
+    expect(saves).toHaveLength(0);
+  });
+
   it("setProvider at project writes only the project layer", () => {
     const { io, saves, global } = memIO({
       global: { concurrency: { default: 2 } },

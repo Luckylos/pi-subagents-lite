@@ -9,14 +9,15 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vite-plus/test";
 import { mockModules, selectDialogInstances, resetSelectDialogInstances, resetConfig } from "../../menu-mock-setup.js";
-import { createMockCtx } from "../../menu-test-helpers.js";
-import { fakeCtx } from "../../fixtures.js";
+import { createMockCtx, type ComponentFactory } from "../../menu-test-helpers.js";
+import { fakeCtx, makeAgentRecord } from "../../fixtures.js";
 
 import { type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { Component, SelectItem, SettingItem, SettingsListTheme, SelectListTheme } from "@earendil-works/pi-tui";
-import type { ThinkingLevel } from "../../../src/types.js";
+import type { SubagentParentReport, ThinkingLevel } from "../../../src/types.js";
 import type { PiSettingsScope } from "../../../src/pi-settings.js";
 import type { SpawnOptions } from "../../../src/agents/agent-manager.js";
+import { captureResultStats } from "../../../src/agents/agent-result.js";
 import { validateWorktreePath, type WorktreeValidationResult } from "../../../src/spawn/worktree-validator.js";
 
 // The picker lists mock worktrees whose paths need not exist on this host.
@@ -84,6 +85,7 @@ let selectListInstances: Array<{
 vi.mock("@earendil-works/pi-tui", async () => {
   const { activatePickerRow } = await import("../../menu-picker-helpers.js");
   return {
+    ...(await vi.importActual<typeof import("@earendil-works/pi-tui")>("@earendil-works/pi-tui")),
     SettingsList: class MockSettingsList {
       items: SettingItem[];
       onChange: (id: string, newValue: string) => void;
@@ -293,8 +295,8 @@ describe("showSpawnAgentMenu — step 3 options items", () => {
     mockModules.mockPiExec.mockImplementation(async (_cmd: string, args: string[]) => {
       if (args[0] === "rev-parse" && args[1] === "--git-common-dir")
         return { code: 0, stdout: "/test/.git", stderr: "" };
-      if (args[0] === "worktree" && args[1] === "list" && args[2] === "--porcelain")
-        return { code: 0, stdout: "worktree /test\nbranch refs/heads/main", stderr: "" };
+      if (args.join(" ") === "worktree list --porcelain -z")
+        return { code: 0, stdout: "worktree /test\0branch refs/heads/main\0\0", stderr: "" };
       return { code: 1, stdout: "", stderr: "" };
     });
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
@@ -417,7 +419,9 @@ describe("showSpawnAgentMenu — thinking level row", () => {
   });
 
   it("names pi per-model when it beats the subagent default", async () => {
-    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      "anthropic/claude-sonnet-4-20250514": "high",
+    });
     mockModules.mockConfig.agent.defaultThinking = "max";
     typeWithoutThinking();
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
@@ -525,7 +529,9 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
   });
 
   it("Default uses the per-model level at launch", async () => {
-    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      "anthropic/claude-sonnet-4-20250514": "high",
+    });
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
     expect(row().currentValue).toBe("high (pi per-model)");
@@ -536,7 +542,9 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
   });
 
   it("a picked level is displayed alone, with no source annotation", async () => {
-    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      "anthropic/claude-sonnet-4-20250514": "high",
+    });
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
 
@@ -641,7 +649,9 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
   });
 
   it("picking `pi default` after a level pick returns to spawning with nothing", async () => {
-    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      "anthropic/claude-sonnet-4-20250514": "high",
+    });
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
 
@@ -653,7 +663,9 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
   });
 
   it("a picked level can be released after switching to a non-reasoning model", async () => {
-    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({ "anthropic/claude-sonnet-4-20250514": "high" });
+    piSettingsMock.getPiModelThinkingLevels.mockReturnValue({
+      "anthropic/claude-sonnet-4-20250514": "high",
+    });
     const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
     await completeWizard(ctx);
 
@@ -744,7 +756,9 @@ describe("showSpawnAgentMenu — thinking states (Default / Picked / Following)"
     expect(row().currentValue).toBe("medium (pi default)");
 
     await pickWorktree("/test-feature");
-    expect(piSettingsMock.getPiModelThinkingLevels).toHaveBeenCalledWith("/test-feature", { projectTrusted: true });
+    expect(piSettingsMock.getPiModelThinkingLevels).toHaveBeenCalledWith("/test-feature", {
+      projectTrusted: true,
+    });
     expect(row().currentValue).toBe("max (pi per-model)");
   });
 
@@ -838,7 +852,10 @@ describe("showSpawnAgentMenu — max turns submenu", () => {
     }));
     mockModules.mockConfig.agent.defaultMaxTurns = 60;
     await spawnOptions();
-    expect(vi.mocked(owner.coordinator!.spawn).mock.lastCall?.[2]).toMatchObject({ maxTurns: 60, maxTokens: 900 });
+    expect(vi.mocked(owner.coordinator!.spawn).mock.lastCall?.[2]).toMatchObject({
+      maxTurns: 60,
+      maxTokens: 900,
+    });
   });
 
   it("shows agent config max turns", async () => {
@@ -1088,7 +1105,13 @@ describe("showSpawnAgentMenu — model", () => {
   it("shows that Pi selects the model when the precedence chain has no model", async () => {
     vi.mocked(owner.registry.getAgentConfig).mockImplementation((name: string) => {
       if (name === "general-purpose")
-        return { name: "general-purpose", description: "", extensions: true, skills: true, systemPrompt: "" };
+        return {
+          name: "general-purpose",
+          description: "",
+          extensions: true,
+          skills: true,
+          systemPrompt: "",
+        };
       return undefined;
     });
     mockModules.mockConfig.agent = { default: null, forceBackground: false };
@@ -1106,18 +1129,21 @@ describe("showSpawnAgentMenu — model", () => {
 });
 
 function setupExecMock(
-  options: { inGitRepo?: boolean; worktrees?: { path: string; branch?: string; detached?: boolean }[] } = {},
+  options: {
+    inGitRepo?: boolean;
+    worktrees?: { path: string; branch?: string; detached?: boolean }[];
+  } = {},
 ) {
   const { inGitRepo = true, worktrees = [] } = options;
   function buildPorcelainOutput(wts: typeof worktrees): string {
     return wts
       .map((wt) => {
         let block = `worktree ${wt.path}`;
-        if (wt.branch) block += `\nbranch refs/heads/${wt.branch}`;
-        else if (wt.detached) block += "\ndetached";
-        return block;
+        if (wt.branch) block += `\0branch refs/heads/${wt.branch}`;
+        else if (wt.detached) block += "\0detached";
+        return block + "\0\0";
       })
-      .join("\n\n");
+      .join("");
   }
   mockModules.mockPiExec.mockImplementation(async (_cmd: string, args: string[]) => {
     if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
@@ -1125,7 +1151,7 @@ function setupExecMock(
         ? { code: 0, stdout: "/test/.git", stderr: "" }
         : { code: 128, stdout: "", stderr: "fatal: not a git repository" };
     }
-    if (args[0] === "worktree" && args[1] === "list" && args[2] === "--porcelain") {
+    if (args.join(" ") === "worktree list --porcelain -z") {
       if (!inGitRepo) return { code: 128, stdout: "", stderr: "fatal: not a git repository" };
       return { code: 0, stdout: buildPorcelainOutput(worktrees), stderr: "" };
     }
@@ -1151,6 +1177,52 @@ describe("showSpawnAgentMenu — worktree submenu", () => {
     expect(picker.items[1]).toEqual({ value: path, label: "/test/ABC", provider: "ABC" });
     picker.callbacks.onSelect(path);
     expect(done).toHaveBeenCalledWith(hostile);
+  });
+
+  it("passes an unquoted NUL-delimited worktree path through to Spawn", async () => {
+    const path = "/test/feature\\branch\nworktree /not-an-entry";
+    mockModules.mockPiExec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return { code: 0, stdout: "/test/.git", stderr: "" };
+      }
+      if (args.join(" ") === "worktree list --porcelain -z") {
+        return {
+          code: 0,
+          stdout: ["worktree /test", "branch refs/heads/main", "", "worktree " + path, "detached", "", ""].join("\0"),
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: 'worktree "' + path.replaceAll("\n", "\\n") + '"\ndetached\n\n', stderr: "" };
+    });
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    const items = settingsListCalls[1].items;
+    items.find((item) => item.id === "worktree")!.submenu!("Inherits parent cwd", vi.fn());
+    const picker = selectDialogInstances.at(-1)!;
+    expect(picker.items.map((item) => item.value)).toEqual(["Inherits parent cwd", "/test", path]);
+    picker.callbacks.onSelect(path);
+    items.find((item) => item.id === "spawn")!.submenu!("", vi.fn());
+    await vi.waitFor(() => expect(mockModules.mockManager.spawn).toHaveBeenCalled());
+    expect(mockModules.mockManager.spawn.mock.calls[0][4].worktreePath).toBe(path);
+  });
+
+  it("warns when Git does not support the worktree listing and still allows inherited cwd", async () => {
+    mockModules.mockPiExec.mockImplementation(async (_cmd: string, args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--git-common-dir") {
+        return { code: 0, stdout: "/test/.git", stderr: "" };
+      }
+      expect(args).toEqual(["worktree", "list", "--porcelain", "-z"]);
+      return { code: 129, stdout: "", stderr: "error: unknown switch 'z'" };
+    });
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    await completeWizard(ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Git 2.36"), "warning");
+
+    const items = settingsListCalls[1].items;
+    expect(items.find((item) => item.id === "worktree")?.currentValue).toBe("Inherits parent cwd");
+    items.find((item) => item.id === "spawn")!.submenu!("", vi.fn());
+    await vi.waitFor(() => expect(mockModules.mockManager.spawn).toHaveBeenCalled());
+    expect(mockModules.mockManager.spawn.mock.calls[0][4].worktreePath).toBeUndefined();
   });
 
   it("shows 'Inherits parent cwd' when in git repo", async () => {
@@ -1288,8 +1360,80 @@ describe("showSpawnAgentMenu — spawn action", () => {
     expect(
       list.items.filter((item) => ["description", "prompt"].includes(item.id)).map((item) => item.currentValue),
     ).toEqual(["review the queue", "check the retry path"]);
-    expect(await spawnOptions()).toMatchObject({ description: "review the queue", isBackground: false, graceTurns: 0 });
+    expect(await spawnOptions()).toMatchObject({
+      description: "review the queue",
+      isBackground: false,
+      graceTurns: 0,
+    });
     expect(mockModules.mockManager.spawn.mock.calls[0][3]).toBe("check the retry path");
+  });
+
+  it.each([
+    ["completed", { result: "Found the fix" }, "Found the fix", "info"],
+    ["error", { error: "model unavailable" }, "Error: model unavailable", "error"],
+    ["stopping", {}, "Stop requested", "warning"],
+  ] as const)("shows the %s report for a foreground spawn", async (status, outcome, message, level) => {
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    const record = makeAgentRecord();
+    const report: SubagentParentReport = {
+      agentId: record.id,
+      runId: "run-1",
+      sequence: 1,
+      type: record.display.type,
+      description: "fix the bug",
+      status,
+      completedAt: 100,
+      started: true,
+      elapsedMs: 100,
+      stats: captureResultStats(record),
+      ...outcome,
+    };
+    record.execution.promise = Promise.resolve(report);
+    mockModules.mockManager.getRecord.mockReturnValue(record);
+    await completeWizard(ctx);
+    settingsListCalls[1].onChange("background", "OFF");
+    await spawnOptions();
+
+    await vi.waitFor(() => expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining(message), level));
+  });
+
+  it.each(["completed", "error"] as const)("opens scrollable details for a multiline %s report", async (status) => {
+    const ctx = createMockWizardCtx(["general-purpose", "fix the bug", undefined]);
+    const record = makeAgentRecord();
+    const content = ["first line", ...Array.from({ length: 30 }, (_, i) => `detail ${i}`), "last line"].join("\n");
+    record.execution.promise = Promise.resolve({
+      agentId: record.id,
+      runId: "run-1",
+      sequence: 1,
+      type: record.display.type,
+      description: "fix the bug",
+      status,
+      completedAt: 100,
+      started: true,
+      elapsedMs: 100,
+      stats: captureResultStats(record),
+      ...(status === "error" ? { error: content } : { result: content }),
+    });
+    mockModules.mockManager.getRecord.mockReturnValue(record);
+    await completeWizard(ctx);
+    const custom = vi.mocked(ctx.ui.custom);
+    custom.mockClear();
+    custom.mockResolvedValue(undefined);
+    settingsListCalls[1].onChange("background", "OFF");
+    await spawnOptions();
+
+    await vi.waitFor(() => expect(custom).toHaveBeenCalledTimes(1));
+    const [factory, options] = custom.mock.calls[0];
+    expect(options).toBeUndefined();
+    const view = (factory as ComponentFactory)(
+      { terminal: { rows: 24 } },
+      { fg: (_c, text) => text, bold: (text) => text },
+    ) as Component;
+    expect(view.render(60).join("\n")).toContain("first line");
+    expect(view.render(60).join("\n")).not.toContain("last line");
+    view.handleInput?.("G");
+    expect(view.render(60).join("\n")).toContain("last line");
+    expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("last line"), expect.anything());
   });
 
   it("passes the selected worktree path to spawn", async () => {

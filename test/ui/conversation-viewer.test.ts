@@ -741,6 +741,35 @@ describe("ConversationViewer", () => {
       );
     }
 
+    it("scrolls the transcript by the SDK wheel delta and leaves clicks alone", () => {
+      const session = makeMockSession([{ role: "user", content: manyLines }]);
+      const record = makeMockRecord({ execution: { session } });
+      const viewer = new ConversationViewer(owner, makeTui(), session, record, noopTheme, vi.fn());
+      const wheel = {
+        type: "wheel",
+        button: "none",
+        y: 5,
+        x: 2,
+        screenX: 2,
+        screenY: 5,
+        width: 80,
+        height: 28,
+        shift: false,
+        alt: false,
+        ctrl: false,
+        wheelDelta: -2,
+      } as const;
+      expect(readout(viewer)).toBe("(33/33 · 100%)");
+      expect(viewer.handleMouse?.(wheel)).toEqual({ handled: true, render: true });
+      expect(readout(viewer)).toBe("(31/33 · 94%)");
+      expect(viewer.handleMouse?.({ ...wheel, type: "click", button: "left" })).toBeUndefined();
+      expect(viewer.handleMouse?.({ ...wheel, y: 1 })).toBeUndefined();
+      expect(viewer.handleMouse?.({ ...wheel, wheelDelta: 20 })).toEqual({ handled: true, render: true });
+      expect(viewer.handleMouse?.({ ...wheel, wheelDelta: 1 })).toEqual({ handled: true, render: false });
+      viewer.dispose();
+      expect(viewer.handleMouse?.(wheel)).toBeUndefined();
+    });
+
     it("scrolls down on down arrow", () => {
       const session = makeMockSession([{ role: "user", content: manyLines }]);
       const record = makeMockRecord({ execution: { session } });
@@ -1139,6 +1168,26 @@ describe("ConversationViewer", () => {
 
       expect(unsubscribe).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it("reuses context usage across frames and refreshes it when the branch advances", () => {
+    let leaf = "first";
+    const session = asAgentSession({
+      messages: [],
+      subscribe: mockSubscribe,
+      sessionManager: { getSessionId: () => "child", getLeafId: () => leaf, getLeafEntry: () => undefined },
+      getContextUsage: vi.fn(() => ({ percent: leaf === "first" ? 15 : 40 })),
+    });
+    const record = makeMockRecord({ execution: { session } });
+    const viewer = new ConversationViewer(owner, makeTui(), session, record, noopTheme, vi.fn());
+
+    expect(viewer.render(100).join("\n")).toContain("15%");
+    expect(viewer.render(100).join("\n")).toContain("15%");
+    expect(session.getContextUsage).toHaveBeenCalledTimes(1);
+    leaf = "second";
+    expect(viewer.render(100).join("\n")).toContain("40%");
+    expect(session.getContextUsage).toHaveBeenCalledTimes(2);
+    viewer.dispose();
   });
 
   describe("cache invalidation on messages array replacement", () => {

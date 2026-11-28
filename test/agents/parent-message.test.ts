@@ -33,7 +33,7 @@ describe("MessageParent tool", () => {
     const { deliver, send } = makeTool();
     const result = await send("  found the bug  \n");
     expect(deliver).toHaveBeenCalledWith("found the bug");
-    expect(textOf(result)).toBe("Delivered to the parent session.");
+    expect(textOf(result)).toBe("Submitted to the parent session.");
   });
 
   it("rejects a blank message without delivering", async () => {

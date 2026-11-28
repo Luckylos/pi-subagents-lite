@@ -12,6 +12,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./types.ts";
 import type { ThinkingChoice } from "../types.ts";
 import { parseThinkingChoice } from "../utils.ts";
@@ -42,93 +43,13 @@ export interface AgentConfigFromMd {
   source: "user" | "project";
 }
 
-// --- Simple frontmatter parser ---
+function parseAgentFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
+  if (!/^---\r?\n/.test(content)) return { frontmatter: {}, body: content };
 
-/**
- * Naive YAML frontmatter splitter.
- *
- * Handles triple-dash delimited frontmatter blocks. Does NOT parse nested
- * YAML structures or complex types — only flat key: value pairs and
- * YAML array syntax (lines starting with "- ").
- *
- * Returns { frontmatter: Record<string, unknown>, body: string }.
- */
-function parseFrontmatter(content: string): { frontmatter: Record<string, unknown>; body: string } {
-  if (!content) {
-    return { frontmatter: {}, body: "" };
+  const { frontmatter, body } = parseFrontmatter<Record<string, unknown>>(content);
+  if (typeof frontmatter !== "object" || Array.isArray(frontmatter)) {
+    throw new Error("Agent frontmatter must be a YAML mapping");
   }
-
-  if (!content.startsWith("---\n") && !content.startsWith("---\r\n")) {
-    return { frontmatter: {}, body: content };
-  }
-
-  // Find closing --- (handle both LF and CRLF line endings)
-  const lfEnd = content.indexOf("\n---\n", 4);
-  const crlfEnd = content.indexOf("\r\n---\r\n", 4);
-  let endIdx: number;
-  let closingLen: number;
-  if (lfEnd !== -1 && (crlfEnd === -1 || lfEnd < crlfEnd)) {
-    endIdx = lfEnd;
-    closingLen = 5; // \n---\n
-  } else if (crlfEnd !== -1) {
-    endIdx = crlfEnd;
-    closingLen = 7; // \r\n---\r\n
-  } else {
-    return { frontmatter: {}, body: content };
-  }
-
-  const fmRaw = content.slice(4, endIdx);
-  const body = content.slice(endIdx + closingLen).trim();
-
-  const frontmatter: Record<string, unknown> = {};
-  let currentKey: string | null = null;
-  let currentValues: string[] | null = null;
-
-  for (const line of fmRaw.split("\n")) {
-    const trimmed = line.trim();
-
-    if (!trimmed) continue;
-
-    // Array item (continuation of previous key)
-    if (trimmed.startsWith("- ")) {
-      if (currentKey) {
-        if (!currentValues) currentValues = [];
-        currentValues.push(trimmed.slice(2).trim());
-      }
-      continue;
-    }
-
-    // Flush previous array before processing a new key
-    if (currentKey && currentValues) {
-      frontmatter[currentKey] = currentValues;
-      currentValues = null;
-    }
-
-    const colonIdx = trimmed.indexOf(":");
-    if (colonIdx === -1) {
-      currentKey = trimmed;
-      continue;
-    }
-
-    currentKey = trimmed.slice(0, colonIdx).trim();
-    const rawValue = trimmed.slice(colonIdx + 1).trim();
-
-    if (!rawValue) {
-      // Might be followed by array items
-      currentValues = [];
-      continue;
-    }
-
-    // Strip surrounding quotes if present (YAML convention)
-    frontmatter[currentKey] = rawValue.replace(/^['"]|['"]$/g, "");
-    currentValues = null;
-  }
-
-  // Flush trailing array items
-  if (currentKey && currentValues) {
-    frontmatter[currentKey] = currentValues;
-  }
-
   return { frontmatter, body };
 }
 
@@ -161,13 +82,7 @@ export function parseExtensions(raw: unknown): boolean | string[] | undefined {
   if (raw === true || raw === "true" || raw === "all") {
     return true;
   }
-  if (typeof raw === "string" && raw.length > 0) {
-    return splitCommaList(raw);
-  }
-  if (Array.isArray(raw)) {
-    return raw.map(String);
-  }
-  return undefined;
+  return parseList(raw);
 }
 
 /**
@@ -179,13 +94,7 @@ export function parsePreloadSkills(raw: unknown): string[] | false | undefined {
   if (raw === false || raw === "false" || raw === "none") {
     return false;
   }
-  if (typeof raw === "string" && raw.length > 0) {
-    return splitCommaList(raw);
-  }
-  if (Array.isArray(raw)) {
-    return raw.map(String);
-  }
-  return undefined;
+  return parseList(raw);
 }
 
 // --- Frontmatter value helpers ---
@@ -195,15 +104,15 @@ function parseString(frontmatter: Record<string, unknown>, key: string): string 
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
-function parseStringArray(frontmatter: Record<string, unknown>, key: string): string[] | undefined {
-  const v = frontmatter[key];
-  if (Array.isArray(v)) {
-    return v.map(String);
+function parseList(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  // An explicitly empty field must not fall back to implicit resource loading.
+  if (value === null) return [];
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return splitCommaList(String(value));
   }
-  if (typeof v === "string" && v.length > 0) {
-    return splitCommaList(v);
-  }
-  return undefined;
+  throw new Error("Expected a list or scalar in agent frontmatter");
 }
 
 function parseBoolean(frontmatter: Record<string, unknown>, key: string): boolean | undefined {
@@ -230,16 +139,16 @@ function compactDefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 // --- parseAgentFile ---
 
 export function parseAgentFile(content: string, source: "user" | "project"): AgentConfigFromMd {
-  const { frontmatter, body } = parseFrontmatter(content);
+  const { frontmatter, body } = parseAgentFrontmatter(content);
 
   return {
     name: parseString(frontmatter, "name"),
     display_name: parseString(frontmatter, "display_name"),
     description: parseString(frontmatter, "description"),
-    tools: parseStringArray(frontmatter, "tools"),
-    exclude_tools: parseStringArray(frontmatter, "exclude_tools"),
+    tools: parseList(frontmatter.tools),
+    exclude_tools: parseList(frontmatter.exclude_tools),
     extensions: parseExtensions(frontmatter.extensions),
-    exclude_extensions: parseStringArray(frontmatter, "exclude_extensions"),
+    exclude_extensions: parseList(frontmatter.exclude_extensions),
     skills: parseExtensions(frontmatter.skills),
     preload_skills: parsePreloadSkills(frontmatter.preload_skills),
     color: parseString(frontmatter, "color"),
@@ -282,7 +191,7 @@ export async function scanAgentFilesInDir(
         agents.push(info);
       }
     } catch {
-      // Skip files that can't be read
+      // Skip unreadable files or invalid YAML.
     }
   }
   return agents;

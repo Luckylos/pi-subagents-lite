@@ -255,6 +255,10 @@ describe("Subagent run activity", () => {
         argsComplete: true,
         showImages: false,
         isError: false,
+        durationMs: undefined,
+        outputPad: 0,
+        keyText: () => "",
+        keyHint: () => "",
       });
       const frame = component.render(200).join("\n");
       expect.soft(frame).toContain("0⟳ ");

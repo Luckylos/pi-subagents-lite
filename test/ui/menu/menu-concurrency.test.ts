@@ -174,11 +174,43 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
 
     const input = inputInstances[inputInstances.length - 1];
     expect(input.value).toBe("4");
+    for (const invalid of ["1.5", "1.00000000000000001"]) input.onSubmit!(invalid);
+    expect(ctx.ui.notify).toHaveBeenCalledTimes(2);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("integer"), "error");
+    expect(mockModules.mockProjectConfig.concurrency.default).toBeUndefined();
+    expect(done).not.toHaveBeenCalled();
+
     input.onSubmit!("6");
 
     expect(mockModules.mockProjectConfig.concurrency.default).toBe(6);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("6"), "info");
     expect(done).toHaveBeenCalledWith("6");
+  });
+
+  it("reports a config lock timeout and keeps the concurrency input open for retry", async () => {
+    mockModules.mockProjectTargetOffered = true;
+    const ctx = createMockCtx();
+    const save = vi.spyOn(owner.store!.mutate.concurrency, "setDefault").mockImplementationOnce(() => {
+      throw new Error("Timed out waiting for config lock; change not saved");
+    });
+    try {
+      await showConcurrencySettingsMenu(owner, ctx, []);
+      const done = vi.fn();
+      settingsListCalls[0].items.find((item) => item.id === "defaultConcurrency")!.submenu!("4", done);
+      settingsListCalls.at(-1)!.activate("project");
+      const input = inputInstances.at(-1)!;
+
+      expect(() => input.onSubmit!("6")).not.toThrow();
+      expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("Timed out"), "error");
+      expect(done).not.toHaveBeenCalled();
+      expect(mockModules.mockProjectConfig.concurrency.default).toBeUndefined();
+
+      input.onSubmit!("6");
+      expect(mockModules.mockProjectConfig.concurrency.default).toBe(6);
+      expect(done).toHaveBeenCalledExactlyOnceWith("6");
+    } finally {
+      save.mockRestore();
+    }
   });
 
   it("remove default limit — nested target pick removes at the picked level", async () => {
@@ -201,6 +233,33 @@ describe("showConcurrencySettingsMenu — SettingsList migration", () => {
     expect(mockModules.mockConfig.concurrency.default).toBe(4);
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.any(String), "info");
     expect(done).toHaveBeenCalledWith("project");
+  });
+
+  it("reports a failed clear without completing the pick and lets the user retry", async () => {
+    mockModules.mockProjectTargetOffered = true;
+    mockModules.mockProjectConfig.concurrency.default = 8;
+    const ctx = createMockCtx();
+    const clear = vi.spyOn(owner.store!.mutate.concurrency, "removeDefault").mockImplementationOnce(() => {
+      throw new Error("Timed out waiting for config lock; change not saved");
+    });
+    try {
+      await showConcurrencySettingsMenu(owner, ctx, []);
+      const done = vi.fn();
+      settingsListCalls[0].items.find((item) => item.id === "defaultConcurrency")!.submenu!("8", done);
+      settingsListCalls.at(-1)!.activate("clear");
+      const picker = settingsListCalls.at(-1)!;
+
+      expect(() => picker.activate("project")).not.toThrow();
+      expect(ctx.ui.notify).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("Timed out"), "error");
+      expect(done).not.toHaveBeenCalled();
+      expect(mockModules.mockProjectConfig.concurrency.default).toBe(8);
+
+      picker.activate("project");
+      expect(mockModules.mockProjectConfig.concurrency.default).toBeUndefined();
+      expect(done).toHaveBeenCalledExactlyOnceWith("project");
+    } finally {
+      clear.mockRestore();
+    }
   });
 
   it("hides Clear when no layer carries the default", async () => {

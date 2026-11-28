@@ -12,7 +12,7 @@ import type { ExtensionOwner } from "../../shell.ts";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { SettingsList, SelectList, type SelectItem, type SettingItem } from "@earendil-works/pi-tui";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import type { ThinkingChoice } from "../../types.ts";
+import { SHORT_ID_LENGTH, type ThinkingChoice } from "../../types.ts";
 import type { Theme } from "../types.ts";
 
 import { parseThinkingChoice } from "../../utils.ts";
@@ -28,8 +28,10 @@ import {
 } from "../../spawn/spawn-resolution.ts";
 import { SEPARATOR_ID, buildSettingsListTheme, buildSelectListTheme, createSearchableSelect } from "./helpers.ts";
 import { plainText } from "../sanitize.ts";
+import { showRunTextViewer, summarizeRunText } from "../run-text-viewer.ts";
 import { DEFAULT_GRACE_TURNS } from "../../config/agent-settings.ts";
 import { prepareSpawnIntent } from "../../spawn/spawn-preparation.ts";
+import { formatTerminalContent } from "../../agents/agent-result.ts";
 import { resolveSpawnLimits } from "../../agents/run-limits.ts";
 import { createModelSelectSubmenu } from "./submenus/model-select.ts";
 import { createNumericSubmenu, createInputSubmenu } from "./submenus/numeric-input.ts";
@@ -49,19 +51,12 @@ interface WorktreeEntry {
 }
 
 /**
- * Parse `git worktree list --porcelain` output into structured entries.
- *
- * Format (one block per worktree, separated by blank lines):
- *   worktree /path/to/worktree
- *   HEAD <sha>
- *   branch refs/heads/<name>   (or: (detached))
+ * Parse NUL-separated worktree attributes; an empty attribute ends each record.
  */
 function parseWorktreeList(output: string): WorktreeEntry[] {
   const entries: WorktreeEntry[] = [];
-  const blocks = output.split(/\n\n+/);
-  for (const block of blocks) {
-    if (!block.trim()) continue;
-    const lines = block.split("\n");
+  for (const block of output.split("\0\0")) {
+    const lines = block.split("\0");
     let path = "";
     let branch: string | null = null;
     let isDetached = false;
@@ -87,12 +82,12 @@ function truncatePath(p: string): string {
 }
 
 /**
- * Fetch worktrees via `git worktree list --porcelain`.
+ * Fetch worktrees via `git worktree list --porcelain -z`.
  * Returns null if git is unavailable or the command fails.
  */
 async function listWorktrees(owner: ExtensionOwner, cwd: string): Promise<WorktreeEntry[] | null> {
   try {
-    const result = await getPiInstance(owner).exec("git", ["worktree", "list", "--porcelain"], {
+    const result = await getPiInstance(owner).exec("git", ["worktree", "list", "--porcelain", "-z"], {
       cwd,
       timeout: WORKTREE_LIST_TIMEOUT_MS,
     });
@@ -199,7 +194,11 @@ export async function showSpawnAgentMenu(
         () => done(undefined),
         { enableSearch: true },
       );
-      return new SettingsListWrapper(list, { title: "Select Agent Type", theme, passthroughKeys: true });
+      return new SettingsListWrapper(list, {
+        title: "Select Agent Type",
+        theme,
+        passthroughKeys: true,
+      });
     });
     if (result === undefined || !isCurrentMenu()) return;
 
@@ -216,7 +215,11 @@ export async function showSpawnAgentMenu(
   {
     const result = await ctx.ui.custom<string | undefined>((_tui, theme, _kb, done) => {
       const input = createInputSubmenu(ctx, { required: true })("", done);
-      return new SettingsListWrapper(input, { title: "Agent Prompt", theme, passthroughKeys: true });
+      return new SettingsListWrapper(input, {
+        title: "Agent Prompt",
+        theme,
+        passthroughKeys: true,
+      });
     });
     if (result === undefined || !isCurrentMenu()) return;
     initialPrompt = result;
@@ -225,8 +228,15 @@ export async function showSpawnAgentMenu(
   // ---- Step 3: Options sub-menu with spawn ----
   const inGitRepo = parentCwd ? await isInGitRepo(owner, parentCwd) : false;
   if (!isCurrentMenu()) return;
-  const worktrees = inGitRepo ? ((await listWorktrees(owner, parentCwd)) ?? []) : [];
+  const listedWorktrees = inGitRepo ? await listWorktrees(owner, parentCwd) : [];
   if (!isCurrentMenu()) return;
+  if (listedWorktrees === null) {
+    ctx.ui.notify(
+      "Could not list worktrees. The picker requires Git 2.36 or later; using the parent directory.",
+      "warning",
+    );
+  }
+  const worktrees = listedWorktrees ?? [];
 
   const store = getStore(owner);
   let selection: SpawnSelection | undefined;
@@ -379,7 +389,7 @@ export async function showSpawnAgentMenu(
                 widget.setUICtx(ctx.ui as unknown as import("../agent-widget.ts").UICtx);
                 widget.ensureTimer();
               }
-              await menuCoordinator.spawn(
+              const { agentId, record, foregroundReport } = await menuCoordinator.spawn(
                 getPiInstance(owner),
                 ctx,
                 prepareSpawnIntent({
@@ -396,7 +406,33 @@ export async function showSpawnAgentMenu(
                 }),
               );
 
-              if (!background && isCurrentMenu()) getWidget(owner)?.update();
+              if (background || !isCurrentMenu()) return;
+              getWidget(owner)?.update();
+              if (!foregroundReport) return;
+              const shortId = agentId.slice(0, SHORT_ID_LENGTH);
+              if (foregroundReport.status === "stopping") {
+                ctx.ui.notify(`Stop requested for ${shortId} — stopping.`, "warning");
+                return;
+              }
+              const { status } = foregroundReport;
+              const content = plainText(formatTerminalContent(foregroundReport)).trim();
+              const heading = `Agent ${shortId} ${status === "error" ? "failed" : status.replaceAll("_", " ")}`;
+              const level = status === "error" ? "error" : status === "completed" ? "info" : "warning";
+              const summary = summarizeRunText(content);
+              ctx.ui.notify(summary ? `${heading}\n\n${summary}` : heading, level);
+              if (content !== summary) {
+                await showRunTextViewer(
+                  owner,
+                  ctx.ui,
+                  record,
+                  status === "error" ? "error" : "result",
+                  content,
+                  foregroundReport.sequence,
+                  "editor",
+                ).catch(() => {
+                  if (isCurrentMenu()) ctx.ui.notify("Could not open the run details.", "warning");
+                });
+              }
             } catch (err) {
               if (!isCurrentMenu()) return;
               if (err instanceof SpawnModelUnavailableError) {

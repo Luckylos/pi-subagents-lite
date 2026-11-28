@@ -15,6 +15,8 @@ import {
   Markdown,
   matchesKey,
   type TUI,
+  type TuiMouseEvent,
+  type TuiMouseEventResult,
   truncateToWidth,
   visibleWidth,
   wrapTextWithAnsi,
@@ -23,7 +25,7 @@ import { canRequestStop } from "../agents/agent-status.ts";
 import { messageIntent, MessageComposer, STALE_RUN_REASON, submitToRun } from "./message-composer.ts";
 import { captureRunAction, type RunActionTarget } from "./run-actions.ts";
 import type { AgentRecord, AgentSubmissionResult } from "../types.ts";
-import { getSessionContextPercent } from "../agents/usage.ts";
+import { ContextSampler } from "./context-sampler.ts";
 import { extractText } from "../prompt/context.ts";
 import type { Theme } from "./types.ts";
 import { makeMarkdownTheme } from "./markdown-theme.ts";
@@ -83,6 +85,7 @@ export class ConversationViewer implements Component {
   private messageCache = new Map<number, string[]>();
   private cacheMeta: { count: number; width: number; messagesRef?: AgentMessage[] } = { count: 0, width: 0 };
   private cachedContentLines: string[] | undefined;
+  private readonly contextSamples = new ContextSampler();
   private streamingCache: { message: AgentMessage; width: number; lines: string[] } | undefined;
   /** Execution ends can precede the durable toolResult messages in parallel mode. */
   private provisionalToolResults = new Map<string, ToolResultStatus>();
@@ -248,6 +251,21 @@ export class ConversationViewer implements Component {
     }
   }
 
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    const delta = event.wheelDelta ?? 0;
+    if (this.closed || event.type !== "wheel" || !delta || event.y < 4 || event.y >= 4 + this.viewportHeight()) {
+      return undefined;
+    }
+    const maxScroll = this.scrollMax();
+    const current = this.autoScroll ? maxScroll : Math.min(this.scrollOffset, maxScroll);
+    this.scrollOffset = Math.max(0, Math.min(maxScroll, current + delta));
+    this.autoScroll = this.scrollOffset === maxScroll;
+    const render = this.scrollOffset !== current || this.stopArmed !== undefined || this.stopFeedback !== undefined;
+    this.stopArmed = undefined;
+    this.stopFeedback = undefined;
+    return { handled: true, render };
+  }
+
   render(width: number): string[] {
     if (this.closed) return []; // closing — framework may still call render after done()
     if (width < 6) return []; // too narrow for any meaningful rendering
@@ -279,7 +297,7 @@ export class ConversationViewer implements Component {
         maxTurns: this.record.stats.maxTurns,
         input: this.record.stats.lifetimeUsage.input,
         output: this.record.stats.lifetimeUsage.output,
-        contextPercent: getSessionContextPercent(this.session),
+        contextPercent: this.contextSamples.read(this.record, this.session),
         compactions: this.record.stats.compactionCount,
         cost: this.record.stats.lifetimeUsage.cost,
         durationMs,
@@ -465,13 +483,13 @@ export class ConversationViewer implements Component {
   /** A change in the result color invalidates only the corresponding assistant rows. */
   private invalidateToolCalls(ids: Set<string>): void {
     if (ids.size === 0) return;
-    this.cachedContentLines = undefined;
     this.streamingCache = undefined;
     const messages = this.cacheMeta.messagesRef;
     for (const index of this.messageCache.keys()) {
       const msg = messages?.[index];
       if (msg?.role === "assistant" && msg.content.some((block) => block.type === "toolCall" && ids.has(block.id))) {
         this.messageCache.delete(index);
+        this.cachedContentLines = undefined;
       }
     }
   }
@@ -590,14 +608,14 @@ export class ConversationViewer implements Component {
         if (provisional?.isError !== result.isError) changed.add(id);
       }
       this.invalidateToolCalls(changed);
-      this.cachedContentLines = undefined;
     }
     this.cacheMeta = { count: messages.length, width, messagesRef: messages };
-    if (this.cachedContentLines) return this.cachedContentLines;
+    const start = this.cachedContentLines ? previous.count : 0;
+    const lines = (this.cachedContentLines ??= []);
+    if (start === messages.length) return lines;
 
     const results = new Map([...this.provisionalToolResults, ...this.toolResults]);
-    const lines: string[] = [];
-    for (let i = 0; i < messages.length; i++) {
+    for (let i = start; i < messages.length; i++) {
       let cached = this.messageCache.get(i);
       if (!cached) {
         cached = this.renderMessage(messages[i], width, results);
@@ -605,7 +623,6 @@ export class ConversationViewer implements Component {
       }
       for (const line of cached) lines.push(line);
     }
-    this.cachedContentLines = lines;
     return lines;
   }
 

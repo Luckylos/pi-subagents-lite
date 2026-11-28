@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Add a parent-only `Workflow` tool for up to eight sequential foreground subagent steps, preserving completed results when a later step cannot proceed.
+
+### Fixed
+
+- Serialize writes to each extension-owned config file across Pi processes, with a bounded wait and an explicit error on timeout.
+- Preserve native worktree paths and restrict project configuration reads and writes to regular files inside the project, preserving in-project symlinks.
+- Admit continuations against the model currently selected by the child session.
+- Require the owning parent session manager when observing or retrying completion notifications, even when session IDs match.
+- Wake the parent once per completion batch after normal settlement. After an abort, hold pending results for the next user prompt. Keep snapshots pending when submission cannot be attempted.
+- Dispose child sessions when setup fails before binding or while handing the session to the manager, and reject continuations of sessions that failed handoff.
+- Preserve native and Windows drive-relative worktree paths, and explain the worktree picker's Git 2.36 requirement when listing fails.
+- Reject project configuration writes that would discard existing unrecognized or invalid values, including through an internal symlink.
+- Report settings write and clear failures instead of reporting success for unavailable project targets. Keep numeric input available to retry, and reject fractional concurrency input before conversion.
+- Attempt one parent wake-up for recorded batch results when the last completion notification cannot trigger a turn, without resending any result.
+- Show the foreground run report when launching a subagent from the Spawn menu.
+- Keep widget error summaries on one line and open scrollable error details for failed agents without a session.
+- Require positive integer concurrency limits and ignore invalid overrides.
+- Parse quoted Agent frontmatter list items without splitting embedded commas, while keeping legacy comma-separated lists.
+- Keep the selected settings item when a menu rebuild moves it to another row.
+- Open long or multiline foreground Spawn reports in the scrollable run viewer, with a compact notification.
+- Deliver overlapping steering messages in submission order even if an input hook waits.
+- Keep transcript logs in order across compaction without repeating retained messages or dropping new ones.
+
+### Changed
+
+- `MessageParent` reports that the message was submitted.
+- Require Pi 1.5.1 or later.
+- Reuse rendered conversation history on append and sample context usage between updates.
+
+### Added
+
+- Support Pi fullscreen mouse-wheel scrolling in conversation and run-text viewers.
+
 ## [1.17.6] - 2026-11-22
 
 ### Fixed

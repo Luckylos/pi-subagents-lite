@@ -308,13 +308,22 @@ export function streamToOutputFile(
   stats?: OutputFinalStats,
   bufferSize: number = 0,
 ): () => void {
-  let writtenCount = 1; // initial user prompt already written
+  let writtenCount = 0;
+  let lastWritten: AgentSession["messages"][number] | undefined;
+  const written = new WeakSet<object>();
   const thinking = new ThinkingStreamer(path, bufferSize);
 
   const flush = () => {
     const messages = session.messages;
+    if (messages.length === 0) return;
+    if (!lastWritten) written.add(messages[0]); // initial user prompt already written
+    // Compaction rebuilds the projection but keeps the retained message objects.
+    if (messages[writtenCount - 1] !== lastWritten) writtenCount = 0;
     while (writtenCount < messages.length) {
-      const msg = messages[writtenCount];
+      const msg = messages[writtenCount++];
+      lastWritten = msg;
+      if (written.has(msg)) continue;
+      written.add(msg);
       if (msg.role === "assistant") {
         const lines = formatMessageLine(msg.content as any, thinking.blocksStreamed);
         if (lines) safeAppend(path, lines);
@@ -331,7 +340,6 @@ export function streamToOutputFile(
         );
         if (lines) safeAppend(path, lines);
       }
-      writtenCount++;
     }
   };
 
@@ -344,16 +352,6 @@ export function streamToOutputFile(
     // Flush before compaction runs so any not-yet-flushed tail still reaches the file
     if (event.type === "compaction_start") {
       flush();
-    }
-
-    // Re-anchor writtenCount to the rebuilt array after successful compaction.
-    // Deferred one microtask because on the overflow-retry path pi trims the
-    // trailing error assistant message AFTER emitting compaction_end — anchoring
-    // synchronously would skip the first post-compaction message.
-    if (event.type === "compaction_end" && !event.aborted && event.result) {
-      queueMicrotask(() => {
-        writtenCount = 1;
-      });
     }
 
     if (bufferSize > 0 && event.type === "message_update") {

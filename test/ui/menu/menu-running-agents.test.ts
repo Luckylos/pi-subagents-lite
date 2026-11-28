@@ -35,7 +35,8 @@ interface SelectListCapture {
 // Capture SelectList constructor calls
 let selectListCalls: SelectListCapture[] = [];
 
-vi.mock("@earendil-works/pi-tui", () => ({
+vi.mock("@earendil-works/pi-tui", async (importOriginal) => ({
+  wrapTextWithAnsi: (await importOriginal<typeof import("@earendil-works/pi-tui")>()).wrapTextWithAnsi,
   SettingsList: class MockSettingsList {
     constructor() {}
   },
@@ -721,6 +722,32 @@ describe("showTextViewer — component behavior", () => {
 
     component.handleInput!("\x1b");
     expect(done).toHaveBeenCalledTimes(1);
+  });
+
+  it("scrolls result text on wheel and ignores events after closing", async () => {
+    const result = Array.from({ length: 50 }, (_, i) => "line " + i).join("\n");
+    const { component, done } = await getComponent(makeRecord({ result }), "result", result);
+    const wheel = {
+      type: "wheel",
+      button: "none",
+      x: 2,
+      y: 4,
+      screenX: 2,
+      screenY: 4,
+      width: 80,
+      height: 28,
+      shift: false,
+      alt: false,
+      ctrl: false,
+      wheelDelta: 1,
+    } as const;
+    expect(component.render(80).join("\n")).toContain("line 49");
+    expect(component.handleMouse?.(wheel)).toEqual({ handled: true, render: false });
+    expect(component.handleMouse?.({ ...wheel, wheelDelta: -2 })).toEqual({ handled: true, render: true });
+    expect(component.render(80).join("\n")).not.toContain("line 49");
+    component.handleInput!("q");
+    expect(done).toHaveBeenCalledOnce();
+    expect(component.handleMouse?.(wheel)).toBeUndefined();
   });
 
   it("scrolls through content with up/down", async () => {

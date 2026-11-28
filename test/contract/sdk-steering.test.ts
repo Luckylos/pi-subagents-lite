@@ -4,12 +4,14 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialSto
 import {
   ModelRuntime,
   type AgentSession,
+  type ExtensionContext,
   type ExtensionFactory,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, expect, it, vi } from "vite-plus/test";
 import { AgentManager } from "../../src/agents/agent-manager.js";
+import { CompletionNotifications } from "../../src/spawn/completion-notifications.js";
 import { fakeCtx, fakePi } from "../fixtures.js";
 import { createTestOwner } from "../owner-fixtures.js";
 
@@ -33,8 +35,15 @@ async function setup(extension: (templatePath: string) => ExtensionFactory, cust
   writeFileSync(join(dir, "steering.ts"), "export default (pi) => globalThis.__subagentSteeringExtension(pi);");
   const offline = fauxProvider({ provider: "offline-steering", models: [{ id: "steering" }] });
   const credentials = new InMemoryCredentialStore();
-  await credentials.modify(offline.provider.id, async () => ({ type: "api_key", key: "test-only" }));
-  const runtime = await ModelRuntime.create({ credentials, modelsPath: null, refreshOnCreate: false });
+  await credentials.modify(offline.provider.id, async () => ({
+    type: "api_key",
+    key: "test-only",
+  }));
+  const runtime = await ModelRuntime.create({
+    credentials,
+    modelsPath: null,
+    refreshOnCreate: false,
+  });
   runtime.registerNativeProvider(offline.provider);
   vi.spyOn(runtime, "refresh").mockResolvedValue({ aborted: false, errors: new Map() });
   vi.spyOn(runtime, "getAvailableSnapshot").mockReturnValue(offline.models);
@@ -142,7 +151,9 @@ it("cancels a steer awaiting input hooks before the independent prompt consumes 
       await releaseOwned.promise;
       return fauxAssistantMessage("owned answer");
     },
-    fauxAssistantMessage(fauxToolCall("hold", {}, { id: "independent" }), { stopReason: "toolUse" }),
+    fauxAssistantMessage(fauxToolCall("hold", {}, { id: "independent" }), {
+      stopReason: "toolUse",
+    }),
     independentAnswer,
     independentAnswer, // Pi's one-at-a-time steering may expose a leak in a further request.
   ]);
@@ -207,6 +218,147 @@ it("delivers a follow-up queued by agent_settled to the deferred independent pro
   }
 });
 
+it.each(["normal", "aborted", "last-send-failed"] as const)(
+  "delivers completion snapshots across SDK settlement (%s)",
+  async (mode) => {
+    const aborted = mode === "aborted";
+    const lastSendFailed = mode === "last-send-failed";
+    let parent: ExtensionContext;
+    let notifications: CompletionNotifications;
+    const recordResults = () => {
+      for (const index of [1, 2]) {
+        notifications.record(
+          {
+            runId: `child-run-${index}`,
+            agentId: `child-${index}`,
+            sequence: 1,
+            type: "general-purpose",
+            description: "background task",
+            result: `child result ${index}`,
+            status: "completed",
+            started: true,
+            completedAt: 1,
+            elapsedMs: 1,
+            stats: {
+              lifetimeUsage: { input: 0, output: 0, cacheWrite: 0, cost: 0 },
+              toolUses: 0,
+              contextPercent: null,
+              compactionCount: 0,
+            },
+          },
+          {
+            ownerGeneration: 1,
+            parentSessionId: parent.sessionManager.getSessionId(),
+            spawnCtx: parent,
+            required: true,
+          },
+        );
+      }
+    };
+    const app = await setup(() => (pi) => {
+      pi.on("input", (event) => notifications?.parentInput(event.source !== "extension"));
+      pi.on("before_agent_start", (event, ctx) => {
+        if (event.messageType === "user") notifications?.parentUserPrompt();
+        if (notifications) return;
+        parent = ctx;
+        const sessionManager = ctx.sessionManager;
+        const sessionId = sessionManager.getSessionId();
+        if (lastSendFailed) {
+          const send = pi.sendMessage.bind(pi);
+          vi.spyOn(pi, "sendMessage").mockImplementation((message, options) => {
+            if (message.customType === "subagent-result" && options?.triggerTurn) {
+              throw new Error("last notification failed before SDK dispatch");
+            }
+            send(message, options);
+          });
+        }
+        notifications = new CompletionNotifications(
+          pi,
+          1,
+          sessionId,
+          () => parent,
+          (candidate) => candidate.sessionManager === sessionManager && sessionManager.getSessionId() === sessionId,
+        );
+      });
+      pi.on("agent_start", () => notifications.parentStarted());
+      pi.on("agent_settled", (event, ctx) => notifications.parentSettled(event.aborted, ctx));
+      let first = true;
+      pi.on("agent_before_settle", () => {
+        // This boundary is reached after the last ordinary turn_end.
+        if (!aborted && first) recordResults();
+        first = false;
+      });
+    });
+    const entered = gate();
+    const release = gate();
+    const requests: string[] = [];
+    const respond: Parameters<typeof app.offline.setResponses>[0][number] = (ctx) => {
+      requests.push(JSON.stringify(ctx.messages));
+      return fauxAssistantMessage("answer");
+    };
+    app.offline.setResponses([
+      async (...args) => {
+        entered.open();
+        await release.promise;
+        return respond(...args);
+      },
+      respond,
+      respond,
+    ]);
+    try {
+      const id = app.spawn();
+      await entered.promise;
+      if (aborted) {
+        recordResults();
+        const cancellation = app.session.abort();
+        release.open();
+        await cancellation;
+      } else {
+        release.open();
+      }
+      await app.manager.getRuns(id)[0].completion;
+      await app.session.waitForIdle();
+      const receipts = () =>
+        app.session.sessionManager
+          .getEntries()
+          .filter((entry) => entry.type === "custom_message" && entry.customType === "subagent-result");
+      if (aborted) {
+        expect(receipts()).toEqual([]);
+        await app.session.sendCustomMessage(
+          { customType: "other-extension", content: "automatic prompt", display: true },
+          { triggerTurn: true },
+        );
+        expect(requests.at(-1)).toContain("automatic prompt");
+        expect(requests.at(-1)).not.toContain("child result");
+        expect(receipts()).toEqual([]);
+        await app.session.sendUserMessage("extension user message");
+        expect(requests.at(-1)).toContain("extension user message");
+        expect(requests.at(-1)).not.toContain("child result");
+        expect(receipts()).toEqual([]);
+        app.offline.appendResponses([respond]);
+        await app.session.prompt("resume as user");
+        expect(requests.at(-1)).toContain("resume as user");
+      } else {
+        expect(requests).toHaveLength(2);
+      }
+      expect(requests.at(-1)).toContain("child result 1");
+      if (lastSendFailed) {
+        expect(requests.at(-1)).not.toContain("child result 2");
+        expect(receipts()).toHaveLength(1);
+        expect(notifications!.state("child-run-2")).toMatchObject({ status: "submitted", canRetry: true });
+      } else {
+        expect(requests.at(-1)).toContain("child result 2");
+        expect(receipts()).toHaveLength(2);
+        expect(notifications!.state("child-run-2").status).toBe("observed");
+      }
+      expect(notifications!.state("child-run-1").status).toBe("observed");
+    } finally {
+      release.open();
+      await app.dispose();
+    }
+  },
+);
+
 it("rejects a steer that crosses into idle between SDK preflight and the queue writes", async () => {
   const ownedEntered = gate();
   const releaseOwned = gate();
@@ -265,6 +417,71 @@ it("rejects a steer that crosses into idle between SDK preflight and the queue w
   } finally {
     releaseOwned.open();
     releaseSettlement.open();
+    await app.dispose();
+  }
+});
+
+it("commits overlapping steers in submission order even when the first input hook waits", async () => {
+  const promptEntered = gate();
+  const releasePrompt = gate();
+  const inputEntered = gate();
+  const releaseInput = gate();
+  const app = await setup(() => (pi) => {
+    pi.on("input", async (event) => {
+      if (event.text === "first") {
+        inputEntered.open();
+        await releaseInput.promise;
+      }
+    });
+  });
+  const providerUsers: string[][] = [];
+  const recordInput: Parameters<typeof app.offline.setResponses>[0][number] = (context) => {
+    providerUsers.push(
+      context.messages.flatMap((message) => {
+        if (message.role !== "user") return [];
+        if (typeof message.content === "string") return [message.content];
+        return [message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("")];
+      }),
+    );
+    return fauxAssistantMessage("answer");
+  };
+  app.offline.setResponses([
+    async (...args) => {
+      promptEntered.open();
+      await releasePrompt.promise;
+      return recordInput(...args);
+    },
+    recordInput,
+  ]);
+  try {
+    const id = app.spawn();
+    await promptEntered.promise;
+    app.session.setSteeringMode("all");
+    const snapshots: string[][] = [];
+    const unsubscribe = app.session.subscribe((event) => {
+      if (event.type === "queue_update") snapshots.push([...event.steering]);
+    });
+    try {
+      const first = app.manager.submitMessage(id, "first");
+      await inputEntered.promise;
+      const second = app.manager.submitMessage(id, "second");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      releaseInput.open();
+      const submissions = await Promise.all([first, second]);
+      const displayed = app.session.getSteeringMessages().slice();
+      const updates = snapshots.slice();
+      releasePrompt.open();
+      await app.manager.getRuns(id)[0].completion;
+      expect(submissions.map(({ accepted }) => accepted)).toEqual([true, true]);
+      expect.soft(updates).toEqual([["first"], ["first", "second"]]);
+      expect.soft(displayed).toEqual(["first", "second"]);
+      expect(providerUsers).toEqual([["owned prompt"], ["owned prompt", "first", "second"]]);
+    } finally {
+      unsubscribe();
+    }
+  } finally {
+    releaseInput.open();
+    releasePrompt.open();
     await app.dispose();
   }
 });
@@ -328,7 +545,7 @@ it("keeps SDK input transforms, handled short-circuiting, template expansion and
   }
 });
 
-it("Stop retires a pending input and releases the queued run once the SDK prompt ends", async () => {
+it("Stop retires overlapping inputs and releases the queued run once the SDK prompt ends", async () => {
   const ownedEntered = gate();
   const releaseOwned = gate();
   const inputEntered = gate();
@@ -355,11 +572,18 @@ it("Stop retires a pending input and releases the queued run once the SDK prompt
     await ownedEntered.promise;
     const result = app.manager.submitMessage(id, "old steer");
     await inputEntered.promise;
+    const queued = app.manager.submitMessage(id, "queued steer");
+    const session = app.session;
     const replacement = app.spawn("replacement");
     const [next] = app.manager.getRuns(replacement);
     expect(next.phase).toBe("queued");
     expect(app.manager.abort(id)).toBe(true);
-    expect(await result).toMatchObject({ accepted: false, reason: "stopping" });
+    for (const submission of await Promise.all([result, queued])) {
+      expect(submission).toMatchObject({ accepted: false, reason: "stopping" });
+    }
+    releaseInput.open();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(session.getSteeringMessages()).toEqual([]);
     expect(app.manager.getRuns(replacement)[0].phase).toBe("queued");
     releaseOwned.open();
     await run.completion;

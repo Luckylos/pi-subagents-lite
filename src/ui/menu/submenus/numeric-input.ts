@@ -8,6 +8,8 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Input, type Component } from "@earendil-works/pi-tui";
 
+import { errorMessage } from "../../../utils.ts";
+import { plainText } from "../../sanitize.ts";
 import { validateNumeric } from "../helpers.ts";
 
 /**
@@ -17,7 +19,9 @@ import { validateNumeric } from "../helpers.ts";
  */
 export function createNumericSubmenu(
   ctx: ExtensionCommandContext,
-  optionsOrCallback?: { min?: number; required?: boolean; default?: number } | ((parsed: number) => void),
+  optionsOrCallback?:
+    | { min?: number; required?: boolean; default?: number; integer?: boolean }
+    | ((parsed: number) => void),
   onValid?: (parsed: number) => void,
   onEmpty?: () => void,
 ): (initialValue: string, done: (selectedValue?: string) => void) => Component {
@@ -26,34 +30,39 @@ export function createNumericSubmenu(
   const min = opts.min ?? 1;
   const required = opts.required ?? false;
   const fmtLabel = (n: number) => (n === 0 ? "\u2265 0" : `\u2265 ${n}`);
-  const onError = (msg: string) => ctx.ui.notify(msg, "error");
+  const invalidValue = () =>
+    ctx.ui.notify(`Invalid value \u2014 must be ${opts.integer ? "an integer" : "a number"} ${fmtLabel(min)}`, "error");
 
   return (initialValue, done) => {
     const input = new Input();
     input.setValue(initialValue === "(not set)" ? "" : initialValue);
+    const commit = (save: () => void, label: string) => {
+      try {
+        save();
+      } catch (error) {
+        ctx.ui.notify(plainText(errorMessage(error)), "error");
+        return;
+      }
+      done(label);
+    };
     input.onSubmit = (value) => {
       const trimmed = value.trim();
       if (!trimmed || /^unlimited$/i.test(trimmed)) {
         if (required) {
-          onError(`Invalid value \u2014 must be a number ${fmtLabel(min)}`);
+          invalidValue();
           return;
         }
-        if (opts.default != null) {
-          opts.onValid?.(opts.default);
-          done(String(opts.default));
-        } else {
-          onEmpty?.();
-          done("(not set)");
-        }
+        const fallback = opts.default;
+        if (fallback != null) commit(() => opts.onValid?.(fallback), String(fallback));
+        else commit(() => onEmpty?.(), "(not set)");
         return;
       }
       const parsed = validateNumeric(trimmed, min);
-      if (parsed === undefined) {
-        onError(`Invalid value \u2014 must be a number ${fmtLabel(min)}`);
+      if (parsed === undefined || (opts.integer && (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(parsed)))) {
+        invalidValue();
         return;
       }
-      opts.onValid?.(parsed);
-      done(String(parsed));
+      commit(() => opts.onValid?.(parsed), String(parsed));
     };
     input.onEscape = () => done();
     return input;

@@ -31,9 +31,20 @@ const repo = join(ancestor, "R");
 const target = join(repo, "sub");
 const parentCwd = join(fixture.ownTmp, "parent");
 const deniedReads: string[] = [];
+const skillRepo = join(fixture.ownTmp, "skill-repo");
+const skillTarget = join(skillRepo, "nested");
+const skillMarker = "F2_ANCESTOR_SKILL_BODY";
+const globalSkillMarker = "F2_GLOBAL_SKILL_BODY";
+const ancestorSkill = join(skillRepo, ".agents", "skills", "ancestor-probe", "SKILL.md");
+let ancestorSkillReads = 0;
 
 beforeAll(async () => {
-  for (const dir of [target, parentCwd]) fs.mkdirSync(dir, { recursive: true });
+  const globalSkill = join(fixture.agentDir, "skills", "global-probe", "SKILL.md");
+  for (const dir of [target, parentCwd, skillTarget, resolve(ancestorSkill, ".."), resolve(globalSkill, "..")]) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(ancestorSkill, "---\nname: ancestor-probe\ndescription: Fixture skill\n---\n" + skillMarker);
+  fs.writeFileSync(globalSkill, "---\nname: global-probe\ndescription: Fixture skill\n---\n" + globalSkillMarker);
   fs.writeFileSync(join(fixture.agentDir, "AGENTS.md"), globalMarker);
   fs.writeFileSync(join(ancestor, "AGENTS.md"), ancestorMarker);
   fs.writeFileSync(join(fixture.agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "never" }));
@@ -70,6 +81,7 @@ beforeAll(async () => {
           deniedReads.push(String(args[0]));
           throw new Error("Body read outside isolated fixture");
         }
+        if (String(args[0]) === ancestorSkill) ancestorSkillReads++;
         return fn(...args);
       },
     }),
@@ -97,14 +109,20 @@ afterAll(() => {
   fs.rmSync(fixture.ownTmp, { recursive: true, force: true });
 });
 
-async function openChild(savedTrust: boolean) {
-  new ProjectTrustStore(fixture.agentDir).set(target, savedTrust);
+async function openChild(savedTrust: boolean, cwd = target) {
+  new ProjectTrustStore(fixture.agentDir).set(cwd, savedTrust);
   const projectTrusted = resolveSubagentTrust({
-    targetPath: target,
+    targetPath: cwd,
     sameRepo: false,
     deps: createSubagentTrustDeps(fixture.agentDir, parentCwd, repo),
   });
-  const exec = vi.fn<ExtensionAPI["exec"]>(async () => ({ code: 1, stdout: "", stderr: "", killed: false }));
+  const exec = vi.fn<ExtensionAPI["exec"]>(async () => ({
+    code: 1,
+    stdout: "",
+    stderr: "",
+    killed: false,
+    truncated: false,
+  }));
   const pi = asExtensionAPI({ exec });
   const owner = createExtensionOwner(pi);
   owner.store = new ConfigStore({
@@ -133,7 +151,7 @@ async function openChild(savedTrust: boolean) {
   const ctx = asExtensionContext({ cwd: parentCwd, hasUI: false, sessionManager: SessionManager.inMemory(parentCwd) });
   const { session } = await createChildSession(owner, ctx, "f2-context", {
     pi,
-    cwd: target,
+    cwd,
     projectTrusted,
     agentConfig: {
       name: "f2-context",
@@ -142,6 +160,7 @@ async function openChild(savedTrust: boolean) {
       includeContextFiles: true,
       extensions: false,
       skills: false,
+      ...(cwd === skillTarget ? { preloadSkills: ["ancestor-probe", "global-probe"] } : {}),
     },
   });
   return { session, projectTrusted };
@@ -156,6 +175,19 @@ describe("production child systemPrompt with real SDK ancestor context", () => {
       expect(projectTrusted).toBe(false);
       expect(session.getAllTools().map((tool) => tool.name)).toEqual(expect.arrayContaining(["read", "bash"]));
       expect(deniedReads).toEqual([]);
+    } finally {
+      await disposeChildSession(session);
+    }
+  });
+
+  it.each([false, true])("loads ancestor skill bodies only with trust=%s", async (trusted) => {
+    const before = ancestorSkillReads;
+    const { session, projectTrusted } = await openChild(trusted, skillTarget);
+    try {
+      expect(projectTrusted).toBe(trusted);
+      expect(session.systemPrompt).toContain(globalSkillMarker);
+      expect(session.systemPrompt.includes(skillMarker)).toBe(trusted);
+      expect(ancestorSkillReads > before).toBe(trusted);
     } finally {
       await disposeChildSession(session);
     }

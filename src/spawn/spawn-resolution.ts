@@ -135,9 +135,10 @@ export async function resolveSpawn(
   model: SpawnModelChoice,
   thinking: ThinkingChoice | undefined,
   coordinator: SpawnCoordinator,
+  signal?: AbortSignal,
 ) {
   const store = getStore(owner);
-  const selection = await resolveSpawnSelection(owner, ctx, type, path, { coordinator });
+  const selection = await resolveSpawnSelection(owner, ctx, type, path, { coordinator, signal });
   coordinator.assertCurrentParent(ctx);
   return prepareResolvedSpawn(store, ctx, selection, model, thinking);
 }

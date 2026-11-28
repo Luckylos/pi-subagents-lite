@@ -77,6 +77,31 @@ describe("parseExtensions", () => {
 /* ------------------------------------------------------------------ */
 
 describe("parseAgentFile", () => {
+  it("keeps explicitly empty allowlists empty instead of using implicit defaults", () => {
+    const agent = parseAgentFile("---\nname: restricted\ntools:\nextensions:\nskills:\n---\nPrompt\n", "user");
+    expect(agent.tools).toEqual([]);
+    expect(agent.extensions).toEqual([]);
+    expect(agent.skills).toEqual([]);
+  });
+  it("keeps commas and escaped quotes inside YAML list items", () => {
+    const agent = parseAgentFile(
+      `---
+name: quoted
+extensions:
+  - 'plugins/one,two'
+  - 'it''s-custom'
+skills: ["skills/one,two", 'other-skill']
+exclude_tools: read, bash
+---
+Prompt
+`,
+      "user",
+    );
+    expect(agent.extensions).toEqual(["plugins/one,two", "it's-custom"]);
+    expect(agent.skills).toEqual(["skills/one,two", "other-skill"]);
+    expect(agent.exclude_tools).toEqual(["read", "bash"]);
+    expect(agent.systemPrompt).toBe("Prompt");
+  });
   it("parses all frontmatter fields into AgentConfigFromMd", () => {
     const content = `---
 name: explorer
